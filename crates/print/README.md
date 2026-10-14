@@ -31,6 +31,13 @@ spool::submit(&pdf, &spool::Job { printer: None, copies: 2, ..Default::default()
   the GUI thread, and gives `lpoptions` ten seconds: a CUPS that has stopped answering leaves
   the PPD's own defaults in force instead of holding the dialog (#1818; `spool::output_within`
   kills and reaps the command at the deadline).
+- **Remembered choices** (#2001): the dialog keeps two-sided (including leaving it to the
+  printer), grayscale, collate, page sizing (with its custom percent) and Comments & forms across
+  restarts, in the settings file under `print` with the names `doc_print` takes (`names::duplex`,
+  `names::content`, `names::size_mode` and their `parse_*` counterparts are the one vocabulary).
+  Copies, pages, layout, orientation and the printer describe one job and are not saved: after a
+  restart they start from the defaults, while within one session the dialog still opens on the
+  last job's choices.
 
 Each source page becomes a Form XObject (its content wrapped in q/Q, plus the printable
 annotations); sheets place them with a clip. The result is a fresh, unencrypted,

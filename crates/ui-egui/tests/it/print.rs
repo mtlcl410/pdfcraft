@@ -913,3 +913,76 @@ fn a_booklet_decides_two_sided_itself() {
     assert!(h.query_by_role_and_label(Role::ComboBox, "Two-sided:").is_some());
     assert_eq!(h.state().print_draft.job("x").duplex, Some(Duplex::LongEdge), "back to the choice");
 }
+
+/// The choices that describe how an office prints (two-sided, grayscale, collate, page sizing,
+/// comments & forms) survive a restart; the ones that describe one job (copies, pages, layout,
+/// orientation) start from the defaults each time Print opens, in the same session too (ISO
+/// 32000-2 Table 147 initialises them per document). Settings are untrusted: an unknown name or
+/// a scale outside the dialog's range keeps the default (#2001).
+#[test]
+fn print_preferences_survive_a_restart_but_the_jobs_own_choices_reset() {
+    use pdfcraft_engine::print::{Content, Orientation, SizeMode, Subset, spool::Duplex};
+    use pdfcraft_ui_egui::{PrintHandling, PrintWhich};
+    let open = |saved: Option<&str>| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        if let Some(saved) = saved {
+            app.restore(saved);
+        }
+        app.open_bytes("form.pdf", None, include_bytes!("../data/form.pdf").to_vec()).unwrap();
+        app.open_print();
+        app
+    };
+    let mut app = open(None);
+    let d = &mut app.print_draft;
+    d.duplex = Some(Duplex::LongEdge);
+    d.grayscale = true;
+    d.collate = false;
+    d.size = SizeMode::Custom(62.5);
+    d.custom_scale = 62.5;
+    d.content = Content::Document;
+    d.copies = 5;
+    d.which = PrintWhich::Range;
+    d.range = "2-3".into();
+    d.subset = Subset::Even;
+    d.reverse = true;
+    d.handling = PrintHandling::Booklet;
+    d.orientation = Orientation::Landscape;
+    let saved = app.persist();
+
+    // Opened again in the same session: this job's choices start over, the rest carry on.
+    app.open_print();
+    let d = &app.print_draft;
+    assert_eq!((d.copies, d.which, d.range.as_str(), d.subset, d.reverse), (1, PrintWhich::All, "", Subset::All, false));
+    assert_eq!((d.handling, d.orientation), (PrintHandling::Size, Orientation::Auto));
+    assert_eq!((d.duplex, d.grayscale, d.collate, d.size), (Some(Duplex::LongEdge), true, false, SizeMode::Custom(62.5)));
+
+    let again = open(Some(&saved));
+    let d = &again.print_draft;
+    assert_eq!(d.duplex, Some(Duplex::LongEdge));
+    assert!(d.grayscale);
+    assert!(!d.collate);
+    assert_eq!(d.size, SizeMode::Custom(62.5));
+    assert_eq!(d.custom_scale, 62.5);
+    assert_eq!(d.content, Content::Document);
+    assert_eq!(d.copies, 1, "copies are this job's");
+    assert_eq!(d.which, PrintWhich::All, "the page choice is this job's");
+    assert_eq!(d.range, "");
+
+    let garbage =
+        r#"{"print": {"duplex": "sideways", "grayscale": "yes", "collate": null, "size": "custom", "custom_scale": 1e9, "comments_forms": 7}}"#;
+    let d = open(Some(garbage)).print_draft;
+    assert_eq!(d.duplex, None, "an unknown name keeps the printer's own default");
+    assert!(!d.grayscale);
+    assert!(d.collate);
+    assert_eq!(d.custom_scale, 100.0, "a scale outside 1..=1000 keeps the default");
+    assert_eq!(d.size, SizeMode::Custom(100.0), "custom is honoured with the default scale");
+    assert_eq!(d.content, Content::DocumentAndMarkups);
+    let d = open(Some(r#"{"print": 5}"#)).print_draft;
+    assert_eq!(d.size, SizeMode::Fit);
+    // Leaving two-sided to the printer is remembered as such, over a different earlier choice.
+    let d = open(Some(r#"{"print": {"duplex": "printer"}}"#)).print_draft;
+    assert_eq!(d.duplex, None);
+    let d = open(Some(r#"{"print": {"duplex": "off"}}"#)).print_draft;
+    assert_eq!(d.duplex, Some(Duplex::Off));
+}

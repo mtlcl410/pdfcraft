@@ -13,7 +13,7 @@ mod body;
 mod draft;
 
 pub(crate) use body::body;
-pub use draft::{Handling, PrintDraft, Which};
+pub use draft::{CUSTOM_SCALE, Handling, PrintDraft, Which};
 
 /// The preview pane, and the paper inside it (12 pt inset on each side).
 const PREVIEW_W: f32 = 320.0;
@@ -150,14 +150,21 @@ impl PdfCraftApp {
         // The printer picked last time, Save as PDF included, while it is still listed (#3537).
         let picked = keep.printer_picked && offered(keep.printer.as_deref(), &printers);
         let printer = if picked { keep.printer.clone() } else { default };
-        // Picked pages are what Print is for (Acrobat's "Selected pages"); without any, a choice
-        // left over from another document falls back to the whole document.
-        let which = match (selected.is_empty(), keep.which) {
-            (false, _) => Which::Selected,
-            (true, Which::Selected) => Which::All,
-            (true, other) => other,
-        };
+        // Picked pages are what Print is for (Acrobat's "Selected pages"); without any, the whole
+        // document.
+        let which = if selected.is_empty() { Which::All } else { Which::Selected };
+        // Copies, pages, layout and orientation are this job's, and start from the defaults each
+        // time the dialog opens: ISO 32000-2 Table 147 initialises them per document when the print
+        // dialog opens (NumCopies, "typically 1"; PrintPageRange). The choices that describe how
+        // this computer prints carry over, and are remembered across restarts (#2001).
+        let fresh = PrintDraft::default();
         self.print_draft = PrintDraft {
+            copies: fresh.copies,
+            range: fresh.range,
+            subset: fresh.subset,
+            reverse: fresh.reverse,
+            handling: fresh.handling,
+            orientation: fresh.orientation,
             crops: Vec::new(),
             crop_pages: None,
             printers,
