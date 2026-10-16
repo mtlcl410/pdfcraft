@@ -27,6 +27,9 @@ use crate::{RedactError, Report, image, page_streams, tags};
 use pdfcraft_fonts::pdf::Metrics;
 
 const MAX_DEPTH: usize = 12;
+/// Bounds on the removed text collected for the metadata check (#2448).
+const MAX_RUNS: usize = 100_000;
+const MAX_RUN_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -103,6 +106,13 @@ pub(crate) struct Scope<'a> {
     xobject_oc_cache: HashMap<ObjRef, bool>,
     /// Content removed from hidden layers (blocks and XObjects).
     pub layer_blocks: usize,
+    /// Apply: the text of the glyphs removed under the regions, one entry per run of adjacent
+    /// glyphs (#2448), so the document's metadata can be checked for it. Call [`Scope::flush`]
+    /// after processing to close the last run.
+    pub removed_text: Vec<String>,
+    /// The run being collected, and where its last glyph ended (device space) with its height.
+    run: String,
+    run_end: Option<((f64, f64), f64)>,
     fonts: HashMap<Vec<u8>, Rc<Metrics>>,
     used_names: Vec<Vec<u8>>,
     depth: usize,
@@ -127,11 +137,43 @@ impl<'a> Scope<'a> {
             ocmd_cache: HashMap::new(),
             xobject_oc_cache: HashMap::new(),
             layer_blocks: 0,
+            removed_text: Vec::new(),
+            run: String::new(),
+            run_end: None,
             fonts: HashMap::new(),
             used_names: Vec::new(),
             depth: 0,
             budget,
         }
+    }
+
+    /// Close the run of removed text being collected.
+    pub fn flush(&mut self) {
+        self.run_end = None;
+        let run = std::mem::take(&mut self.run);
+        if !run.trim().is_empty() && self.removed_text.len() < MAX_RUNS {
+            self.removed_text.push(run);
+        }
+    }
+
+    /// Note a removed glyph's text: `origin` and `end` are where it starts and ends in device
+    /// space, `height` its size there. A glyph that starts where the last one ended continues the
+    /// run, one a little further along the line is a new word of it, and anything else starts a
+    /// new run, so separate marks don't join their text.
+    fn removed(&mut self, text: &str, origin: (f64, f64), end: (f64, f64), height: f64) {
+        if let Some((last, h)) = self.run_end {
+            let gap = (origin.0 - last.0).hypot(origin.1 - last.1);
+            let h = h.max(height);
+            if !(gap.is_finite() && h.is_finite()) || gap > 1.5 * h {
+                self.flush();
+            } else if gap > 0.15 * h && !self.run.ends_with(char::is_whitespace) {
+                self.run.push(' ');
+            }
+        }
+        if self.run.len().saturating_add(text.len()) <= MAX_RUN_BYTES {
+            self.run.push_str(text);
+        }
+        self.run_end = Some((end, height));
     }
 
     /// Sanitizing visits every form XObject (not only those under a region).
@@ -1122,7 +1164,7 @@ fn clean_replacements(doc: &Document, resources: &Dict, original: &[Op], process
 
 /// Lay out a shown string (or `TJ` array) glyph by glyph, advancing `tm`. Returns the `TJ`
 /// items with the glyphs under a region replaced by displacements, and how many were removed.
-fn show(scope: &Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (Vec<Object>, usize) {
+fn show(scope: &mut Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (Vec<Object>, usize) {
     let f = &gs.font;
     let size = gs.size;
     let mut out: Vec<Object> = Vec::new();
@@ -1160,6 +1202,16 @@ fn show(scope: &Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (Vec<O
                         }
                         None => scope.glyph_hit(b, origin),
                     };
+                    if scope.mode == Mode::Apply && scope.hidden_text.is_none() {
+                        if hit {
+                            let end = trm.apply(w0, 0.0);
+                            let top = trm.apply(0.0, 1.0);
+                            let height = (top.0 - origin.0).hypot(top.1 - origin.1);
+                            scope.removed(f.text_of(code).as_deref().unwrap_or(""), origin, end, height);
+                        } else {
+                            scope.flush();
+                        }
+                    }
                     glyphs.push(Glyph { bytes: pos..pos + len, advance, hit });
                     *tm = Matrix::translate(advance * gs.scale, 0.0).then(tm);
                     pos += len;
