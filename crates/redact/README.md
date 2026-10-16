@@ -30,7 +30,8 @@ clear_marks(&mut doc, None)?;                        // remove marks without app
   widget under a mark;
 - the marks themselves, replaced by boxes in their fill colour (and overlay text) drawn into the
   page as a `/PCMark /Redaction` stream;
-- **metadata** that repeats the removed text (#2448): `/Info` entries containing it, and the
+- **metadata** that repeats the removed text (#2448): `/Info` entries containing it or wholly
+  part of it (three letters or digits at least), and the
   catalog's and pages' XMP streams whose text (element content and attribute values, entities
   decoded) contains it, removed whole; unreadable XMP goes too. The removed glyphs' text is
   collected in runs by position, and each run (two or more letters or digits) and each of its

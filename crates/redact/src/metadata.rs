@@ -4,7 +4,9 @@
 //! document information dictionary (`/Title`, `/Subject`, `/Keywords`…) and the XMP metadata
 //! that mirrors it. Once the page no longer shows them, the metadata must not keep them either.
 //!
-//! An `/Info` entry whose text contains a redacted term is removed. An XMP stream whose text
+//! An `/Info` entry whose text contains a redacted term is removed, and so is one whose whole
+//! value is part of a removed run (an author "J. Li" redacted from a sentence, whose words are too
+//! short to be terms; the reverse check #2598 also proposed). An XMP stream whose text
 //! (element content and attribute values, entities decoded) contains one is removed whole:
 //! editing the XML in place could leave it malformed or keep the term in another spelling.
 //! Unreadable XMP goes too, and so does text too large to search against every term
@@ -56,6 +58,18 @@ pub(crate) fn terms(removed: &[String]) -> Vec<String> {
 fn mentions(text: &str, terms: &[String]) -> bool {
     let text = normalize(text);
     text.len().saturating_mul(terms.len()) > MAX_WORK || terms.iter().any(|t| text.contains(t.as_str()))
+}
+
+/// Is `value` itself part of one of the removed `runs` (normalized)? It needs three letters or
+/// digits, so an entry such as "by" doesn't go with every sentence that contains it. Too much
+/// text to search counts as part (fail-closed).
+fn within(value: &str, runs: &[String]) -> bool {
+    let value = normalize(value);
+    if !significant(&value, 3) {
+        return false;
+    }
+    let total = runs.iter().map(String::len).fold(0usize, usize::saturating_add);
+    value.len().saturating_mul(total) > MAX_WORK || runs.iter().any(|r| r.contains(value.as_str()))
 }
 
 /// Decode the five predefined XML entities and character references; anything else stays.
@@ -175,6 +189,7 @@ pub(crate) fn scrub(doc: &mut Document, removed: &[String]) -> Result<usize, pdf
     if terms.is_empty() {
         return Ok(0);
     }
+    let runs: Vec<String> = removed.iter().take(MAX_TERMS).map(|r| normalize(r).chars().take(MAX_TERM_CHARS).collect()).collect();
     let mut n = 0;
 
     // The information dictionary, direct in the trailer or an object of its own.
@@ -182,7 +197,12 @@ pub(crate) fn scrub(doc: &mut Document, removed: &[String]) -> Result<usize, pdf
     if let Some(info) = info_obj.as_ref().and_then(|i| doc.resolve(i).as_dict().cloned()) {
         let doomed: Vec<Vec<u8>> = info
             .iter()
-            .filter(|(_, v)| doc.resolve(v).as_string().is_some_and(|s| mentions(&s.to_text(), &terms)))
+            .filter(|(_, v)| {
+                doc.resolve(v).as_string().is_some_and(|s| {
+                    let s = s.to_text();
+                    mentions(&s, &terms) || within(&s, &runs)
+                })
+            })
             .map(|(k, _)| k.to_vec())
             .collect();
         if !doomed.is_empty() {

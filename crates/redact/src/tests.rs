@@ -149,6 +149,28 @@ fn redacted_text_does_not_survive_in_info_or_xmp() {
     assert!(pdfcraft_model::pages(&saved)[0].dict.contains(b"Metadata"), "the page XMP didn't, and stays");
 }
 
+/// An `/Info` value that is itself part of the removed text goes, though its words are too short
+/// to be terms ("J. Li"); a value with fewer than three letters or digits stays.
+#[test]
+fn an_info_value_inside_the_redacted_text_goes() {
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+        stream("", b"BT /F1 10 Tf 10 100 Td (Prepared by J. Li) Tj ET"),
+        FONT.replace("95 0 R", "6 0 R").into_bytes(),
+        widths(),
+        b"<< /Author (J.  li) /Subject (by) /Producer (Test) >>".to_vec(),
+    ];
+    let mut doc = Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry("/Info 7 0 R").build())).unwrap();
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.metadata, 1, "{r:?}");
+    let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
+    assert!(!info.contains(b"Author"), "the author's name was redacted from the page");
+    assert!(info.contains(b"Subject") && info.contains(b"Producer"));
+}
+
 /// The removed text is collected in runs by position, not by operator: glyphs shown one operator
 /// at a time still make one word, a gap makes a space, and separate marks make separate runs.
 #[test]
