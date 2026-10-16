@@ -1144,3 +1144,23 @@ fn contents_pieces_join_with_a_space_across_a_trailing_comment() {
     let printed_ctrl = impose(&with_newline, &settings(vec![0], Layout::Size(SizeMode::Actual))).unwrap();
     assert_eq!(form_strings(printed_ctrl), [b"HIDDEN".to_vec(), b"SHOWN".to_vec()]);
 }
+
+/// #2630: a Windows installation without the print DLLs is told so, before anything calls into
+/// a delay-loaded DLL that is not there.
+#[cfg(windows)]
+#[test]
+fn missing_print_dlls_are_named() {
+    use crate::spool::{PRINT_DLLS, missing_print_dll_in};
+    let dir = std::env::temp_dir().join(format!("pdfcraft-print-dlls-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(missing_print_dll_in(&dir), Some(PRINT_DLLS[0]));
+    std::fs::write(dir.join(PRINT_DLLS[0]), b"").unwrap();
+    assert_eq!(missing_print_dll_in(&dir), Some(PRINT_DLLS[1]));
+    std::fs::write(dir.join(PRINT_DLLS[1]), b"").unwrap();
+    assert_eq!(missing_print_dll_in(&dir), None);
+    let _ = std::fs::remove_dir_all(&dir);
+    // This machine's own Windows has them.
+    let system32 = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");
+    assert_eq!(missing_print_dll_in(&system32), None);
+}
