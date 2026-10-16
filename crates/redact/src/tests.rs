@@ -104,6 +104,84 @@ fn a_whole_line_under_a_mark_goes_even_without_widths() {
     assert_eq!(under(&mut doc, 0, &[[0.0, 0.0, 300.0, 300.0]]), 0, "{}", content(&doc, 0));
 }
 
+/// Issue #2448: the redacted words are often in the document information dictionary and the XMP
+/// metadata too. Applying removes the entries and streams that repeat them, and keeps the rest.
+#[test]
+fn redacted_text_does_not_survive_in_info_or_xmp() {
+    let xmp = |body: &str| {
+        stream(
+            "/Type /Metadata /Subtype /XML",
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">{body}</rdf:RDF></x:xmpmeta>"#
+            )
+            .as_bytes(),
+        )
+    };
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /Metadata 7 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Metadata 9 0 R >>".to_vec(),
+        // "BLUEFIN" spans x 55-90.
+        stream("", b"BT /F1 10 Tf 10 100 Td (Codename BLUEFIN report) Tj ET"),
+        FONT.replace("95 0 R", "6 0 R").into_bytes(),
+        widths(),
+        // 7: the document's XMP names it in an attribute, through a character reference.
+        xmp(r#"<rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/" pdf:Keywords="tuna, Blue&#x46;in"/>"#),
+        // 8: the information dictionary.
+        b"<< /Title (Codename BLUEFIN report) /Keywords (tuna, bluefin) /Author (Ada Lovelace) /Producer (Test) >>".to_vec(),
+        // 9: the page's XMP doesn't mention it.
+        xmp(r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Annual figures</dc:title></rdf:Description>"#),
+    ];
+    let mut doc = Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry("/Info 8 0 R").build())).unwrap();
+    mark(&mut doc, 0, &[[55.0, 95.0, 90.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!((r.glyphs, r.metadata), (7, 3), "{r:?}");
+    let bytes = write_full(&doc, &SaveOptions::default()).unwrap();
+    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
+    assert!(!has(b"bluefin") && !has(b"Blue&#x46;in"), "the redacted word survived in the metadata");
+    let saved = Document::open(Arc::new(bytes)).unwrap();
+    let info = saved.trailer().get(b"Info").and_then(|i| saved.resolve(i).as_dict().cloned()).unwrap();
+    let text = |k: &[u8]| info.get(k).and_then(|v| saved.resolve(v).as_string().map(|s| s.to_text()));
+    assert_eq!((text(b"Title"), text(b"Keywords")), (None, None));
+    assert_eq!((text(b"Author").as_deref(), text(b"Producer").as_deref()), (Some("Ada Lovelace"), Some("Test")));
+    let catalog = saved.get(saved.root().unwrap()).as_dict().cloned().unwrap();
+    assert!(!catalog.contains(b"Metadata"), "the document XMP named the redacted word");
+    assert!(pdfcraft_model::pages(&saved)[0].dict.contains(b"Metadata"), "the page XMP didn't, and stays");
+}
+
+/// The removed text is collected in runs by position, not by operator: glyphs shown one operator
+/// at a time still make one word, a gap makes a space, and separate marks make separate runs.
+#[test]
+fn removed_text_is_collected_in_runs() {
+    let mut doc = one_page(
+        b"BT /F1 10 Tf 10 100 Td (BLU) Tj 15 0 Td (E) Tj 5 0 Td [(F) -300 (IN)] TJ ( 7) Tj ET BT /F1 10 Tf 10 200 Td (Gary) Tj ET",
+        "",
+        vec![],
+    );
+    let page = pdfcraft_model::pages(&doc).swap_remove(0);
+    let (_, data) = page_streams(&doc, &page.dict, 0).unwrap();
+    let res = page.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+    let mut rep = Report::default();
+    let rects = [[10.0, 95.0, 300.0, 110.0], [10.0, 195.0, 30.0, 210.0]];
+    let mut scope = Scope::new(&rects, Mode::Apply, &mut rep, pdfcraft_cos::DecodeBudget::page());
+    process(&mut doc, &mut scope, &data, &res, pdfcraft_content::Matrix::IDENTITY);
+    scope.flush();
+    assert_eq!(scope.removed_text, ["BLUEF IN 7", "Gary"]);
+}
+
+#[test]
+fn metadata_terms_and_xmp_text() {
+    // Runs of two letters or digits or more are matched whole, and by their words of three or
+    // more, ignoring case and spacing.
+    let t = metadata::terms(&["John  Smith".into(), "7".into(), "of".into(), "A-12".into()]);
+    assert_eq!(t, ["john smith", "john", "smith", "of", "a-12"]);
+    // XMP text is element content and attribute values, entities decoded; not names or comments.
+    let x = metadata::xml_text(r#"<dc:title a="x &amp; y"><!-- hidden --><rdf:li>R&#233;sum&eacute; <![CDATA[<raw>]]></rdf:li></dc:title>"#);
+    let words: Vec<&str> = x.split_whitespace().collect();
+    assert_eq!(words, ["x", "&", "y", "Résum&eacute;", "<raw>"]);
+    assert!(!x.contains("title") && !x.contains("hidden"));
+}
+
 #[test]
 fn added_text_parameters_do_not_keep_redacted_text() {
     // An Edit ▸ Add content item: its stream dictionary keeps the source text under /PCAdded.
