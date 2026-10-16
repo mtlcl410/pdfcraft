@@ -423,6 +423,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
         retired_properties: Vec::new(),
         widget_owner,
         removed_text: Vec::new(),
+        removed_cut: false,
         removed_everywhere: HashSet::new(),
     };
     for &(pi, page_marks) in &groups {
@@ -431,7 +432,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
         redact_page_content(doc, &mut applying, pi, &page, &rects)?;
         remove_page_annotations(doc, &mut applying, &page, &rects, page_marks)?;
     }
-    let Applying { mut report, doomed_fields, doomed_xobjects, retired_properties, mut removed_everywhere, removed_text, .. } = applying;
+    let Applying { mut report, doomed_fields, doomed_xobjects, retired_properties, mut removed_everywhere, removed_text, removed_cut, .. } = applying;
 
     // 2b. Replies and pop-ups of a removed annotation can be listed on another page than their
     // parent: their `/IRT` or `/Parent` would keep the removed comment reachable.
@@ -534,7 +535,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
         return Err(RedactError::Residue(residue));
     }
     // 6. The document's metadata must not keep what the pages no longer show (#2448).
-    report.metadata = metadata::scrub(doc, &removed_text)?;
+    report.metadata = metadata::scrub(doc, &removed_text, !removed_cut)?;
     // The previous revision still holds the removed content: the next save must rewrite.
     doc.require_full_save();
     Ok(report)
@@ -551,6 +552,8 @@ struct Applying {
     removed_everywhere: HashSet<ObjRef>,
     /// The text of the removed glyphs, for the metadata check at the end.
     removed_text: Vec<String>,
+    /// Some removed text was too long to keep whole for that check.
+    removed_cut: bool,
 }
 
 /// Step 1 for one page: rewrites its content so nothing readable stays under a mark, and cleans the tags it no longer shows.
@@ -561,7 +564,7 @@ fn redact_page_content(
     page: &pdfcraft_model::Page,
     rects: &[[f64; 4]],
 ) -> Result<(), RedactError> {
-    let Applying { report, doomed_xobjects, retired_properties, removed_text, .. } = applying;
+    let Applying { report, doomed_xobjects, retired_properties, removed_text, removed_cut, .. } = applying;
     // 1. Content.
     let mut budget = pdfcraft_cos::DecodeBudget::page();
     let (list, data) = page_streams_within(doc, &page.dict, pi, &mut budget)?;
@@ -571,6 +574,7 @@ fn redact_page_content(
         let out = process(doc, &mut scope, &data, &resources, pdfcraft_content::Matrix::IDENTITY);
         scope.flush();
         removed_text.append(&mut scope.removed_text);
+        *removed_cut |= scope.removed_cut;
         out
     };
     // Fail closed: the interpreter lays vertical-writing text out horizontally, so it cannot

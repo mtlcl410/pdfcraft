@@ -136,8 +136,10 @@ fn redacted_text_does_not_survive_in_info_or_xmp() {
     mark(&mut doc, 0, &[[55.0, 95.0, 90.0, 110.0]], "");
     let r = apply(&mut doc, None).unwrap();
     assert_eq!((r.glyphs, r.metadata), (7, 3), "{r:?}");
-    let bytes = write_full(&doc, &SaveOptions::default()).unwrap();
+    // Without object streams, so the byte search below can see the `/Info` dictionary.
+    let bytes = write_full(&doc, &SaveOptions { object_streams: false, ..SaveOptions::default() }).unwrap();
     let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
+    assert!(has(b"Ada Lovelace"), "the kept /Info entry is visible to the search");
     assert!(!has(b"bluefin") && !has(b"Blue&#x46;in"), "the redacted word survived in the metadata");
     let saved = Document::open(Arc::new(bytes)).unwrap();
     let info = saved.trailer().get(b"Info").and_then(|i| saved.resolve(i).as_dict().cloned()).unwrap();
@@ -169,6 +171,90 @@ fn an_info_value_inside_the_redacted_text_goes() {
     let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
     assert!(!info.contains(b"Author"), "the author's name was redacted from the page");
     assert!(info.contains(b"Subject") && info.contains(b"Producer"));
+}
+
+/// One page showing `content`, with `/Info` `info` and catalog XMP whose `rdf:RDF` holds
+/// `xmp_body`.
+fn with_metadata(content: &[u8], info: &str, xmp_body: &str) -> Document {
+    let xmp = format!(
+        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">{xmp_body}</rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#
+    );
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /Metadata 7 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+        stream("", content),
+        FONT.replace("95 0 R", "6 0 R").into_bytes(),
+        widths(),
+        stream("/Type /Metadata /Subtype /XML", xmp.as_bytes()),
+        info.as_bytes().to_vec(),
+    ];
+    Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry("/Info 8 0 R").build())).unwrap()
+}
+
+fn info_keys(doc: &Document) -> Vec<String> {
+    let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
+    info.iter().map(|(k, _)| String::from_utf8_lossy(k).into_owned()).collect()
+}
+
+fn has_xmp(doc: &Document) -> bool {
+    doc.get(doc.root().unwrap()).as_dict().is_some_and(|c| c.contains(b"Metadata"))
+}
+
+/// Letter-spaced text (character spacing wider than a word gap between plain glyphs) is still
+/// one word, so `/Title (Bluefin)` goes when "B L U E F I N" is redacted (#2539 review).
+#[test]
+fn letter_spaced_redacted_text_still_matches_metadata() {
+    let body = r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Bluefin</dc:title></rdf:Description>"#;
+    let mut doc = with_metadata(b"BT /F1 10 Tf 3 Tc 10 100 Td (BLUEFIN) Tj ET", "<< /Title (Bluefin) /Producer (Test) >>", body);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.metadata, 2, "{r:?}");
+    assert_eq!(info_keys(&doc), ["Producer"]);
+    assert!(!has_xmp(&doc));
+}
+
+/// An XMP value that is part of the removed text goes, as an `/Info` value does, though its
+/// words are too short to be terms ("J. Li"). Values are compared as whole words, so "True"
+/// doesn't go with "untrue", and namespace URIs and the `xpacket` wrapper aren't searched, so
+/// redacting "Adobe … end" keeps a packet declared under `adobe:ns:meta/` and closed by
+/// `<?xpacket end="w"?>`.
+#[test]
+fn xmp_values_inside_the_redacted_text_go_as_whole_words() {
+    let creator = r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>J. Li</dc:creator></rdf:Description>"#;
+    let mut doc = with_metadata(b"BT /F1 10 Tf 10 100 Td (Prepared by J. Li) Tj ET", "<< /Producer (Test) >>", creator);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.metadata, 1, "{r:?}");
+    assert!(!has_xmp(&doc), "the packet named J. Li");
+
+    let trapped = r#"<rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/" pdf:Trapped="True"/>"#;
+    let mut doc = with_metadata(b"BT /F1 10 Tf 10 100 Td (Adobe said untrue at the end) Tj ET", "<< /Subject (True) /Producer (Test) >>", trapped);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.metadata, 0, "{r:?}");
+    assert!(has_xmp(&doc));
+    assert_eq!(info_keys(&doc), ["Subject", "Producer"]);
+}
+
+/// When the removed text was too much to collect, what wasn't collected can't be searched for:
+/// every `/Info` string and the XMP go (fail-closed), even though the runs that were kept match
+/// nothing.
+#[test]
+fn metadata_is_cleared_when_the_removed_text_was_cut_short() {
+    // More separate runs of one letter than are kept: each `A` is too far from the last to join.
+    let mut content = b"BT /F1 10 Tf 10 100 Td".to_vec();
+    for _ in 0..50_001 {
+        content.extend_from_slice(b" (A) Tj 30 0 Td (A) Tj -30 0 Td");
+    }
+    content.extend_from_slice(b" ET");
+    let body = r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Annual figures</dc:title></rdf:Description>"#;
+    let mut doc = with_metadata(&content, "<< /Title (Annual figures) /Producer (Test) /Trapped /False >>", body);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert_eq!(r.metadata, 3, "{r:?}");
+    assert_eq!(info_keys(&doc), ["Trapped"], "strings go, the name stays");
+    assert!(!has_xmp(&doc));
 }
 
 /// A value shorter than the redacted sentence goes from XMP too, in a custom schema's element or
@@ -241,12 +327,29 @@ fn metadata_terms_and_xmp_text() {
     // Runs of two letters or digits or more are matched whole, and by their words of three or
     // more, ignoring case and spacing.
     let t = metadata::terms(&["John  Smith".into(), "7".into(), "of".into(), "A-12".into()]);
-    assert_eq!(t, ["john smith", "john", "smith", "of", "a-12"]);
-    // XMP text is element content and attribute values, entities decoded; not names or comments.
-    let x = metadata::xml_text(r#"<dc:title a="x &amp; y"><!-- hidden --><rdf:li>R&#233;sum&eacute; <![CDATA[<raw>]]></rdf:li></dc:title>"#);
-    let words: Vec<&str> = x.split_whitespace().collect();
-    assert_eq!(words, ["x", "&", "y", "Résum&eacute;", "<raw>"]);
-    assert!(!x.contains("title") && !x.contains("hidden"));
+    assert_eq!(t.as_deref(), Some(&["john smith", "john", "smith", "of", "a-12"].map(String::from)[..]));
+    // A run too long to search for whole can't be matched: the caller clears everything.
+    assert_eq!(metadata::terms(&["x".repeat(5000)]), None);
+    // XMP values: element content, attribute values, CDATA, comments and processing instructions,
+    // entities decoded; not names, and not namespace declarations.
+    let x = metadata::xml_values(
+        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><?audit James Bond?><x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns="http://example.org/"><dc:title a="x &amp; y"><!-- hidden --><rdf:li>R&#233;sum&eacute; <![CDATA[<raw>]]></rdf:li></dc:title></x:xmpmeta>"#,
+    );
+    assert_eq!(x, ["audit James Bond", "x & y", " hidden ", "Résum&eacute; ", "<raw>"]);
+}
+
+/// XMP is decoded from UTF-8 or UTF-16, the latter also without a byte-order mark at the start
+/// (a packet's mark sits inside `<?xpacket begin="…"`); anything that isn't valid is not read.
+#[test]
+fn xmp_packets_decode_or_fail_closed() {
+    let text = "<?xpacket begin=\"\u{feff}\"?><a>Bond</a>";
+    let utf16 = |be: bool| text.encode_utf16().flat_map(|u| if be { u.to_be_bytes() } else { u.to_le_bytes() }).collect::<Vec<u8>>();
+    assert_eq!(metadata::decode_xmp(text.as_bytes()).as_deref(), Some(text));
+    assert_eq!(metadata::decode_xmp(&utf16(true)).as_deref(), Some(text));
+    assert_eq!(metadata::decode_xmp(&utf16(false)).as_deref(), Some(text));
+    assert_eq!(metadata::decode_xmp(&[[0xFF, 0xFE].as_slice(), &utf16(false)].concat()).as_deref(), Some(text));
+    assert_eq!(metadata::decode_xmp(b"<a>Bond \xE9</a>"), None, "Latin-1 isn't searched lossily");
+    assert_eq!(metadata::decode_xmp(&utf16(false)[1..]), None, "odd length");
 }
 
 #[test]
