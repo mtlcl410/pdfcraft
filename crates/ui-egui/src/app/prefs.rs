@@ -85,6 +85,7 @@ impl PdfCraftApp {
             "size": print_names::size_mode(self.print_draft.size),
             "custom_scale": self.print_draft.custom_scale,
             "comments_forms": print_names::content(self.print_draft.content),
+            "binding": print_names::binding(self.print_draft.binding),
         });
         let mut v = serde_json::json!({
             "side_panels": self.side_panels.to_json(self.left_open),
@@ -285,6 +286,10 @@ impl PdfCraftApp {
         }
         if let Some(content) = print["comments_forms"].as_str().and_then(print_names::parse_content) {
             draft.content = content;
+        }
+        // A booklet's binding side, as Acrobat keeps it (#2707).
+        if let Some(binding) = print["binding"].as_str().and_then(print_names::parse_binding) {
+            draft.binding = binding;
         }
         if let Some(defaults) = v["default_zoom"].as_str().and_then(|zoom| self.view_defaults.with_zoom(zoom)) {
             self.view_defaults = defaults;

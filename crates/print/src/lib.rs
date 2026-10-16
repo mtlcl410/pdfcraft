@@ -49,7 +49,7 @@ pub use sheets::{LABEL_MARGIN, MARGIN, Placement, Sheet, layout, matching_paper,
 /// Each `parse_*` returns `None` for an unknown name (settings and tool arguments are
 /// untrusted input; the caller keeps its default).
 pub mod names {
-    use super::{Content, SizeMode, spool::Duplex};
+    use super::{Binding, Content, SizeMode, spool::Duplex};
 
     /// Two-sided printing as `doc_print` names it: `None` leaves it to the printer (`printer`).
     pub fn duplex(duplex: Option<Duplex>) -> &'static str {
@@ -114,6 +114,22 @@ pub mod names {
         }
     }
 
+    /// A booklet's binding side.
+    pub fn binding(binding: Binding) -> &'static str {
+        match binding {
+            Binding::Left => "left",
+            Binding::Right => "right",
+        }
+    }
+
+    pub fn parse_binding(name: &str) -> Option<Binding> {
+        match name {
+            "left" => Some(Binding::Left),
+            "right" => Some(Binding::Right),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -129,6 +145,10 @@ pub mod names {
             for m in [SizeMode::Fit, SizeMode::Actual, SizeMode::Shrink, SizeMode::Custom(62.5)] {
                 assert_eq!(parse_size_mode(size_mode(m), 62.5), Some(m));
             }
+            for b in [Binding::Left, Binding::Right] {
+                assert_eq!(parse_binding(binding(b)), Some(b));
+            }
+            assert_eq!(parse_binding("Right"), None);
             assert_eq!(parse_duplex("Long-Edge"), None);
             assert_eq!(parse_content(""), None);
             assert_eq!(parse_size_mode("fit-to-page", 100.0), None);
