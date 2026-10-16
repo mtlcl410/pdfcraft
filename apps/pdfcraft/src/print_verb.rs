@@ -54,6 +54,8 @@ fn settings(sizes: &[(f64, f64)], labels: &[String]) -> Result<print::Settings, 
         orientation: Orientation::Auto,
         layout: Layout::default(),
         content: Content::DocumentAndMarkups,
+        // Not a label job, and printed as vectors (the dialog's defaults).
+        ..print::Settings::default()
     })
 }
 
