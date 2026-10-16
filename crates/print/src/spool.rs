@@ -19,11 +19,22 @@ pub(crate) fn missing_print_dll_in(system32: &std::path::Path) -> Option<&'stati
     PRINT_DLLS.into_iter().find(|dll| !system32.join(dll).is_file())
 }
 
+#[cfg(all(windows, test))]
+thread_local! {
+    /// Tests: the folder the print DLLs are looked for in, instead of the system's, so the
+    /// public entry points can be checked against a Windows that lacks them.
+    pub(crate) static SYSTEM32_FOR_TEST: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The first print DLL this Windows installation lacks. `None` when all are there, and when the
 /// system folder is unknown (the loader then decides, as before).
 fn missing_print_dll() -> Option<&'static str> {
     #[cfg(windows)]
     {
+        #[cfg(test)]
+        if let Some(dir) = SYSTEM32_FOR_TEST.with(|d| d.borrow().clone()) {
+            return missing_print_dll_in(&dir);
+        }
         let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir"))?;
         missing_print_dll_in(&std::path::Path::new(&root).join("System32"))
     }
