@@ -115,6 +115,12 @@ impl PdfCraftApp {
                         self.start_signing(page, None, None, (value == "certify").then_some(2));
                         Some(Dialog::Sign)
                     }
+                    "print" => {
+                        // Same path as the menu, so the printers and pages are seeded; nothing
+                        // with no document open.
+                        self.open_print();
+                        self.dialog
+                    }
                     "number-pages" => {
                         // Same path as the menu, so the page range is seeded.
                         self.execute("page.number");

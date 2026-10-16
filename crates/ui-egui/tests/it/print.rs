@@ -120,6 +120,20 @@ fn print_dialog_lays_out_sheets_and_saves_a_pdf() {
     let _ = std::fs::remove_file(out);
 }
 
+/// `--dialog print`, where `pdfcraft --print` sends a file it couldn't print unattended (#1695),
+/// opens the same dialog as the menu; with no document there is nothing to print and no dialog.
+#[test]
+fn the_print_option_opens_the_print_dialog_for_the_open_document() {
+    let mut h = harness();
+    h.state_mut().set_option("dialog", "print").unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().dialog, Some(Dialog::Print));
+    h.get_by_label("Sheet 1 of 1");
+    let mut empty = PdfCraftApp::new();
+    empty.set_option("dialog", "print").unwrap();
+    assert_eq!(empty.dialog, None);
+}
+
 /// Pages picked beforehand are what the dialog offers to print (Acrobat's "Selected pages").
 #[test]
 fn print_dialog_prints_the_selected_pages() {
