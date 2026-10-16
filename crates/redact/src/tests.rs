@@ -171,6 +171,51 @@ fn an_info_value_inside_the_redacted_text_goes() {
     assert!(info.contains(b"Subject") && info.contains(b"Producer"));
 }
 
+/// A value shorter than the redacted sentence goes from XMP too, in a custom schema's element or
+/// attribute, as from `/Info` (the regression #2598 suggested keeping): the packets holding it are
+/// removed, one that doesn't stays.
+#[test]
+fn a_shorter_value_in_custom_xmp_goes() {
+    let xmp = |body: &str| {
+        stream(
+            "/Type /Metadata /Subtype /XML",
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">{body}</rdf:RDF></x:xmpmeta>"#
+            )
+            .as_bytes(),
+        )
+    };
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /Metadata 7 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Metadata 8 0 R >>".to_vec(),
+        stream("", b"BT /F1 10 Tf 10 100 Td (JAMES BOND IS A SPY) Tj ET"),
+        FONT.replace("95 0 R", "6 0 R").into_bytes(),
+        widths(),
+        // 7: an element of a custom schema.
+        xmp(r#"<rdf:Description rdf:about="" xmlns:acme="https://example.org/acme/"><acme:Agent>James Bond</acme:Agent></rdf:Description>"#),
+        // 8: an attribute of a custom schema.
+        xmp(r#"<rdf:Description rdf:about="" xmlns:acme="https://example.org/acme/" acme:code="James Bond"/>"#),
+        // 9: a third packet, on no holder yet; swapped onto the page below to show a clean one stays.
+        xmp(r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Annual figures</dc:title></rdf:Description>"#),
+        b"<< /Author (James Bond) /Subject (Annual figures) >>".to_vec(),
+    ];
+    for (holder_of_8, expected) in [("8 0 R", 3), ("9 0 R", 2)] {
+        let objs: Vec<Vec<u8>> =
+            objs.iter().map(|o| String::from_utf8_lossy(o).replace("/Metadata 8 0 R", &format!("/Metadata {holder_of_8}")).into_bytes()).collect();
+        let mut doc = Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry("/Info 10 0 R").build())).unwrap();
+        mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+        let r = apply(&mut doc, None).unwrap();
+        assert_eq!(r.metadata, expected, "{holder_of_8}: {r:?}");
+        let catalog = doc.get(doc.root().unwrap()).as_dict().cloned().unwrap();
+        assert!(!catalog.contains(b"Metadata"), "the custom element named him");
+        let page_keeps = pdfcraft_model::pages(&doc)[0].dict.contains(b"Metadata");
+        assert_eq!(page_keeps, holder_of_8 == "9 0 R", "the attribute packet goes, a clean one stays");
+        let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
+        assert!(!info.contains(b"Author") && info.contains(b"Subject"), "the author goes, the unrelated subject stays");
+    }
+}
+
 /// The removed text is collected in runs by position, not by operator: glyphs shown one operator
 /// at a time still make one word, a gap makes a space, and separate marks make separate runs.
 #[test]
