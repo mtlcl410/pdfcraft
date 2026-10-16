@@ -110,6 +110,9 @@ pub(crate) struct Scope<'a> {
     /// glyphs (#2448), so the document's metadata can be checked for it. Call [`Scope::flush`]
     /// after processing to close the last run.
     pub removed_text: Vec<String>,
+    /// Some removed text was not kept (too many runs, or a run too long): the metadata check
+    /// can't search for it and must fail closed.
+    pub removed_cut: bool,
     /// The run being collected, and where its last glyph ended (device space) with its height.
     run: String,
     run_end: Option<((f64, f64), f64)>,
@@ -138,6 +141,7 @@ impl<'a> Scope<'a> {
             xobject_oc_cache: HashMap::new(),
             layer_blocks: 0,
             removed_text: Vec::new(),
+            removed_cut: false,
             run: String::new(),
             run_end: None,
             fonts: HashMap::new(),
@@ -151,8 +155,12 @@ impl<'a> Scope<'a> {
     pub fn flush(&mut self) {
         self.run_end = None;
         let run = std::mem::take(&mut self.run);
-        if !run.trim().is_empty() && self.removed_text.len() < MAX_RUNS {
-            self.removed_text.push(run);
+        if !run.trim().is_empty() {
+            if self.removed_text.len() < MAX_RUNS {
+                self.removed_text.push(run);
+            } else {
+                self.removed_cut = true;
+            }
         }
     }
 
@@ -172,6 +180,8 @@ impl<'a> Scope<'a> {
         }
         if self.run.len().saturating_add(text.len()) <= MAX_RUN_BYTES {
             self.run.push_str(text);
+        } else {
+            self.removed_cut = true;
         }
         self.run_end = Some((end, height));
     }
@@ -1204,7 +1214,10 @@ fn show(scope: &mut Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (V
                     };
                     if scope.mode == Mode::Apply && scope.hidden_text.is_none() {
                         if hit {
-                            let end = trm.apply(w0, 0.0);
+                            // The glyph ends after its character and word spacing, in `trm`'s
+                            // units (the size is in `trm`), so letter-spaced text stays one word.
+                            let spaced = if size != 0.0 { w0 + spacing / size } else { w0 };
+                            let end = trm.apply(spaced, 0.0);
                             let top = trm.apply(0.0, 1.0);
                             let height = (top.0 - origin.0).hypot(top.1 - origin.1);
                             scope.removed(f.text_of(code).as_deref().unwrap_or(""), origin, end, height);
