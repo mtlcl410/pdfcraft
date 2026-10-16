@@ -155,7 +155,7 @@ pub(crate) fn xml_values(xml: &str) -> Vec<String> {
             let end = body.find(stop).unwrap_or(body.len());
             let text = body.get(..end).unwrap_or("");
             // The packet wrapper's fixed `begin`/`id`/`end` would match words such as "end".
-            if !(start == "<?" && text.starts_with("xpacket")) {
+            if !(start == "<?" && text.split_whitespace().next() == Some("xpacket")) {
                 push(text.to_string());
             }
             rest = body.get(end.saturating_add(stop.len())..).unwrap_or("");
@@ -164,7 +164,10 @@ pub(crate) fn xml_values(xml: &str) -> Vec<String> {
         // Attribute values inside the tag, up to its closing `>` (which can't be inside quotes).
         let mut chars = tag.char_indices().skip(1);
         let mut end = tag.len();
+        // The attribute name being read, and the last one read before whitespace: XML allows
+        // whitespace around `=` (`xmlns:x = "…"`).
         let mut name = String::new();
+        let mut last = String::new();
         while let Some((i, c)) = chars.next() {
             match c {
                 '>' => {
@@ -179,14 +182,24 @@ pub(crate) fn xml_values(xml: &str) -> Vec<String> {
                         }
                         value.push(d);
                     }
-                    let declaration = name == "xmlns" || name.starts_with("xmlns:");
+                    let attr = if name.is_empty() { &last } else { &name };
+                    let declaration = attr == "xmlns" || attr.starts_with("xmlns:");
                     if !declaration {
                         push(unescape(&value));
                     }
                     name.clear();
+                    last.clear();
                 }
                 '=' => {}
-                c if c.is_whitespace() || c == '/' => name.clear(),
+                '/' => {
+                    name.clear();
+                    last.clear();
+                }
+                c if c.is_whitespace() => {
+                    if !name.is_empty() {
+                        last = std::mem::take(&mut name);
+                    }
+                }
                 c => name.push(c),
             }
         }
@@ -220,10 +233,8 @@ pub(crate) fn decode_xmp(bytes: &[u8]) -> Option<String> {
 /// The text values of an XMP stream, or `None` when it can't be read.
 fn xmp_values(doc: &Document, o: &Object) -> Option<Vec<String>> {
     let Object::Stream(s) = &*doc.resolve(o) else { return None };
-    let bytes = s.decoded().ok()?;
-    if bytes.len() > MAX_XMP_BYTES {
-        return None;
-    }
+    // Decoding stops at the cap, so a small stream that inflates hugely costs no more memory.
+    let bytes = s.decoded_within(MAX_XMP_BYTES).ok()?;
     decode_xmp(&bytes).map(|t| xml_values(&t))
 }
 

@@ -333,9 +333,11 @@ fn metadata_terms_and_xmp_text() {
     // XMP values: element content, attribute values, CDATA, comments and processing instructions,
     // entities decoded; not names, and not namespace declarations.
     let x = metadata::xml_values(
-        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><?audit James Bond?><x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns="http://example.org/"><dc:title a="x &amp; y"><!-- hidden --><rdf:li>R&#233;sum&eacute; <![CDATA[<raw>]]></rdf:li></dc:title></x:xmpmeta>"#,
+        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><?audit James Bond?><?xpacketAudit SECRET?><x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns="http://example.org/" xmlns:y = "adobe:ns:y/" b = "spaced"><dc:title a="x &amp; y"><!-- hidden --><rdf:li>R&#233;sum&eacute; <![CDATA[<raw>]]></rdf:li></dc:title></x:xmpmeta>"#,
     );
-    assert_eq!(x, ["audit James Bond", "x & y", " hidden ", "Résum&eacute; ", "<raw>"]);
+    // Only the `xpacket` wrapper itself is skipped, and a declaration is one with spaces around
+    // `=` too.
+    assert_eq!(x, ["audit James Bond", "xpacketAudit SECRET", "spaced", "x & y", " hidden ", "Résum&eacute; ", "<raw>"]);
 }
 
 /// XMP is decoded from UTF-8 or UTF-16, the latter also without a byte-order mark at the start
