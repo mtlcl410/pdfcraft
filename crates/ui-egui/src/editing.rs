@@ -29,6 +29,14 @@ pub struct PendingOverwrite {
     after: Box<dyn FnOnce(&mut PdfCraftApp) + Send>,
 }
 
+/// A save held back by [`Dialog::LockSignatures`](crate::Dialog::LockSignatures) (#2149).
+pub struct PendingLock {
+    pub id: pdfcraft_engine::DocId,
+    target: SaveTarget,
+    /// What was to run once the document is written (close its tab, quit).
+    after: Box<dyn FnOnce(&mut PdfCraftApp) + Send>,
+}
+
 /// Where Save writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveTarget {
@@ -473,12 +481,18 @@ impl PdfCraftApp {
     fn apply_queued_edit(&mut self, i: usize) -> bool {
         let Some(edit) = self.views.get_mut(i).and_then(|v| v.pending_edit.take()) else { return true };
         let signature_page = self.views.get_mut(i).and_then(|v| v.fill_signature_page.take());
+        let doc_id = self.views.get(i).map(|v| v.id);
         let committed = self.views.get_mut(i).and_then(|v| v.forms.committed.take());
         let typed = match (&edit, &committed) {
             (Edit::SetFieldValue { name, .. }, Some(draft)) => *name == draft.name,
             _ => false,
         };
         if self.apply_edit(edit) {
+            if signature_page.is_some()
+                && let Some(id) = doc_id
+            {
+                self.placed_signatures.insert(id);
+            }
             // Tab can wrap to the same field (including another widget of that field).
             // Its new editor was opened before this edit ran, so it still holds the old
             // value. Refresh from the accepted form before Save can commit that stale draft.
@@ -633,6 +647,13 @@ impl PdfCraftApp {
             return false;
         }
         let Some(id) = self.views.get(index).map(|v| v.id) else { return false };
+        // A signature just placed with Fill & Sign is a removable comment unless it is flattened:
+        // ask once whether to lock it into the page (#2149).
+        if self.ask_to_lock_signatures && !self.flatten_fill_sign_on_save && self.placed_signatures.contains(&id) {
+            self.pending_lock = Some(PendingLock { id, target, after: Box::new(after) });
+            self.dialog = Some(crate::Dialog::LockSignatures);
+            return false;
+        }
         let Some(doc) = self.session.get(id) else { return false };
         let (name, path) = (doc.name.clone(), doc.path.clone());
         #[cfg(not(target_arch = "wasm32"))]
@@ -741,6 +762,37 @@ impl PdfCraftApp {
         }
     }
 
+    /// The Lock signatures dialog answered (#2149): lock the document's Fill & Sign marks into
+    /// its pages first when `lock`, then save as was asked. With `remember`, the answer becomes
+    /// the preference (flatten on every save, or never ask again).
+    pub(crate) fn answer_lock_signatures(&mut self, lock: bool, remember: bool) {
+        let Some(p) = self.pending_lock.take() else { return };
+        self.placed_signatures.remove(&p.id);
+        if remember {
+            if lock {
+                self.flatten_fill_sign_on_save = true;
+            } else {
+                self.ask_to_lock_signatures = false;
+            }
+        }
+        if lock && !self.flatten_fill_sign_on_save {
+            let before = self.session.get(p.id).map(|d| d.edit_generation());
+            if let Err(e) = self.session.apply(p.id, Edit::FlattenFillSign) {
+                self.notify_error(e);
+                return;
+            }
+            if before != self.session.get(p.id).map(|d| d.edit_generation())
+                && let Some(doc) = self.session.get(p.id)
+                && let Some(view) = self.views.iter_mut().find(|v| v.id == p.id)
+            {
+                view.document_changed(&doc.info);
+            }
+        }
+        if let Some(index) = self.views.iter().position(|v| v.id == p.id) {
+            self.save_then(index, p.target, p.after);
+        }
+    }
+
     /// Write document `id` to `dest` and make it the document's file. Returns `true` if written.
     #[cfg(not(target_arch = "wasm32"))]
     fn save_doc_to(&mut self, id: pdfcraft_engine::DocId, dest: &str, target: SaveTarget) -> bool {
@@ -779,6 +831,7 @@ impl PdfCraftApp {
         match self.session.mark_saved(id, bytes, Some(dest.to_string())) {
             Ok(()) => {
                 self.forget_recovery(id);
+                self.placed_signatures.remove(&id);
                 if let Some(doc) = self.session.get(id)
                     && let Some(view) = self.views.iter_mut().find(|v| v.id == id)
                 {
