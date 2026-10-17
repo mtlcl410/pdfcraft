@@ -676,6 +676,26 @@ pub(crate) fn dropped_side_effects(ops: &[Op], i: usize, keep: bool, split_at: O
     ops.get(i).map(show_side_effects).unwrap_or_default()
 }
 
+/// For a paragraph or region rewrite: a numeric `TJ` per dropped show operator in `drop`, moving
+/// the text matrix as far as that operator's text did without drawing anything (as
+/// [`clear_block`] does). Text shown later in the same text object without its own `Td` or `Tm`,
+/// such as a run in another style or column on the same baseline, then stays where it was. An
+/// advance a `TJ` can't express (spacing at a zero font size) is left out.
+pub(crate) fn dropped_advances(doc: &Document, ops: &[Op], fonts: &Dict, drop: &std::collections::HashSet<usize>) -> HashMap<usize, Op> {
+    let mut out = HashMap::new();
+    for s in interpret(doc, ops, fonts, &mut HashMap::new(), &mut Carry::new(), None, None) {
+        if !drop.contains(&s.op) || s.advance == 0.0 {
+            continue;
+        }
+        let denominator = s.state.size * s.state.scale;
+        let adjustment = -1000.0 * s.advance / denominator;
+        if denominator != 0.0 && adjustment.is_finite() {
+            out.entry(s.op).or_insert_with(|| Op::new("TJ", vec![Object::Array(vec![pdfcraft_content::num(adjustment)])]));
+        }
+    }
+    out
+}
+
 /// Rewrite a page's content (its streams joined, see [`Pieces`]): `edit(i)` gives the operators
 /// to insert before operator `i` of `ops` (parsed from the joined pieces) and whether to keep it.
 /// Everything else is copied byte for byte. A page's streams are one stream in pieces, split
@@ -3052,10 +3072,12 @@ fn rewrite_block_from(
         block_ops.push(Op::new("Tm", emit.tlm.iter().map(|v| n(*v)).collect()));
     }
     let at = if split { start } else { emit.bt_op };
+    let mut advances = dropped_advances(doc, &ops, &fonts_res, &drop);
     let new_data = splice(&pieces, &ops, |i| {
         let mut insert = if i == at { std::mem::take(&mut block_ops) } else { Vec::new() };
         let keep = !drop.contains(&i);
         insert.extend(dropped_side_effects(&ops, i, keep, split.then_some(start)));
+        insert.extend(advances.remove(&i));
         (insert, keep)
     });
     let contents = rewritten_contents(doc, &streams, new_data);

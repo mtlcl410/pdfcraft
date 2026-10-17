@@ -6610,3 +6610,27 @@ fn rewriting_a_paragraph_drawn_with_quote_operators_keeps_their_line_move_and_sp
         }
     }
 }
+
+/// Each `Tj`/`TJ` moves the text matrix by the width of its text. A run shown later in the same
+/// text object without a `Td` or `Tm` of its own (a raised run in another colour, a column after
+/// a `TJ` gap) is placed by those advances. Rewriting the paragraph before it must keep them, as
+/// deleting a paragraph does: the run must not jump onto the new text.
+#[test]
+fn rewriting_a_paragraph_keeps_later_runs_on_its_baseline_in_place() {
+    let cases = [
+        ("BT /F1 12 Tf 72 700 Td (Target words) Tj 1 0 0 rg 3 Ts (Red) Tj ET", "Red"),
+        ("BT /F1 12 Tf 72 700 Td (Target words) Tj [-20000] TJ (Far) Tj ET", "Far"),
+    ];
+    for (content, run) in cases {
+        let original = text_page(content);
+        let place = |doc: &Document| text::text_lines(doc, 0).unwrap().into_iter().find(|l| l.text == run).map(|l| l.rect);
+        let before = place(&original).unwrap_or_else(|| panic!("{run} is a line of its own in {content}"));
+        let target = text::text_blocks(&original, 0).unwrap().iter().position(|b| b.text == "Target words").unwrap();
+        for draft in ["NEW TEXT", "NEW\nTEXT"] {
+            let mut doc = original.clone();
+            text::replace_block(&mut doc, 0, target, draft).unwrap();
+            let after = place(&reopen(&doc)).unwrap_or_else(|| panic!("{run} is gone: {content} with {draft:?}"));
+            assert!(after.iter().zip(before).all(|(a, b)| (a - b).abs() < 1e-6), "{content} with {draft:?}: {before:?} -> {after:?}");
+        }
+    }
+}
