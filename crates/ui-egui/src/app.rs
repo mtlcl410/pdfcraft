@@ -148,6 +148,8 @@ impl PdfCraftApp {
             password_prompt: None,
             document_copy: None,
             unlock_prompt: None,
+            pending_signed_edit: None,
+            signed_edits_confirmed: Default::default(),
             full_screen: false,
             inbox: Default::default(),
             startup_inbox: Default::default(),

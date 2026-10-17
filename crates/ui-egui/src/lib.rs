@@ -398,6 +398,10 @@ pub struct PdfCraftApp {
     /// Copy of a whole document's text (#2639) whose pages are being read off the UI thread.
     document_copy: Option<DocumentCopy>,
     pub unlock_prompt: Option<UnlockPrompt>,
+    /// The edit a signed document is asked about before its first change (`Dialog::SignedEdit`).
+    pub pending_signed_edit: Option<pdfcraft_engine::Edit>,
+    /// Signed documents whose first change was confirmed: later changes are not asked about again.
+    pub signed_edits_confirmed: std::collections::HashSet<DocId>,
     pub full_screen: bool,
     /// Files delivered asynchronously (web drag-and-drop, web file picker).
     pub inbox: Inbox,
