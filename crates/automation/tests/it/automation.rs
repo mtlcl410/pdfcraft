@@ -8424,3 +8424,86 @@ fn bookmark_list_reports_colour_and_style() {
     let re = ok(&mut b, "doc_open", json!({ "path": "restyled.pdf" }))["doc"].as_u64().unwrap();
     assert_eq!(style(&ok(&mut b, "bookmark_list", json!({ "doc": re }))["bookmarks"]), style(&set), "saved");
 }
+
+/// #3005: a table and a small signature drawn inside one transparency-group Form XObject (how
+/// HTML-to-PDF converters write a block with a translucent picture). Edit a PDF sees one piece
+/// of artwork and no text; `image_edit ungroup` draws it in place with the same pixels, its
+/// text becomes paragraphs that `text_edit` changes, and undo brings the form back.
+fn table_in_a_form_pdf() -> Vec<u8> {
+    let table = b"BT /F1 12 Tf 1 0 0 1 20 120 Tm (Revenue) Tj 1 0 0 1 120 120 Tm (153,300.00) Tj 1 0 0 1 20 100 Tm (Costs) Tj 1 0 0 1 120 100 Tm (382,110.00) Tj ET 0.6 G 0.5 w 15 115 m 220 115 l S";
+    // Two pictures with soft masks overlapping each other, the second also over the table's
+    // last cell: a translucent wash, and a picture whose corner pixels are see-through.
+    let inner = [&table[..], b" q 40 0 0 20 30 40 cm /Sig Do Q q 60 0 0 40 50 30 cm /Wash Do Q q 100 0 0 30 110 90 cm /Sig Do Q"].concat();
+    let rgb: Vec<u8> = std::iter::repeat_n([20u8, 60, 220], 16).flatten().collect();
+    let alpha: Vec<u8> = (0..16).map(|i| if i % 3 == 0 { 255 } else { 0 }).collect();
+    let page = b"q /Fm1 Do Q";
+    let stream = |dict: &str, data: &[u8]| [format!("{dict} /Length {} >>\nstream\n", data.len()).as_bytes(), data, b"\nendstream"].concat();
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 160] /Contents 4 0 R /Resources << /XObject << /Fm1 5 0 R >> >> >>".to_vec(),
+        stream("<<", page),
+        stream(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 240 160] /Group << /S /Transparency /CS /DeviceRGB >> /Resources << /Font << /F1 6 0 R >> /XObject << /Sig 7 0 R /Wash 9 0 R >> >>",
+            &inner,
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
+        stream("<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 8 0 R", &rgb),
+        stream("<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8", &alpha),
+        stream(
+            "<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 10 0 R",
+            &[230, 40, 40].repeat(4),
+        ),
+        stream("<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", &[128, 96, 160, 64]),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(o);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+#[test]
+fn ungrouping_a_table_drawn_in_a_form_makes_its_text_editable() {
+    let dir = workdir("ungroup");
+    std::fs::write(dir.join("table.pdf"), table_in_a_form_pdf()).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "table.pdf" }))["doc"].as_u64().unwrap();
+    let paragraphs = |a: &mut Automation| ok(a, "text_paragraphs", json!({ "doc": doc, "page": 1 }))["paragraphs"].as_array().unwrap().len();
+    let objects = |a: &mut Automation| ok(a, "object_list", json!({ "doc": doc, "page": 1 }))["objects"].as_array().unwrap().len();
+    assert_eq!((paragraphs(&mut a), objects(&mut a)), (0, 1), "one piece of artwork, no text");
+    let (w, h, before) = a.render_pixels(doc, 1, 2.0).unwrap();
+
+    ok(&mut a, "image_edit", json!({ "doc": doc, "page": 1, "image": 1, "action": "ungroup" }));
+    let (w2, h2, after) = a.render_pixels(doc, 1, 2.0).unwrap();
+    assert_eq!((w, h), (w2, h2));
+    let differing = before.as_ref().as_chunks::<4>().0.iter().zip(after.as_ref().as_chunks::<4>().0).filter(|(p, q)| p != q).count();
+    assert_eq!(differing, 0, "ungrouping draws the same pixels");
+    assert!(paragraphs(&mut a) >= 4, "the table's text is page text now");
+    let images = ok(&mut a, "page_images", json!({ "doc": doc, "page": 1 }));
+    let kinds: Vec<_> = images["images"].as_array().unwrap().iter().map(|i| i["kind"].clone()).collect();
+    assert_eq!(kinds, vec![json!("image"); 3], "the pictures are separate pictures now: {images}");
+
+    let list = ok(&mut a, "text_paragraphs", json!({ "doc": doc, "page": 1 }));
+    let target =
+        list["paragraphs"].as_array().unwrap().iter().find(|p| p["text"].as_str().is_some_and(|t| t.contains("382,110.00"))).unwrap()["paragraph"]
+            .clone();
+    ok(&mut a, "text_edit", json!({ "doc": doc, "page": 1, "paragraph": target, "text": "400,000.00" }));
+    let text = ok(&mut a, "text_extract", json!({ "doc": doc, "pages": [1] }));
+    let s = text.to_string();
+    assert!(s.contains("400,000.00") && !s.contains("382,110.00"), "{s}");
+
+    ok(&mut a, "edit_undo", json!({ "doc": doc }));
+    ok(&mut a, "edit_undo", json!({ "doc": doc }));
+    assert_eq!((paragraphs(&mut a), objects(&mut a)), (0, 1), "undo brings the form back");
+}
