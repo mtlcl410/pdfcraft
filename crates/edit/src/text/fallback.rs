@@ -599,3 +599,20 @@ pub(crate) fn source_show(metrics: &Metrics, text: &str, size: f64, space: f64, 
     }
     Ok(out)
 }
+
+/// `text` split into runs of words `metrics` can show (`true`) and words it can't (`false`), in
+/// order. A word is shown in one font, so a word with any character the font lacks goes to the
+/// substitute whole rather than switching fonts letter by letter. Spaces join the run they are
+/// in, since [`source_show`] draws spaces the font lacks with a displacement.
+pub(super) fn source_runs(metrics: &Metrics, text: &str) -> Vec<(bool, String)> {
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for (i, word) in text.split(' ').enumerate() {
+        let own = word.is_empty() || metrics.encode(word).is_some();
+        let piece = if i == 0 { word.to_string() } else { format!(" {word}") };
+        match runs.last_mut() {
+            Some((last, run)) if *last == own || word.is_empty() => run.push_str(&piece),
+            _ => runs.push((own, piece)),
+        }
+    }
+    runs
+}
