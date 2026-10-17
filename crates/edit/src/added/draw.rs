@@ -271,12 +271,30 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
     match c {
         Content::Text(t) => {
             let base = t.family.base_font(t.bold, t.italic);
-            let name = font_name(base);
+            // Central European letters (č ć đ ł ő …) the standard fonts have but WinAnsi has no
+            // code for get codes of their own in `/Differences` (#2098). Text that also needs a
+            // shaping face keeps plain WinAnsi for its Latin runs (see `first_undrawable`).
+            let latin = pdfcraft_fonts::LatinEncoding::for_text(&t.text);
+            let name = match &latin {
+                Some(e) => format!("{}L{}", font_name(base), e.tag()),
+                None => font_name(base),
+            };
             let mut font = Dict::new();
             font.set(b"Type".to_vec(), Object::name("Font"));
             font.set(b"Subtype".to_vec(), Object::name("Type1"));
             font.set(b"BaseFont".to_vec(), Object::name(base));
-            if t.family != Family::Courier || !t.text.is_ascii() {
+            if let Some(e) = &latin {
+                let mut differences = Vec::new();
+                for (code, glyph) in e.differences() {
+                    differences.push(Object::Int(i64::from(code)));
+                    differences.push(Object::name(glyph));
+                }
+                let mut encoding = Dict::new();
+                encoding.set(b"Type".to_vec(), Object::name("Encoding"));
+                encoding.set(b"BaseEncoding".to_vec(), Object::name("WinAnsiEncoding"));
+                encoding.set(b"Differences".to_vec(), Object::Array(differences));
+                font.set(b"Encoding".to_vec(), Object::Dict(encoding));
+            } else if t.family != Family::Courier || !t.text.is_ascii() {
                 font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
             }
             let mut fonts = Dict::new();
@@ -307,7 +325,7 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                 // Justified: word spacing makes every line of a paragraph but its last fill the box.
                 let (x, tw) = placed(t, r, &paragraphs, i, w, line.matches(' ').count(), false);
                 out.extend(format!("1 0 0 1 {} {} Tm {} Tw ", n(x), n(y), n(tw)).bytes());
-                out.extend(literal(&win_ansi(line)));
+                out.extend(literal(&latin.as_ref().map_or_else(|| win_ansi(line), |e| e.encode(line))));
                 out.extend_from_slice(b" Tj\n");
             }
             out.extend_from_slice(b"ET\n");
