@@ -1556,7 +1556,17 @@ pub(crate) fn popups(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, hi
                     {
                         // The same size on the page, at the new place.
                         let moved = Rect::from_min_size(at, placed.size());
-                        let cx = PageCx { page, xf: &xf, info, tool: QuickTool::Select, prefs: &CommentPrefs::default(), allowed, hidden };
+                        // Only converts the rectangle to user space: the redaction look is unused.
+                        let cx = PageCx {
+                            page,
+                            xf: &xf,
+                            info,
+                            tool: QuickTool::Select,
+                            prefs: &CommentPrefs::default(),
+                            allowed,
+                            hidden,
+                            redact_mark: ([0.0; 3], 1.0),
+                        };
                         let rect = cx.rect_to_user(moved);
                         if at.distance(placed.left_top()) >= 2.0 {
                             edits.push(Edit::SetAnnotationPopup { page, index: a.index, rect: Some(rect), open: None });
