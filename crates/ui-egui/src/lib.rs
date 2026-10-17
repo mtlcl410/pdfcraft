@@ -321,6 +321,11 @@ pub enum Dialog {
     Revert,
     /// Save over a file that changed on disk since the document came from it (#2166).
     OverwriteChanged,
+    /// The first change to a signed document asks first (#2168); the edit waits in
+    /// `PdfCraftApp::pending_signed_edit`.
+    SignedEdit,
+    /// Protect ▸ Remove security confirmation (#2168).
+    RemoveSecurity,
     /// Link Properties.
     LinkProps,
     /// Organize ▸ Extract (options), Rotate Pages.
@@ -621,6 +626,10 @@ pub struct PdfCraftApp {
     app_frame_shown: Option<bool>,
     pub password_prompt: Option<PasswordPrompt>,
     pub unlock_prompt: Option<UnlockPrompt>,
+    /// The edit a signed document is asked about before its first change (`Dialog::SignedEdit`).
+    pub pending_signed_edit: Option<pdfcraft_engine::Edit>,
+    /// Signed documents whose first change was confirmed: later changes are not asked about again.
+    pub signed_edits_confirmed: std::collections::HashSet<DocId>,
     pub full_screen: bool,
     /// Files delivered asynchronously (web drag-and-drop, web file picker).
     pub inbox: Inbox,
@@ -1007,6 +1016,8 @@ impl PdfCraftApp {
             app_frame_shown: None,
             password_prompt: None,
             unlock_prompt: None,
+            pending_signed_edit: None,
+            signed_edits_confirmed: Default::default(),
             full_screen: false,
             inbox: Default::default(),
             startup_inbox: Default::default(),

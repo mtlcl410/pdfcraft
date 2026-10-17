@@ -42,6 +42,15 @@ impl PdfCraftApp {
     /// Apply an edit to the active document. Returns `true` on success; failures are shown.
     pub fn apply_edit(&mut self, edit: Edit) -> bool {
         let Some((i, id)) = self.active_ids() else { return false };
+        // The first change to a signed document asks first (#2168): the signatures stay valid
+        // for the version they signed, but viewers show that the document was changed after
+        // signing, and a certified document may allow only some changes. Once confirmed, the
+        // document's later changes are not asked about again. The edit waits for the answer.
+        if !self.signed_edits_confirmed.contains(&id) && self.session.get(id).is_some_and(|d| d.signatures.iter().any(|s| s.signed)) {
+            self.pending_signed_edit = Some(edit);
+            self.dialog = Some(crate::Dialog::SignedEdit);
+            return false;
+        }
         let label = edit.label();
         let (form_before, page_count_before, had_xfa) = if let Some(d) = self.session.get(id) {
             (Some(std::sync::Arc::clone(&d.form)), d.info.pages.len(), d.xfa.is_some())
