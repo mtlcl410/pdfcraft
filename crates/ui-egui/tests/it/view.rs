@@ -2102,3 +2102,44 @@ fn full_screen_clicks_turn_pages_whatever_tool_was_on() {
     assert!(!h.state().full_screen);
     assert_eq!(h.state().quick_tool, QuickTool::Hand, "the tool from before is back");
 }
+
+/// A one-page PDF whose content inflates past the renderer's per-stream limit (#623): a window
+/// of whitespace the interpreter can never complete, so the page is cut and says so.
+fn cut_content_pdf() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    let chunk = vec![0u8; 1 << 20];
+    for _ in 0..288 {
+        z.write_all(&chunk).unwrap();
+    }
+    let stream = z.finish().unwrap();
+    let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 4 0 R >> endobj\n".to_vec();
+    pdf.extend_from_slice(format!("4 0 obj << /Filter /FlateDecode /Length {} >> stream\n", stream.len()).as_bytes());
+    pdf.extend_from_slice(&stream);
+    pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+/// A page whose content was cut at the renderer's limits is named in a notice, and listed for
+/// automation, instead of looking complete (#623).
+#[test]
+fn a_page_whose_content_was_cut_is_named_in_a_notice() {
+    use egui_kittest::kittest::Queryable;
+    let _gpu = gpu();
+    let pdf = cut_content_pdf();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("cut.pdf", None, pdf).expect("opens");
+        app
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while h.state().views[0].cut_pages().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the cut page was never reported; errors={:?}", h.state().views[0].page_errors());
+        h.run_steps(2);
+    }
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].cut_pages(), [0]);
+    assert!(h.state().views[0].page_errors().is_empty(), "a cut page still draws");
+    h.get_by_label_contains("Page 1 holds more content than PdfCraft can read");
+}
