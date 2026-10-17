@@ -4,7 +4,7 @@ use super::fallback::{
     source_program_completes, source_show, source_space, source_width, type3_encode, type3_font,
 };
 use super::interp::{Carry, Origin, TextState, interpret};
-use super::lines::{content_streams, dropped_side_effects, page_dict, rewritten_contents, show_side_effects, splice, text_lines};
+use super::lines::{content_streams, dropped_advances, dropped_side_effects, page_dict, rewritten_contents, show_side_effects, splice, text_lines};
 use super::{
     Dict, Document, EditError, HashMap, Matrix, Metrics, Object, Op, PdfString, Pieces, TextLine, TextSession, alignment_frame, group_blocks,
     is_centred, parse, rewrite_styled_block,
@@ -933,10 +933,12 @@ pub(crate) fn rewrite_block_from(
         block_ops.push(Op::new("Tm", emit.tlm.iter().map(|v| n(*v)).collect()));
     }
     let at = if split { start } else { emit.bt_op };
+    let mut advances = dropped_advances(doc, &ops, &res, &dropped)?;
     let new_data = splice(&pieces, &ops, |i| {
         let mut insert = if i == at { std::mem::take(&mut block_ops) } else { Vec::new() };
         let keep = !dropped.contains(&i);
         insert.extend(dropped_side_effects(&ops, i, keep, split.then_some(start)));
+        insert.extend(advances.remove(&i));
         (insert, keep)
     });
     let contents = rewritten_contents(doc, &streams, new_data);
