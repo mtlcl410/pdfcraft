@@ -14,6 +14,16 @@ impl PdfCraftApp {
     ///
     /// This is the seed of the UI control channel (M3.9): the same verbs become `ui.set` calls.
     pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), String> {
+        if key == "print-file" {
+            // The file's Print dialog, now if it is open, else once it opens.
+            let open =
+                self.views.iter().map(|v| v.id).find(|id| self.session.get(*id).and_then(|d| d.path.as_deref()).is_some_and(|p| same_file(p, value)));
+            match open {
+                Some(id) => self.print_queue.push_back(id),
+                None => self.print_files.push(value.to_string()),
+            }
+            return Ok(());
+        }
         let view = self.active.and_then(|i| self.views.get_mut(i));
         match (key, view) {
             ("language", _) => {

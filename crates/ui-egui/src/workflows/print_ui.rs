@@ -132,6 +132,21 @@ impl Drop for WakeOnExit {
 }
 
 impl PdfCraftApp {
+    /// The next document waiting for its Print dialog (`--print-file`) gets it, once nothing
+    /// else is being asked: one dialog at a time, each for its own document.
+    pub(crate) fn open_queued_print(&mut self) {
+        if self.dialog.is_some() || self.password_prompt.is_some() {
+            return;
+        }
+        while let Some(id) = self.print_queue.pop_front() {
+            if let Some(i) = self.views.iter().position(|v| v.id == id) {
+                self.active = Some(i);
+                self.open_print();
+                return;
+            }
+        }
+    }
+
     pub fn open_print(&mut self) {
         let Some((i, _)) = self.active_ids() else { return };
         let (printers, printers_loading) = match self.printer_source.clone() {

@@ -256,6 +256,12 @@ impl PdfCraftApp {
         activate: bool,
     ) -> Result<DocId, String> {
         let id = self.session.commit_open(prepared);
+        if let Some(p) = &path
+            && let Some(at) = self.print_files.iter().position(|f| same_file(f, p))
+        {
+            self.print_files.remove(at);
+            self.print_queue.push_back(id);
+        }
         self.password_prompt = None;
         // The reading-colours preference is app-wide: a newly opened document starts with it.
         // Idempotent: the engine returns `false` when the document has the setting already.

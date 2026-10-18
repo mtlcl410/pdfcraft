@@ -268,7 +268,9 @@ fn main() -> eframe::Result {
         if leftover.is_empty() {
             return Ok(());
         }
-        options.push(("dialog".into(), "print".into()));
+        // Each file gets its own Print dialog once it is open (a file that asks for a password
+        // too, after it is entered), one after another.
+        options.extend(single_instance::absolute(&leftover).into_iter().map(|f| ("print-file".to_string(), f)));
         leftover
     } else {
         files
