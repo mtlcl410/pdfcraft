@@ -1134,6 +1134,34 @@ fn files_and_quit_from_the_operating_system() {
     assert!(closing);
 }
 
+/// #585: File Explorer's "Combine files in PdfCraft" starts one launch per selected file, and the
+/// running PdfCraft collects them (an `OsEvent::Combine` each) into its Combine files tab.
+#[test]
+fn files_to_combine_from_the_operating_system() {
+    use pdfcraft_ui_egui::OsEvent;
+    let dir = std::env::temp_dir().join(format!("pdfcraft-os-combine-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths: Vec<String> = ["one.pdf", "two.pdf"]
+        .iter()
+        .map(|n| {
+            let p = dir.join(n);
+            std::fs::write(&p, FIXTURE).unwrap();
+            p.to_string_lossy().into_owned()
+        })
+        .collect();
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(vec![OsEvent::Combine(vec![paths[0].clone()])]));
+    let q = queue.clone();
+    let mut h = harness(move |app| app.os_events = Some(Box::new(move || q.borrow_mut().drain(..).collect())));
+    assert!(h.state().combine_showing(), "the Combine files tab shows");
+    assert!(h.state().views.is_empty(), "nothing opens as a document");
+    queue.borrow_mut().push(OsEvent::Combine(vec![paths[1].clone()]));
+    h.run_steps(3);
+    let _ = std::fs::remove_dir_all(&dir);
+    let names: Vec<_> = h.state().combine_draft.iter().map(|f| f.name.clone()).collect();
+    assert_eq!(names, ["one.pdf", "two.pdf"], "each launch's file joins the list, in order");
+    assert!(h.state().combine_showing() && h.state().views.is_empty());
+}
+
 #[test]
 fn default_workspace_mode_persists_and_tolerates_invalid_settings() {
     use pdfcraft_ui_egui::Mode;
