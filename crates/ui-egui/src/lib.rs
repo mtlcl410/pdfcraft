@@ -572,6 +572,8 @@ pub struct PdfCraftApp {
     pub ask_to_lock_signatures: bool,
     /// Documents with a signature or initials placed by Fill & Sign since they were last saved
     /// (or asked about).
+    /// Documents with a Fill & Sign signature placed since their last save, asked about on
+    /// saving (#2149). Not part of the recovery data: a recovered document isn't asked.
     pub(crate) placed_signatures: std::collections::HashSet<pdfcraft_engine::DocId>,
     /// A save waiting behind [`Dialog::LockSignatures`], and its Don't ask again box.
     pub(crate) pending_lock: Option<editing::PendingLock>,
@@ -2024,6 +2026,7 @@ impl PdfCraftApp {
             return;
         }
         let id = self.views.remove(index).id;
+        self.placed_signatures.remove(&id);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = self.session.get(id).and_then(|d| d.path.clone()) {
             if self.closed_tabs.len() == 10 {
