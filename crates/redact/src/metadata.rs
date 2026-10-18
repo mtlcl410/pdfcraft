@@ -124,8 +124,19 @@ fn unescape(s: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(rest.get(..at).unwrap_or(""));
         let tail = rest.get(at..).unwrap_or("");
-        // An entity ends within 12 bytes; looking further made a text of bare `&`s quadratic.
-        let end = tail.char_indices().take(13).find(|&(_, c)| c == ';').map(|(e, _)| e);
+        // A named entity ends within 12 bytes; looking further made a text of bare `&`s
+        // quadratic. A character reference may carry any number of leading zeros, so its digits
+        // are read to their end: each digit belongs to one `&` only, which keeps it linear.
+        let end = match tail.strip_prefix("&#") {
+            Some(digits) => {
+                let hex = digits.starts_with(['x', 'X']);
+                let from = 2 + usize::from(hex);
+                let run = tail.get(from..).unwrap_or("").bytes().take_while(|b| if hex { b.is_ascii_hexdigit() } else { b.is_ascii_digit() }).count();
+                let e = from + run;
+                (tail.as_bytes().get(e) == Some(&b';')).then_some(e)
+            }
+            None => tail.char_indices().take(13).find(|&(_, c)| c == ';').map(|(e, _)| e),
+        };
         let entity = end.and_then(|e| tail.get(1..e));
         let decoded = entity.and_then(|e| match e {
             "amp" => Some('&'),
@@ -135,8 +146,10 @@ fn unescape(s: &str) -> String {
             "apos" => Some('\''),
             _ => {
                 let n = match e.strip_prefix("#x").or_else(|| e.strip_prefix("#X")) {
-                    Some(h) => u32::from_str_radix(h, 16).ok(),
-                    None => e.strip_prefix('#').and_then(|d| d.parse().ok()),
+                    // Leading zeros dropped, so they can't overflow the number; `&#0;` isn't a
+                    // character XML allows, and stays as written.
+                    Some(h) => u32::from_str_radix(h.trim_start_matches('0'), 16).ok(),
+                    None => e.strip_prefix('#').and_then(|d| d.trim_start_matches('0').parse().ok()),
                 };
                 n.and_then(char::from_u32)
             }
