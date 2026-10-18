@@ -2739,18 +2739,26 @@ fn win_ansi_high_glyphs_use_helvetica_not_the_fallback_font() {
 
 /// #2378: a word the line's subset can't show goes to Helvetica, and only that word. The words
 /// it can show keep the source font (here `F2`, a subset of `a` and `b` without a space glyph),
-/// one font per word, and the line reads back whole and in place.
+/// one font per word, and the line reads back whole and in place: one line, in its own font, so
+/// editing it again replaces all of it (review on #2955), also when it starts with a substitute
+/// word.
 #[test]
 fn only_the_words_a_subset_cannot_show_are_substituted() {
     let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
     let r = text::replace_line(&mut doc, 0, 0, "ab ba cab ba").unwrap();
     assert_eq!(r.substituted.as_deref(), Some("Helvetica"));
-    let lines = text::text_lines(&reopen(&doc), 0).unwrap();
-    let runs: Vec<(&str, &str)> = lines.iter().map(|l| (l.text.trim(), l.font.as_str())).collect();
-    assert_eq!(runs, [("ab ba", "F2"), ("cab", "PCEdHelvetica"), ("ba", "F2")]);
-    // Each run starts where the one before it ends.
-    for pair in lines.windows(2) {
-        assert!(pair[1].rect[0] >= pair[0].rect[2] - 0.5, "{} overlaps {}", pair[1].text, pair[0].text);
+    let mut doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("/F2") && content.contains("/PCEdHelvetica"), "both fonts are used: {content}");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let read: Vec<(&str, &str)> = lines.iter().map(|l| (l.text.trim(), l.font.as_str())).collect();
+    assert_eq!(read, [("ab ba cab ba", "F2")]);
+    for (text, first) in [("cab ab", "PCEdHelvetica"), ("ba cab", "F2")] {
+        text::replace_line(&mut doc, 0, 0, text).unwrap();
+        doc = reopen(&doc);
+        let lines = text::text_lines(&doc, 0).unwrap();
+        let read: Vec<(&str, &str)> = lines.iter().map(|l| (l.text.trim(), l.font.as_str())).collect();
+        assert_eq!(read, [(text, "F2")], "after replacing with {text:?} (starting with {first})");
     }
 }
 

@@ -127,6 +127,9 @@ pub struct TextLine {
     /// Chinese/Japanese word split), from `/PCSoft`'s `/N`; 1 when the marker carried none
     /// (#2529). Meaningless otherwise.
     soft_gap: usize,
+    /// The `/PCEdLine` marked-content sequence a replacement mixing fonts wrote the line in
+    /// (see [`fallback::continues_font`]).
+    edited: Option<usize>,
 }
 
 impl TextLine {

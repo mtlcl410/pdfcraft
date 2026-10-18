@@ -129,6 +129,8 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
                 match mixed {
                     Some(runs) => {
                         let space = font.as_ref().map_or(0.33, |m| source_space(doc, &fonts_res, m));
+                        // Marked as one line, so it reads back as one (see `continues_font`).
+                        replacement.push(Op::new("BMC", vec![Object::name("PCEdLine")]));
                         for (own, run) in runs {
                             if own {
                                 replacement.push(Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
@@ -147,6 +149,7 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
                                 replacement.push(Op::new("Tj", vec![Object::String(PdfString::literal(pdfcraft_fonts::win_ansi(&run)))]));
                             }
                         }
+                        replacement.push(Op::new("EMC", Vec::new()));
                     }
                     None => {
                         replacement.push(Op::new("Tf", vec![Object::name(&substitute_name), pdfcraft_content::num(size)]));
