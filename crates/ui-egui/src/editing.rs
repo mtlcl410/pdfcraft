@@ -116,7 +116,7 @@ impl PdfCraftApp {
         // signing, and a certified document may allow only some changes. Once confirmed, the
         // document's later changes are not asked about again. The edit waits for the answer.
         if !self.signed_edits_confirmed.contains(&id) && self.session.get(id).is_some_and(|d| d.signatures.iter().any(|s| s.signed)) {
-            self.pending_signed_edit = Some(edit);
+            self.pending_signed_edit = Some((id, edit));
             self.dialog = Some(crate::Dialog::SignedEdit);
             return false;
         }
@@ -614,7 +614,10 @@ impl PdfCraftApp {
         if self.apply_edit(edit) {
             return true;
         }
-        if let Some(view) = self.views.get_mut(i) {
+        // Waiting on the signed-document question isn't a refusal: the edit holds the typing.
+        if !self.signed_edit_waits(id)
+            && let Some(view) = self.views.get_mut(i)
+        {
             let mut draft = draft;
             draft.request_focus = true;
             view.forms.focus = Some(draft);
@@ -622,9 +625,15 @@ impl PdfCraftApp {
         false
     }
 
-    /// Apply the edit queued on tab `i` (the active one). Returns false only when it was a
-    /// field's typing and the field refused it (#166): the editor reopens with the text, and the
-    /// user has been told why, so the typing isn't lost and the caller can stop.
+    /// Whether document `id`'s change waits on the signed-document question (`Dialog::SignedEdit`).
+    pub(crate) fn signed_edit_waits(&self, id: pdfcraft_engine::DocId) -> bool {
+        self.dialog == Some(crate::Dialog::SignedEdit) && self.pending_signed_edit.as_ref().is_some_and(|(p, _)| *p == id)
+    }
+
+    /// Apply the edit queued on tab `i` (the active one). Returns false when it was a field's
+    /// typing and the field refused it (#166): the editor reopens with the text, and the user has
+    /// been told why, so the typing isn't lost and the caller can stop. Also false while the edit
+    /// waits on the signed-document question, so a save doesn't go on without it.
     fn apply_queued_edit(&mut self, i: usize) -> bool {
         let Some(edit) = self.views.get_mut(i).and_then(|v| v.pending_edit.take()) else { return true };
         let signature_page = self.views.get_mut(i).and_then(|v| v.fill_signature_page.take());
@@ -661,6 +670,9 @@ impl PdfCraftApp {
                 self.quick_tool = crate::QuickTool::Select;
             }
             return true;
+        }
+        if self.views.get(i).is_some_and(|v| self.signed_edit_waits(v.id)) {
+            return false;
         }
         if !typed {
             return true;

@@ -1300,8 +1300,11 @@ fn dialog_overwrite_changed(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut 
 fn dialog_signed_edit(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending) -> bool {
     // The strictest certification among the signed signatures, if any.
     let certify = app
-        .active_ids()
-        .and_then(|(_, id)| app.session.get(id))
+        .pending_signed_edit
+        .as_ref()
+        .map(|(id, _)| *id)
+        .or_else(|| app.active_ids().map(|(_, id)| id))
+        .and_then(|id| app.session.get(id))
         .and_then(|d| d.signatures.iter().filter(|s| s.signed).filter_map(|s| s.certify).min());
     ui.label(egui::RichText::new(tl!("Change a signed document?")).font(theme::semibold(18.0)));
     ui.add_space(8.0);
@@ -1724,15 +1727,21 @@ fn finish_requests(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, re
         app.pending_overwrite = None;
     }
     if req.signed_edit_now {
-        if let Some((_, id)) = app.active_ids() {
+        if let Some((id, e)) = app.pending_signed_edit.take() {
             app.signed_edits_confirmed.insert(id);
+            // The edit is the asking document's, which may not be the active tab any more.
+            if let Some(i) = app.views.iter().position(|v| v.id == id) {
+                app.active = Some(i);
+                app.apply_edit(e);
+            }
+            if let Some(resume) = app.resume_after_signed_edit.take() {
+                resume(app);
+            }
         }
-        if let Some(e) = app.pending_signed_edit.take() {
-            app.apply_edit(e);
-        }
-    } else if req.close {
-        // Cancelled (or closed any other way): the change is not made.
+    } else if dialog == Dialog::SignedEdit && (req.close || modal_closed) {
+        // Cancelled (or closed any other way): the change is not made, nor what waited on it.
         app.pending_signed_edit = None;
+        app.resume_after_signed_edit = None;
     }
     if req.remove_security_now && app.apply_edit(Edit::RemoveProtection) {
         app.notify_tr("Security will be removed when you save");
@@ -1916,7 +1925,14 @@ fn finish_edits(app: &mut PdfCraftApp, dialog: Dialog, req: &mut Pending) {
 fn finish_close(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, req: &mut Pending) {
     // Protect / Remove security replace the Properties dialog.
     let replaces = req.link_command.is_some_and(|c| c.starts_with("protect.")) || req.open_revision.is_some();
-    if modal_closed || req.close || replaces {
+    // An action of this dialog was the first change to a signed document: its question takes
+    // the dialog's place, rather than being closed with it.
+    let asked = dialog != Dialog::SignedEdit && app.dialog == Some(Dialog::SignedEdit);
+    if asked {
+        app.props_draft = None;
+        app.view_draft = None;
+        app.bulk_field_props = None;
+    } else if modal_closed || req.close || replaces {
         app.dialog = None;
         app.props_draft = None;
         app.view_draft = None;

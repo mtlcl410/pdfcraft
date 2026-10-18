@@ -149,6 +149,7 @@ impl PdfCraftApp {
             document_copy: None,
             unlock_prompt: None,
             pending_signed_edit: None,
+            resume_after_signed_edit: None,
             signed_edits_confirmed: Default::default(),
             full_screen: false,
             inbox: Default::default(),
