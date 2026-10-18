@@ -7105,6 +7105,141 @@ fn ungroup_looks_for_blend_modes_where_they_are_used() {
     assert!(!attempt(b"/Inner Do", Some((b"", "Inner")), true), "a nested form that draws itself");
 }
 
+/// Ungroup the form `Art` drawn by fixture page 1, with `content` and `resources`, as a
+/// transparency group or not; `build` adds what the resources refer to first.
+fn ungroup_art(content: &[u8], group: bool, build: impl FnOnce(&mut Document) -> Dict) -> Result<(), EditError> {
+    let mut doc = fixture();
+    let res = build(&mut doc);
+    let mut form = Dict::new();
+    form.set(b"Subtype".to_vec(), Object::name("Form"));
+    form.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+    if group {
+        let mut g = Dict::new();
+        g.set(b"S".to_vec(), Object::name("Transparency"));
+        form.set(b"Group".to_vec(), Object::Dict(g));
+    }
+    form.set(b"Resources".to_vec(), Object::Dict(res));
+    let artwork = doc.add(Object::Stream(Stream::flate(form, content)));
+    doc.update_dict(pdfcraft_cos::ObjRef::new(6, 0), |d| {
+        let mut xo = Dict::new();
+        xo.set(b"Art".to_vec(), Object::Ref(artwork));
+        d.set(b"XObject".to_vec(), Object::Dict(xo));
+    })
+    .unwrap();
+    doc.set(pdfcraft_cos::ObjRef::new(7, 0), Object::Stream(Stream::flate(Dict::new(), b"q /Art Do Q")));
+    let mut doc = reopen(&doc);
+    images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup).map(|_| ())
+}
+
+/// #3067 review: a form whose marked content or text objects don't balance within its own
+/// stream is refused: inlined, an extra EMC would close what the page opened, and one left open
+/// would take in the page's later content.
+#[test]
+fn ungroup_refuses_unbalanced_marked_content_and_text_objects() {
+    assert!(ungroup_art(b"/P BMC BT ET EMC /Q <</MCID 0>> BDC EMC", false, |_| Dict::new()).is_ok(), "balanced");
+    for content in [&b"EMC"[..], b"/P BMC", b"/P <</MCID 0>> BDC", b"BT", b"ET", b"BT BT ET ET", b"BT EMC ET"] {
+        let r = ungroup_art(content, false, |_| Dict::new());
+        assert!(
+            matches!(r, Err(EditError::Invalid(ref m)) if m.contains("marked content") || m.contains("text object")),
+            "{}: {r:?}",
+            String::from_utf8_lossy(content)
+        );
+    }
+}
+
+/// #3067 review: inside a transparency group, painting with a pattern blends when a shading
+/// pattern's own graphics state does, or a tiling pattern's content does.
+#[test]
+fn ungroup_looks_for_blend_modes_in_patterns() {
+    let attempt = |shading_bm: Option<&str>, tiling_content: Option<&[u8]>| {
+        ungroup_art(b"/Pattern cs /P1 scn 0 0 10 10 re f", true, |doc| {
+            let mut states = Dict::new();
+            for (name, bm) in [("Mul", "Multiply"), ("Norm", "Normal")] {
+                let mut gs = Dict::new();
+                gs.set(b"BM".to_vec(), Object::name(bm));
+                states.set(name.as_bytes().to_vec(), Object::Dict(gs));
+            }
+            let pattern = match (shading_bm, tiling_content) {
+                (Some(bm), _) => {
+                    let mut gs = Dict::new();
+                    gs.set(b"BM".to_vec(), Object::name(bm));
+                    let mut p = Dict::new();
+                    p.set(b"PatternType".to_vec(), Object::Int(2));
+                    p.set(b"ExtGState".to_vec(), Object::Dict(gs));
+                    doc.add(Object::Dict(p))
+                }
+                (None, content) => {
+                    let mut p = Dict::new();
+                    p.set(b"PatternType".to_vec(), Object::Int(1));
+                    p.set(b"BBox".to_vec(), Object::Array([0, 0, 10, 10].map(Object::Int).to_vec()));
+                    let mut res = Dict::new();
+                    res.set(b"ExtGState".to_vec(), Object::Dict(states.clone()));
+                    p.set(b"Resources".to_vec(), Object::Dict(res));
+                    doc.add(Object::Stream(Stream::flate(p, content.unwrap_or_default())))
+                }
+            };
+            let mut patterns = Dict::new();
+            patterns.set(b"P1".to_vec(), Object::Ref(pattern));
+            let mut res = Dict::new();
+            res.set(b"Pattern".to_vec(), Object::Dict(patterns));
+            res
+        })
+    };
+    assert!(attempt(Some("Normal"), None).is_ok(), "a shading pattern without blending");
+    assert!(attempt(Some("Multiply"), None).is_err(), "a shading pattern that multiplies");
+    assert!(attempt(None, Some(b"/Norm gs 0 0 1 1 re f")).is_ok(), "a tiling pattern without blending");
+    assert!(attempt(None, Some(b"/Mul gs 0 0 1 1 re f")).is_err(), "a tiling pattern that multiplies");
+}
+
+/// #3067 review: a form drawn many times inside a group is read once (its answer is kept), so
+/// shared forms nested to the limit can't multiply the work; and the reads have a ceiling, past
+/// which the group counts as blending.
+#[test]
+fn ungroup_reads_each_nested_form_once_and_within_a_ceiling() {
+    // Six levels, each drawing the one below ten times: 10^6 reads without the cache.
+    let shared = ungroup_art(&b"/F Do ".repeat(10), true, |doc| {
+        let mut below: Option<pdfcraft_cos::ObjRef> = None;
+        for _ in 0..6 {
+            let mut d = Dict::new();
+            d.set(b"Subtype".to_vec(), Object::name("Form"));
+            d.set(b"BBox".to_vec(), Object::Array([0, 0, 10, 10].map(Object::Int).to_vec()));
+            let mut res = Dict::new();
+            let content = match below {
+                Some(r) => {
+                    let mut xo = Dict::new();
+                    xo.set(b"F".to_vec(), Object::Ref(r));
+                    res.set(b"XObject".to_vec(), Object::Dict(xo));
+                    b"/F Do ".repeat(10)
+                }
+                None => b"0 0 1 1 re f".to_vec(),
+            };
+            d.set(b"Resources".to_vec(), Object::Dict(res));
+            below = Some(doc.add(Object::Stream(Stream::flate(d, &content))));
+        }
+        let mut xo = Dict::new();
+        xo.set(b"F".to_vec(), Object::Ref(below.unwrap()));
+        let mut res = Dict::new();
+        res.set(b"XObject".to_vec(), Object::Dict(xo));
+        res
+    });
+    assert!(shared.is_ok(), "{shared:?}");
+    // 2000 different forms: more reads than the ceiling allows.
+    let many = ungroup_art(&(0..2000).map(|i| format!("/F{i} Do ")).collect::<String>().into_bytes(), true, |doc| {
+        let mut xo = Dict::new();
+        for i in 0..2000 {
+            let mut d = Dict::new();
+            d.set(b"Subtype".to_vec(), Object::name("Form"));
+            d.set(b"BBox".to_vec(), Object::Array([0, 0, 10, 10].map(Object::Int).to_vec()));
+            d.set(b"Resources".to_vec(), Object::Dict(Dict::new()));
+            xo.set(format!("F{i}").into_bytes(), Object::Ref(doc.add(Object::Stream(Stream::flate(d, b"0 0 1 1 re f")))));
+        }
+        let mut res = Dict::new();
+        res.set(b"XObject".to_vec(), Object::Dict(xo));
+        res
+    });
+    assert!(matches!(many, Err(EditError::Invalid(ref m)) if m.contains("blend")), "{many:?}");
+}
+
 /// A transparency group that draws a nested form whose content can't be read is refused: what
 /// it blends can't be known, so it isn't guessed.
 #[test]
