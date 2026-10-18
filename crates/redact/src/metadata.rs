@@ -26,8 +26,9 @@ const MAX_TERM_CHARS: usize = 4096;
 const MAX_TERMS: usize = 20_000;
 /// XMP packets larger than this, decoded, are removed without reading them.
 const MAX_XMP_BYTES: usize = 16 * 1024 * 1024;
-/// Text whose length times the number of terms exceeds this is treated as matching rather than
-/// searched (fail-closed), so a page of removed text against a large packet stays quick.
+/// The searching (text length times terms, or value length times removed text) one scrub may
+/// do in all; past it every entry and packet counts as matching (fail-closed), so a page of
+/// removed text against a large packet, or against very many small values, stays quick.
 const MAX_WORK: usize = 1 << 28;
 
 /// Lower-case `s` with every run of whitespace made one space, trimmed.
@@ -65,16 +66,41 @@ pub(crate) fn terms(removed: &[String]) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn mentions(text: &str, terms: &[String]) -> bool {
+/// The searching one scrub may do, across every `/Info` entry and XMP value: past it, each
+/// further question is answered "yes" (fail-closed), so a packet of many small values can't add
+/// up to more than one large one.
+struct Work(std::cell::Cell<usize>);
+
+impl Work {
+    fn new(limit: usize) -> Self {
+        Self(std::cell::Cell::new(limit))
+    }
+
+    /// Take `cost` from what is left; `false` (and nothing left) when it doesn't fit.
+    fn spend(&self, cost: usize) -> bool {
+        match self.0.get().checked_sub(cost) {
+            Some(left) => {
+                self.0.set(left);
+                true
+            }
+            None => {
+                self.0.set(0);
+                false
+            }
+        }
+    }
+}
+
+fn mentions(text: &str, terms: &[String], work: &Work) -> bool {
     let text = normalize(text);
-    text.len().saturating_mul(terms.len()) > MAX_WORK || terms.iter().any(|t| text.contains(t.as_str()))
+    !work.spend(text.len().saturating_mul(terms.len())) || terms.iter().any(|t| text.contains(t.as_str()))
 }
 
 /// Is `value` itself part of one of the removed `runs` (normalized), as whole words? It needs
 /// three letters or digits, so an entry such as "by" doesn't go with every sentence that
 /// contains it, and word boundaries, so an XMP value "True" doesn't go with "untrue". Too much
 /// text to search counts as part (fail-closed).
-fn within(value: &str, runs: &[String]) -> bool {
+fn within(value: &str, runs: &[String], work: &Work) -> bool {
     let value = normalize(value);
     if !significant(&value, 3) {
         return false;
@@ -88,7 +114,7 @@ fn within(value: &str, runs: &[String]) -> bool {
             !(word(before) && value.starts_with(char::is_alphanumeric)) && !(word(after) && value.ends_with(char::is_alphanumeric))
         })
     };
-    value.len().saturating_mul(total) > MAX_WORK || runs.iter().any(whole)
+    !work.spend(value.len().saturating_mul(total)) || runs.iter().any(whole)
 }
 
 /// Decode the five predefined XML entities and character references; anything else stays.
@@ -98,7 +124,8 @@ fn unescape(s: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(rest.get(..at).unwrap_or(""));
         let tail = rest.get(at..).unwrap_or("");
-        let end = tail.find(';').filter(|&e| e <= 12);
+        // An entity ends within 12 bytes; looking further made a text of bare `&`s quadratic.
+        let end = tail.char_indices().take(13).find(|&(_, c)| c == ';').map(|(e, _)| e);
         let entity = end.and_then(|e| tail.get(1..e));
         let decoded = entity.and_then(|e| match e {
             "amp" => Some('&'),
@@ -243,13 +270,24 @@ fn xmp_values(doc: &Document, o: &Object) -> Option<Vec<String>> {
 /// removed text was cut short; then, as when the terms themselves exceed their limits, every
 /// `/Info` string and every XMP stream goes. Returns how many entries and streams went.
 pub(crate) fn scrub(doc: &mut Document, removed: &[String], complete: bool) -> Result<usize, pdfcraft_cos::CosError> {
+    scrub_within(doc, removed, complete, MAX_WORK)
+}
+
+/// [`scrub`] with the searching it may do given, so tests can run out of it.
+pub(crate) fn scrub_within(doc: &mut Document, removed: &[String], complete: bool, limit: usize) -> Result<usize, pdfcraft_cos::CosError> {
     // `None` matches everything (fail-closed).
     let search = match terms(removed).filter(|_| complete) {
         Some(t) if t.is_empty() => return Ok(0),
-        Some(t) => Some((t, removed.iter().map(|r| normalize(r)).collect::<Vec<String>>())),
+        Some(t) => {
+            // The same run removed many times is searched for once.
+            let mut seen = HashSet::new();
+            let runs: Vec<String> = removed.iter().map(|r| normalize(r)).filter(|r| seen.insert(r.clone())).collect();
+            Some((t, runs))
+        }
         None => None,
     };
-    let hit = |text: &str| search.as_ref().is_none_or(|(terms, runs)| mentions(text, terms) || within(text, runs));
+    let work = Work::new(limit);
+    let hit = |text: &str| search.as_ref().is_none_or(|(terms, runs)| mentions(text, terms, &work) || within(text, runs, &work));
     let mut n = 0;
 
     // The information dictionary, direct in the trailer or an object of its own.
@@ -278,8 +316,8 @@ pub(crate) fn scrub(doc: &mut Document, removed: &[String], complete: bool) -> R
         let doomed = match xmp_values(doc, &xmp) {
             None => true,
             Some(values) => {
-                let words = |(terms, _): &(Vec<String>, Vec<String>)| mentions(&values.join(" "), terms);
-                let part = |(_, runs): &(Vec<String>, Vec<String>)| values.iter().any(|v| within(v, runs));
+                let words = |(terms, _): &(Vec<String>, Vec<String>)| mentions(&values.join(" "), terms, &work);
+                let part = |(_, runs): &(Vec<String>, Vec<String>)| values.iter().any(|v| within(v, runs, &work));
                 search.as_ref().is_none_or(|s| words(s) || part(s))
             }
         };

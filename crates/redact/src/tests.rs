@@ -257,6 +257,63 @@ fn metadata_is_cleared_when_the_removed_text_was_cut_short() {
     assert!(!has_xmp(&doc));
 }
 
+/// #2539 review: the searching a scrub may do is one budget for all of it, not a check per
+/// value: very many small `/Info` values each fit, but together they don't, and past the budget
+/// the rest counts as matching (fail-closed). With room to search, nothing that doesn't mention
+/// the removed text goes.
+#[test]
+fn metadata_search_has_one_budget_for_every_value() {
+    let entries: String = (0..50).map(|i| format!("/K{i} (an unrelated value number {i:02} in the list) ")).collect();
+    let info = format!("<< {entries}/Producer (Test) >>");
+    let fresh = || with_metadata(b"BT /F1 10 Tf 10 100 Td (Bluefin) Tj ET", &info, "");
+    let mut doc = fresh();
+    assert_eq!(metadata::scrub_within(&mut doc, &["Bluefin".into()], true, 1 << 28).unwrap(), 0, "room to search: nothing goes");
+    let mut doc = fresh();
+    // Each value costs about 40; fifty of them don't fit in 1000.
+    let n = metadata::scrub_within(&mut doc, &["Bluefin".into()], true, 1000).unwrap();
+    assert!(n > 20, "past the budget the rest goes ({n} went)");
+}
+
+/// #2539 review: an entity is looked for only in the 12 bytes after its `&`, so a packet of bare
+/// `&` characters is read in linear time, and decoding is unchanged.
+#[test]
+fn xml_entities_are_found_near_their_ampersand_only() {
+    assert_eq!(metadata::xml_values("<a>R&#233;sum&eacute; &amp; &#x41;&#65; &#1234567890123;</a>"), ["Résum&eacute; & AA &#1234567890123;"]);
+    let bare = "&".repeat(200_000);
+    let started = std::time::Instant::now();
+    let values = metadata::xml_values(&format!("<a>{bare}</a>"));
+    assert_eq!(values.concat().len(), bare.len());
+    eprintln!("200000 bare ampersands: {:?}", started.elapsed());
+}
+
+/// #2539 review: Apply removes a form XObject whole when it is nested past the depth limit (or
+/// its stream can't be decoded), without reading its text, so what it held is unknown: the
+/// metadata check fails closed.
+#[test]
+fn a_form_removed_unread_clears_the_metadata() {
+    // Forms 5..=20 each draw the next; the last one shows text. The page draws form 5.
+    let mut objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R >> >> >>".to_vec(),
+        stream("", b"q /Fm Do Q"),
+    ];
+    for n in 5..=20 {
+        objs.push(stream(
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Fm {} 0 R >> >>", n + 1),
+            b"q /Fm Do Q",
+        ));
+    }
+    objs.push(stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300]", b"0 g 10 10 50 50 re f"));
+    objs.push(b"<< /Title (Annual figures) /Producer (Test) >>".to_vec());
+    let info = objs.len();
+    let mut doc = Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry(&format!("/Info {info} 0 R")).build())).unwrap();
+    mark(&mut doc, 0, &[[0.0, 0.0, 300.0, 300.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    assert!(r.forms_removed >= 1, "{r:?}");
+    assert!(!info_keys(&doc).contains(&"Title".to_string()), "the deep form's text was never read: {:?}", info_keys(&doc));
+}
+
 /// A value shorter than the redacted sentence goes from XMP too, in a custom schema's element or
 /// attribute, as from `/Info` (the regression #2598 suggested keeping): the packets holding it are
 /// removed, one that doesn't stays.
