@@ -157,6 +157,7 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
         })
         .unwrap();
     let locked = pdfcraft_cos::write_full(&locked, &Default::default()).unwrap();
+    let locked_copy = locked.clone();
     let (pa, pb) = (a.clone(), b.clone());
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
         let mut app = PdfCraftApp::new();
@@ -187,6 +188,49 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
     h.state_mut().dialog = None;
     h.run_steps(3);
     assert_eq!(h.state().dialog, None, "no more");
+
+    // The other way round (review on #1723): the file that asks for its password comes first, so
+    // its dialog does too, though it is opened again only after the password, behind the other.
+    // Opened from files after the first frame, as a launch does, so both go through the
+    // background worker.
+    std::fs::write(&a, include_bytes!("../data/form.pdf")).unwrap();
+    std::fs::write(&b, &locked_copy).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app
+    });
+    h.run_steps(2);
+    h.state_mut().open_path(&b);
+    h.state_mut().open_path(&a);
+    h.state_mut().set_option("print-file", &b).unwrap();
+    h.state_mut().set_option("print-file", &a).unwrap();
+    for _ in 0..200 {
+        if h.state().password_prompt.is_some() {
+            break;
+        }
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h.run_steps(2);
+    assert!(h.state().password_prompt.is_some(), "b asks for its password");
+    let field = h.get_by_role(Role::PasswordInput);
+    field.focus();
+    field.type_text("pw");
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    for _ in 0..200 {
+        if h.state().dialog.is_some() && h.state().views.len() == 2 {
+            break;
+        }
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(printing(&h), (Some(Dialog::Print), Some(b.clone())), "b's dialog first, as asked");
+    h.state_mut().dialog = None;
+    h.run_steps(3);
+    assert_eq!(printing(&h), (Some(Dialog::Print), Some(a.clone())), "then a's");
+    let _ = (std::fs::remove_file(&a), std::fs::remove_file(&b));
 }
 
 /// Pages picked beforehand are what the dialog offers to print (Acrobat's "Selected pages").

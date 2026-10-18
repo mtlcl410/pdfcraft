@@ -18,10 +18,7 @@ impl PdfCraftApp {
             // The file's Print dialog, now if it is open, else once it opens.
             let open =
                 self.views.iter().map(|v| v.id).find(|id| self.session.get(*id).and_then(|d| d.path.as_deref()).is_some_and(|p| same_file(p, value)));
-            match open {
-                Some(id) => self.print_queue.push_back(id),
-                None => self.print_files.push(value.to_string()),
-            }
+            self.print_requests.push((value.to_string(), open));
             return Ok(());
         }
         let view = self.active.and_then(|i| self.views.get_mut(i));
