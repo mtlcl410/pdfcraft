@@ -7474,6 +7474,22 @@ fn images_pdf(xobjects: &str, content: &[u8], objects: &[(String, Vec<u8>)]) -> 
     out
 }
 
+/// #3069 review: a picture that shows nowhere (a soft mask below the opacity threshold
+/// everywhere: a faint watermark, a transparent placeholder) keeps its whole box, so it can still
+/// be picked to move or delete.
+#[test]
+fn a_picture_that_shows_nowhere_is_picked_by_its_whole_box() {
+    let objects = vec![
+        ("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R".to_string(), vec![0x80; 48]),
+        ("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8".to_string(), vec![8; 16]),
+    ];
+    let mut s = Session::new();
+    let id = s.open("faint.pdf", None, Arc::new(images_pdf("/Faint 5 0 R", b"q 100 0 0 100 20 20 cm /Faint Do Q", &objects)), None).unwrap();
+    let d = s.get(id).unwrap();
+    assert_eq!(d.page_image_at(0, [70.0, 70.0]), Some(0));
+    assert!(d.image_shows_at(&d.page_images(0)[0], [30.0, 110.0]));
+}
+
 /// Pictures are picked where they show. Overlapping pictures with transparent margins (a PNG
 /// signature over a table, cut-out photos side by side) give a click through the margin to the
 /// picture below; stencil images and colour-keyed pictures likewise. Pictures that can't be

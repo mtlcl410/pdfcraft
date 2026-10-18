@@ -6,7 +6,8 @@
 //! `/ImageMask`) gets an opacity grid of at most [`MAX_GRID`] cells a side, built once from its
 //! pixels and kept until the document changes. A cell counts as opaque if any pixel
 //! in it is: thin strokes and the edges of a shape stay easy to pick. Pictures without
-//! transparency, Form artwork, and pictures that can't be decoded keep their whole box.
+//! transparency, Form artwork, pictures that show nowhere and pictures that can't be decoded
+//! keep their whole box.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -33,7 +34,7 @@ pub(crate) struct Opacity {
 }
 
 /// Opacity grids by picture object, for the document generation they were built at; `None` for
-/// a picture that is opaque everywhere or couldn't be read (its whole box counts). The
+/// a picture that is opaque everywhere, shows nowhere or couldn't be read (its whole box counts). The
 /// generation, not the picture object alone, says when to rebuild: an edit may change the
 /// picture's soft mask without touching the picture.
 type Grids = (u64, HashMap<ObjRef, Option<Arc<Opacity>>>);
@@ -133,7 +134,9 @@ fn build(cos: &pdfcraft_cos::Document, object: ObjRef) -> Option<Opacity> {
             }
         }
     }
-    if cells.iter().all(|c| *c) {
+    // A picture that shows everywhere, or nowhere (a faint watermark, a transparent
+    // placeholder), keeps its whole box: one that showed nowhere couldn't be picked at all.
+    if cells.iter().all(|c| *c) || !cells.iter().any(|c| *c) {
         return None;
     }
     Some(Opacity { width: gw, height: gh, cells })
