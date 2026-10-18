@@ -499,6 +499,9 @@ pub struct RecentFile {
     pub size: usize,
 }
 
+/// Work that waits on an answer, run with the app once it comes.
+pub(crate) type Resume = Box<dyn FnOnce(&mut PdfCraftApp) + Send>;
+
 pub struct PdfCraftApp {
     pub docking: docking::Workspace,
     pub(crate) pending_panel_reveals: Vec<docking::Panel>,
@@ -626,8 +629,11 @@ pub struct PdfCraftApp {
     app_frame_shown: Option<bool>,
     pub password_prompt: Option<PasswordPrompt>,
     pub unlock_prompt: Option<UnlockPrompt>,
-    /// The edit a signed document is asked about before its first change (`Dialog::SignedEdit`).
-    pub pending_signed_edit: Option<pdfcraft_engine::Edit>,
+    /// The edit a signed document is asked about before its first change (`Dialog::SignedEdit`),
+    /// with that document: the answer applies it there, whichever tab is active by then.
+    pub pending_signed_edit: Option<(DocId, pdfcraft_engine::Edit)>,
+    /// What waited on that answer (a save whose typing was the edit), run once it is confirmed.
+    pub(crate) resume_after_signed_edit: Option<Resume>,
     /// Signed documents whose first change was confirmed: later changes are not asked about again.
     pub signed_edits_confirmed: std::collections::HashSet<DocId>,
     pub full_screen: bool,
@@ -1017,6 +1023,7 @@ impl PdfCraftApp {
             password_prompt: None,
             unlock_prompt: None,
             pending_signed_edit: None,
+            resume_after_signed_edit: None,
             signed_edits_confirmed: Default::default(),
             full_screen: false,
             inbox: Default::default(),
