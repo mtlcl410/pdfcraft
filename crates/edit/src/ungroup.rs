@@ -10,7 +10,10 @@
 //! compositing differs from painting its parts one by one: a knockout group, a group that uses
 //! a blend mode other than Normal inside, or a group drawn translucent, blended or under a soft
 //! mask. Those are refused rather than changed, as is tagged form content (its structure link
-//! would be lost). A form in a layer (`/OC`) keeps its membership as `/OC … BDC … EMC`.
+//! would be lost) and content whose marked content or text objects don't balance (inlined, they
+//! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC … BDC … EMC`.
+
+use std::collections::HashMap;
 
 use pdfcraft_content::{Matrix, Op, parse};
 use pdfcraft_cos::{Dict, Document, Object};
@@ -78,8 +81,8 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
     let mut ops = parsed.ops;
     if group.is_some() {
         // The form itself is being read: drawing itself again counts as blending.
-        let mut seen: Vec<pdfcraft_cos::ObjRef> = form.as_ref().into_iter().collect();
-        if blends_inside(doc, &form_res, &ops, 0, &mut seen) {
+        let mut walk = BlendWalk { path: form.as_ref().into_iter().collect(), known: HashMap::new(), reads: 0 };
+        if blends_inside(doc, &form_res, &ops, 0, &mut walk) {
             return Err(refuse("it is a transparency group with blend modes inside"));
         }
     }
@@ -120,7 +123,20 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
         renames.iter().find(|(c, _)| *c == cat).and_then(|(_, m)| m.iter().find(|(from, _)| from == name)).map(|(_, to)| to.clone())
     };
     let mut depth = 0usize;
+    // Marked content and text objects must balance within the form's own stream: an extra EMC
+    // would close one the page opened, and one left open would take in the page's later content.
+    let mut marked = 0usize;
+    let mut in_text = false;
     for op in &mut ops {
+        match op.op.as_slice() {
+            b"BDC" | b"BMC" => marked = marked.saturating_add(1),
+            b"EMC" => marked = marked.checked_sub(1).ok_or_else(|| refuse("its content ends marked content it didn't begin"))?,
+            b"BT" if in_text => return Err(refuse("its content begins a text object inside another")),
+            b"BT" => in_text = true,
+            b"ET" if !in_text => return Err(refuse("its content ends a text object it didn't begin")),
+            b"ET" => in_text = false,
+            _ => {}
+        }
         let slot: Option<(&[u8], usize)> = match op.op.as_slice() {
             b"Tf" | b"Do" | b"gs" | b"sh" | b"cs" | b"CS" => {
                 let cat: &[u8] = match op.op.as_slice() {
@@ -160,6 +176,10 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
                 }
             }
         }
+    }
+
+    if marked > 0 || in_text {
+        return Err(refuse("its content leaves marked content or a text object open"));
     }
 
     // A form in a layer (/OC) stays in it: its content is marked with the same membership.
@@ -210,41 +230,87 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
 /// How deep [`blends_inside`] follows nested forms; deeper ones count as blending.
 const MAX_NESTING: usize = 8;
 
+/// The most nested forms and tiling patterns [`blends_inside`] reads in all; past that the rest
+/// count as blending, so a file can't make the check run for ever.
+const MAX_NESTED_READS: usize = 1024;
+
+/// What [`blends_inside`] carries through its nested reads: the forms on the current path (a
+/// form drawing itself), the answer for each form with resources of its own (its answer doesn't
+/// depend on who draws it), and how many reads it has made.
+struct BlendWalk {
+    path: Vec<pdfcraft_cos::ObjRef>,
+    known: HashMap<pdfcraft_cos::ObjRef, bool>,
+    reads: usize,
+}
+
 /// Whether `ops` (drawn with `resources`) blend with something other than Normal: a `gs` they
-/// use, or one used by a form they draw, at any depth. A nested form that can't be read, is
-/// nested too deep or draws itself counts as blending, so the caller refuses rather than guesses.
-fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, seen: &mut Vec<pdfcraft_cos::ObjRef>) -> bool {
+/// use, or one used by a form or pattern they draw, at any depth. A shading pattern blends through
+/// its own `/ExtGState`, a tiling pattern through its content. A nested form or pattern that can't
+/// be read, is nested too deep or draws itself counts as blending, so the caller refuses rather
+/// than guesses.
+fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, walk: &mut BlendWalk) -> bool {
     let category = |cat: &[u8]| resources.get(cat).map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
-    let (states, xobjects) = (category(b"ExtGState"), category(b"XObject"));
+    let (states, xobjects, patterns) = (category(b"ExtGState"), category(b"XObject"), category(b"Pattern"));
+    let state_blends = |g: Option<&Object>| g.map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()).is_some_and(|gs| blends(doc, &gs));
     for op in ops {
-        if op.is("gs")
-            && op.name(0).and_then(|n| states.get(n)).map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()).is_some_and(|gs| blends(doc, &gs))
-        {
+        if op.is("gs") && state_blends(op.name(0).and_then(|n| states.get(n))) {
             return true;
         }
-        if !op.is("Do") {
+        let o = if op.is("Do") {
+            op.name(0).and_then(|n| xobjects.get(n))
+        } else if op.is("scn") || op.is("SCN") {
+            op.operands.len().checked_sub(1).and_then(|i| op.name(i)).and_then(|n| patterns.get(n))
+        } else {
+            continue;
+        };
+        let Some(o) = o else { continue };
+        let resolved = doc.resolve(o);
+        let nested = match &*resolved {
+            Object::Stream(st) if op.is("Do") && st.dict.name(b"Subtype") == Some(b"Form") => st,
+            Object::Stream(st) if !op.is("Do") && st.dict.int(b"PatternType") == Some(1) => st,
+            // A shading pattern.
+            Object::Stream(st) if !op.is("Do") => {
+                if state_blends(st.dict.get(b"ExtGState")) {
+                    return true;
+                }
+                continue;
+            }
+            Object::Dict(d) if !op.is("Do") => {
+                if state_blends(d.get(b"ExtGState")) {
+                    return true;
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let r = o.as_ref();
+        if let Some(known) = r.and_then(|r| walk.known.get(&r)) {
+            if *known {
+                return true;
+            }
             continue;
         }
-        let Some(o) = op.name(0).and_then(|n| xobjects.get(n)) else { continue };
-        let Object::Stream(nested) = &*doc.resolve(o) else { continue };
-        if nested.dict.name(b"Subtype") != Some(b"Form") {
-            continue;
-        }
-        if depth >= MAX_NESTING || o.as_ref().is_some_and(|r| seen.contains(&r)) {
+        if depth >= MAX_NESTING || r.is_some_and(|r| walk.path.contains(&r)) || walk.reads >= MAX_NESTED_READS {
             return true;
         }
+        walk.reads += 1;
         let Ok(data) = nested.decoded_strict_within(MAX_FORM_BYTES) else { return true };
-        let own = nested.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_else(|| resources.clone());
-        if let Some(r) = o.as_ref() {
-            seen.push(r);
-        }
+        let own_resources = nested.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned());
+        let has_own = own_resources.is_some();
+        let own = own_resources.unwrap_or_else(|| resources.clone());
         let inner = parse(&data);
         if inner.skipped > 0 {
             return true;
         }
-        let blends = blends_inside(doc, &own, &inner.ops, depth + 1, seen);
-        if let Some(r) = o.as_ref() {
-            seen.retain(|x| *x != r);
+        if let Some(r) = r {
+            walk.path.push(r);
+        }
+        let blends = blends_inside(doc, &own, &inner.ops, depth + 1, walk);
+        if let Some(r) = r {
+            walk.path.retain(|x| *x != r);
+            if has_own {
+                walk.known.insert(r, blends);
+            }
         }
         if blends {
             return true;
