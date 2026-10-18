@@ -279,11 +279,16 @@ fn metadata_search_has_one_budget_for_every_value() {
 #[test]
 fn xml_entities_are_found_near_their_ampersand_only() {
     assert_eq!(metadata::xml_values("<a>R&#233;sum&eacute; &amp; &#x41;&#65; &#1234567890123;</a>"), ["Résum&eacute; & AA &#1234567890123;"]);
+    // #2539 review: a character reference with many leading zeros still decodes, so it can't
+    // hide a redacted word from the search; a reference that never ends stays as written.
+    assert_eq!(metadata::xml_values("<a>&#00000000000066;LUEFIN &#x000000000000000042;LUEFIN &#0000000000;</a>"), ["BLUEFIN BLUEFIN &#0000000000;"]);
     let bare = "&".repeat(200_000);
     let started = std::time::Instant::now();
     let values = metadata::xml_values(&format!("<a>{bare}</a>"));
     assert_eq!(values.concat().len(), bare.len());
-    eprintln!("200000 bare ampersands: {:?}", started.elapsed());
+    let zeros = format!("&#{}", "0".repeat(10)).repeat(20_000);
+    assert_eq!(metadata::xml_values(&format!("<a>{zeros}</a>")).concat().len(), zeros.len());
+    eprintln!("200000 bare ampersands, 20000 unended references: {:?}", started.elapsed());
 }
 
 /// #2539 review: Apply removes a form XObject whole when it is nested past the depth limit (or
