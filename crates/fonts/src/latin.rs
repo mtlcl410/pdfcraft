@@ -77,8 +77,20 @@ impl LatinEncoding {
     /// have one (a character neither WinAnsi nor an extra letter, or more extra letters than
     /// codes to spare).
     pub fn for_text(text: &str) -> Option<Self> {
+        Self::assign(text).ok().flatten()
+    }
+
+    /// The first extra letter of `text` left without a code: more extra letters than the codes
+    /// the text leaves to spare, so it would be written as `?` (review on #3076).
+    pub fn first_without_code(text: &str) -> Option<char> {
+        Self::assign(text).err()
+    }
+
+    /// Codes for the extra letters of `text`: `Ok(None)` when it needs or can have none, `Err`
+    /// with the first letter left without a code.
+    fn assign(text: &str) -> Result<Option<Self>, char> {
         if first_non_latin(text).is_some() {
-            return None;
+            return Ok(None);
         }
         let mut wanted: Vec<(char, &'static str)> = Vec::new();
         for c in text.chars() {
@@ -89,7 +101,7 @@ impl LatinEncoding {
             }
         }
         if wanted.is_empty() {
-            return None;
+            return Ok(None);
         }
         let used: std::collections::HashSet<u8> = text.chars().filter_map(crate::win_ansi_byte).collect();
         let defined = |b: u8| b >= 0xA0 || crate::encodings::WIN_ANSI.get(usize::from(b)).is_some_and(|u| *u != 0);
@@ -97,9 +109,9 @@ impl LatinEncoding {
         let mut codes = FREE_CODES.iter().copied().chain(spare);
         let mut letters = Vec::with_capacity(wanted.len());
         for (c, name) in wanted {
-            letters.push((c, codes.next()?, name));
+            letters.push((c, codes.next().ok_or(c)?, name));
         }
-        Some(Self { letters })
+        Ok(Some(Self { letters }))
     }
 
     /// `s` in this encoding; characters it can't write become `?`, as [`crate::win_ansi`] does.
@@ -178,6 +190,27 @@ mod tests {
         assert_eq!(unique.len(), codes.len());
         let encoded = e.encode(&text);
         assert_eq!(encoded.get(encoded.len().saturating_sub(3)..), Some(&[0x80, b' ', 0xE9][..]));
+    }
+
+    /// Every extra letter, with all of WinAnsi above 0x80 used too: the codes run out, there's
+    /// no encoding, and the letter named is the first left without a code. Every letter before it
+    /// has one; with it, none can be made.
+    #[test]
+    fn a_text_that_uses_up_the_codes_names_the_letter_left_without_one() {
+        let letters: Vec<char> = EXTRA_LETTERS.iter().map(|(c, ..)| *c).collect();
+        let high: String = ('\u{A1}'..='\u{FF}').chain("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ".chars()).collect();
+        let text = |n: usize| format!("{}{high}", letters.iter().take(n).collect::<String>());
+        let all = text(letters.len());
+        assert_eq!(LatinEncoding::for_text(&all), None);
+        let c = LatinEncoding::first_without_code(&all).expect("a letter left without a code");
+        let at = letters.iter().position(|l| *l == c).unwrap();
+        assert!(LatinEncoding::for_text(&text(at)).is_some(), "the letters before {c} all have codes");
+        assert_eq!(LatinEncoding::first_without_code(&text(at)), None);
+        assert_eq!(LatinEncoding::for_text(&text(at + 1)), None);
+        assert_eq!(LatinEncoding::first_without_code(&text(at + 1)), Some(c));
+        // Not drawable at all, or plain WinAnsi: nothing to name.
+        assert_eq!(LatinEncoding::first_without_code("č ș"), None);
+        assert_eq!(LatinEncoding::first_without_code("Zagreb"), None);
     }
 
     /// Widths from the published Core14 metrics, typed in here by hand.
