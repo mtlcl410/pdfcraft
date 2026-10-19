@@ -89,7 +89,9 @@ impl LatinEncoding {
     /// Codes for the extra letters of `text`: `Ok(None)` when it needs or can have none, `Err`
     /// with the first letter left without a code.
     fn assign(text: &str) -> Result<Option<Self>, char> {
-        if first_non_latin(text).is_some() {
+        // Lines are laid out apart, so their separators aren't text the encoding has to show
+        // (review on #3076: `č\nć` got no codes and both letters were written as `?`).
+        if text.split('\n').find_map(first_non_latin).is_some() {
             return Ok(None);
         }
         let mut wanted: Vec<(char, &'static str)> = Vec::new();

@@ -5919,6 +5919,21 @@ fn a_clipping_copy_on_the_same_baseline_is_refused() {
 /// other's codes; the text reads back as typed; letters the renderer can't draw yet (comma
 /// accents) are still refused.
 #[test]
+fn central_european_letters_on_several_lines_keep_their_codes() {
+    // Review on #3076: the line separator counted as a letter no standard font has, so text on
+    // two lines got no codes for its extra letters and they were written as `?`.
+    assert!(pdfcraft_fonts::LatinEncoding::for_text("č\nć").is_some());
+    let mut doc = fixture();
+    let item = AddedText { rect: [72.0, 600.0, 500.0, 700.0], text: "Đakovo čćđ\nŁódź ťuk".into(), size: 14.0, ..AddedText::default() };
+    add_content(&mut doc, 0, &Content::Text(item)).unwrap();
+    let doc = reopen(&doc);
+    let texts: Vec<String> = text::text_lines(&doc, 0).unwrap().into_iter().map(|l| l.text).collect();
+    for want in ["Đakovo čćđ", "Łódź ťuk"] {
+        assert!(texts.iter().any(|t| t == want), "{want:?} in {texts:?}");
+    }
+}
+
+#[test]
 fn central_european_letters_are_added_in_the_standard_fonts() {
     // Review on #3076: more extra letters than the codes the text leaves to spare is refused,
     // naming the letter that would be written as `?`, rather than written with it.
