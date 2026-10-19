@@ -6967,6 +6967,17 @@ fn a_clipping_copy_on_the_same_baseline_is_refused() {
 /// accents) are still refused.
 #[test]
 fn central_european_letters_are_added_in_the_standard_fonts() {
+    // Review on #3076: more extra letters than the codes the text leaves to spare is refused,
+    // naming the letter that would be written as `?`, rather than written with it.
+    let mut doc = fixture();
+    let all: String = ('\u{100}'..='\u{17F}').filter(|c| pdfcraft_fonts::extra_letter(*c).is_some()).collect();
+    let high: String = ('\u{A1}'..='\u{FF}').collect();
+    let crowded = AddedText { rect: [72.0, 100.0, 560.0, 760.0], text: format!("{all}{high}"), size: 8.0, ..AddedText::default() };
+    let err = add_content(&mut doc, 0, &Content::Text(crowded.clone())).unwrap_err();
+    let left_out = pdfcraft_fonts::LatinEncoding::first_without_code(&crowded.text).expect("the codes run out");
+    assert!(err.to_string().contains(left_out), "{err}");
+    assert!(first_undrawable(&crowded).is_some());
+
     let mut doc = fixture();
     let item = |text: &str, top: f64| AddedText { rect: [72.0, top - 40.0, 500.0, top], text: text.into(), size: 14.0, ..AddedText::default() };
     add_content(&mut doc, 0, &Content::Text(item("Đakovo: čćđ ČĆĐ", 700.0))).unwrap();

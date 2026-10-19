@@ -140,7 +140,9 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
     if !shaped_by_a_face(t) {
         // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
         // that is also how `draw` redraws an existing item, so it's checked that way.
-        return t.text.split('\n').find_map(pdfcraft_fonts::first_non_latin);
+        // The extra letters need codes of their own in one encoding for the whole item; a text
+        // that leaves too few would have the last of them written as `?` (review on #3076).
+        return t.text.split('\n').find_map(pdfcraft_fonts::first_non_latin).or_else(|| pdfcraft_fonts::LatinEncoding::first_without_code(&t.text));
     }
     // What `shaped_layout` leaves to the standard font, exactly as `draw_shaped` splits it.
     wrapped(t).into_iter().find_map(|(line, rtl, _)| {
