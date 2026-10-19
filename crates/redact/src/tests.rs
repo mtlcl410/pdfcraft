@@ -173,6 +173,38 @@ fn an_info_value_inside_the_redacted_text_goes() {
     assert!(info.contains(b"Subject") && info.contains(b"Producer"));
 }
 
+/// Removed glyphs whose text isn't known (no `/ToUnicode`, glyph names outside the glyph list)
+/// leave nothing to search the metadata for, so every `/Info` string goes, as when the collected
+/// text was cut short (review on #2539). Glyphs whose text is known keep the targeted check.
+#[test]
+fn removed_glyphs_with_no_known_text_clear_the_metadata() {
+    let page = |codes: &[u8], font: &str| -> Document {
+        let content = [&b"BT /F1 10 Tf 10 100 Td ("[..], codes, b") Tj ET"].concat();
+        let objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+            stream("", &content),
+            font.replace("95 0 R", "6 0 R").into_bytes(),
+            widths(),
+            b"<< /Title (Project Nightjar) /Producer (Test) >>".to_vec(),
+        ];
+        Document::open(Arc::new(Pdf::new().objs(objs).trailer_entry("/Info 7 0 R").build())).unwrap()
+    };
+    let unnamed = FONT.replace(" /Widths", " /Encoding << /Differences [65 /g17 /g18 /g19] >> /Widths");
+    let mut doc = page(b"ABC", &unnamed);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    let r = apply(&mut doc, None).unwrap();
+    let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
+    assert!(!info.contains(b"Title") && !info.contains(b"Producer"), "fail closed: {r:?}");
+    // Control: the same glyphs with known text don't touch unrelated metadata.
+    let mut doc = page(b"ABC", FONT);
+    mark(&mut doc, 0, &[[5.0, 95.0, 200.0, 110.0]], "");
+    apply(&mut doc, None).unwrap();
+    let info = doc.trailer().get(b"Info").and_then(|i| doc.resolve(i).as_dict().cloned()).unwrap();
+    assert!(info.contains(b"Title") && info.contains(b"Producer"));
+}
+
 /// One page showing `content`, with `/Info` `info` and catalog XMP whose `rdf:RDF` holds
 /// `xmp_body`.
 fn with_metadata(content: &[u8], info: &str, xmp_body: &str) -> Document {

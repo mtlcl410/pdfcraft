@@ -1220,7 +1220,14 @@ fn show(scope: &mut Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (V
                             let end = trm.apply(spaced, 0.0);
                             let top = trm.apply(0.0, 1.0);
                             let height = (top.0 - origin.0).hypot(top.1 - origin.1);
-                            scope.removed(f.text_of(code).as_deref().unwrap_or(""), origin, end, height);
+                            let text = f.text_of(code);
+                            // A glyph whose text isn't known could stand for anything in the
+                            // metadata, so the metadata check can't rely on the text it has
+                            // (review on #2539): it fails closed, as for text it couldn't keep.
+                            if text.is_none() {
+                                scope.removed_cut = true;
+                            }
+                            scope.removed(text.as_deref().unwrap_or(""), origin, end, height);
                         } else {
                             scope.flush();
                         }
