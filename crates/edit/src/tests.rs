@@ -2762,6 +2762,46 @@ fn only_the_words_a_subset_cannot_show_are_substituted() {
     }
 }
 
+/// Review on #2955: replacing a line written in two fonts again replaces its `/PCEdLine`
+/// sequence too. Kept, each edit nested one more, and its `EMC`s outnumbered what the reader
+/// counts once 256 deep, closing the sequence around the line (here a `/Span`). The content
+/// doesn't grow from one edit to the next.
+#[test]
+fn replacing_a_mixed_font_line_again_replaces_its_sequence() {
+    let mut doc = text_page("/Span BMC BT /F2 10 Tf 72 600 Td (ab) Tj ET EMC BT /F2 10 Tf 72 500 Td (ba) Tj ET");
+    let count = |content: &str, op: &str| content.split_whitespace().filter(|w| *w == op).count();
+    let mut sizes = Vec::new();
+    for text in ["ab ba cab ba", "cab ab", "ab cab", "ab cab", "ab ba", "ba ab"] {
+        text::replace_line(&mut doc, 0, 0, text).unwrap();
+        doc = reopen(&doc);
+        let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+        let mixed = text.contains('c');
+        assert_eq!(content.matches("/PCEdLine").count(), usize::from(mixed), "after {text:?}: {content}");
+        assert_eq!((count(&content, "BMC"), count(&content, "EMC")), (1 + usize::from(mixed), 1 + usize::from(mixed)), "after {text:?}: {content}");
+        assert_eq!(count(&content, "Tf"), 2 + if mixed { 4 } else { 1 }, "after {text:?}: {content}");
+        let lines = text::text_lines(&doc, 0).unwrap();
+        let read: Vec<&str> = lines.iter().map(|l| l.text.trim()).collect();
+        assert_eq!(read, [text, "ba"], "after {text:?}");
+        assert_eq!(lines[0].baseline(), [72.0, 600.0], "after {text:?}: in place");
+        sizes.push(content.split_whitespace().count());
+    }
+    assert_eq!(sizes[2], sizes[3], "the same text again, the same content");
+    // A sequence holding marked content of its own goes whole, and what follows it keeps its
+    // font and size unless the replacement sets the same again.
+    for (after, font, size) in [("/F1 12 Tf", "F1", 12.0), ("/F2 12 Tf", "F2", 12.0), ("/F1 10 Tf", "F1", 10.0)] {
+        let mut doc = text_page(&format!(
+            "BT /F2 10 Tf 72 600 Td /PCEdLine BMC /F2 10 Tf /Span <<>> BDC (ab) Tj EMC /F1 10 Tf ( cab) Tj EMC {after} 0 -20 Td (ba) Tj ET"
+        ));
+        text::replace_line(&mut doc, 0, 0, "ab ab").unwrap();
+        let doc = reopen(&doc);
+        let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+        assert_eq!((count(&content, "BMC"), count(&content, "BDC"), count(&content, "EMC")), (0, 0, 0), "{after}: {content}");
+        let lines = text::text_lines(&doc, 0).unwrap();
+        let read: Vec<(&str, &str, f64)> = lines.iter().map(|l| (l.text.trim(), l.font.as_str(), l.size)).collect();
+        assert_eq!(read, [("ab ab", "F2", 10.0), ("ba", font, size)], "{after}: {content}");
+    }
+}
+
 #[test]
 fn missing_glyphs_substitute_helvetica_and_impossible_text_is_refused() {
     let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");

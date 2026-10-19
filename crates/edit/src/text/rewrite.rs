@@ -168,6 +168,24 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
         }
     }
     // Rebuild: the line's first operator becomes the replacement, its others go.
+    // A line an earlier replacement wrote in two fonts is in a `/PCEdLine` sequence of its own,
+    // with its fonts and the moves standing in for spaces the source font lacks: all of it goes
+    // with the line, or each edit would nest one more (review on #2955). The line then starts in
+    // its own font, set again where the sequence was.
+    if let Some((open, close)) = target.edited.and_then(|open| Some((open, matching_emc(&ops, open)?))) {
+        drops.extend(open..=close);
+        let size = font_size_before(&ops, first).unwrap_or(target.size);
+        let own_font = |i: usize| ops.get(i).is_some_and(|o| o.is("Tf") && o.name(0) == Some(target.font.as_bytes()) && o.num(1) == Some(size));
+        replacement.insert(0, Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
+        // The same font set just before the sequence (by the last edit) is set again here.
+        if let Some(i) = open.checked_sub(1).filter(|&i| own_font(i)) {
+            drops.insert(i);
+        }
+        // And set back after it: the replacement ends in that font too.
+        if let Some(i) = close.checked_add(1).filter(|&i| own_font(i)) {
+            drops.insert(i);
+        }
+    }
     let new_data = splice(&pieces, &ops, |i| if i == first { (std::mem::take(&mut replacement), false) } else { (Vec::new(), !drops.contains(&i)) });
     let contents = rewritten_contents(doc, &streams, new_data);
     let page_ref = p.obj;
@@ -181,6 +199,24 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
         }
     })?;
     Ok(LineEdit { substituted })
+}
+
+/// The `EMC` that closes the marked-content sequence `BMC`/`BDC` operator `open` begins.
+fn matching_emc(ops: &[Op], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, op) in ops.iter().enumerate().skip(open) {
+        match op.op.as_slice() {
+            b"BMC" | b"BDC" => depth = depth.saturating_add(1),
+            b"EMC" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The size of the last `Tf` before operator `at`.
