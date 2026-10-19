@@ -1835,10 +1835,7 @@ pub fn set_popup(doc: &mut Document, page: usize, index: usize, rect: Option<[f6
     let _ = meta;
     // Only a pop-up that is this comment's: `/Popup` naming another annotation (or a pop-up
     // whose `/Parent` is another comment) would move or open that one, so it gets its own.
-    let own_popup = |pr: &ObjRef| {
-        doc.get(*pr).as_dict().is_some_and(|pd| pd.name(b"Subtype") == Some(b"Popup") && pd.reference(b"Parent").is_none_or(|parent| parent == r))
-    };
-    match d.reference(b"Popup").filter(own_popup) {
+    match own_popup(doc, Some(r), &d) {
         Some(pr) => doc.update_dict(pr, |p| {
             if let Some(rect) = rect {
                 p.set(b"Rect".to_vec(), num_array(&rect));
@@ -2353,9 +2350,24 @@ pub struct PopupInfo {
     pub open: bool,
 }
 
-/// The pop-up `annot` names, as [`PopupInfo`]: `None` when it has none or it is unreadable.
-fn popup_info(doc: &Document, annot: &Dict) -> Option<PopupInfo> {
-    let r = annot.reference(b"Popup")?;
+/// The pop-up the comment `annot` (the object `own`, when it is one of its own) names in
+/// `/Popup`, when it is the comment's: a pop-up annotation whose `/Parent`, if it has one, is a
+/// reference to the comment. A `/Popup` naming another annotation, or a pop-up of another
+/// comment, isn't. ISO 32000-2:2020 §12.5.6.14, Table 186: `/Parent` is "(Optional; shall be
+/// an indirect reference)".
+fn own_popup(doc: &Document, own: Option<ObjRef>, annot: &Dict) -> Option<ObjRef> {
+    let pr = annot.reference(b"Popup")?;
+    let is_own = doc.get(pr).as_dict().is_some_and(|pd| {
+        pd.name(b"Subtype") == Some(b"Popup") && pd.get(b"Parent").is_none_or(|parent| parent.as_ref().is_some_and(|parent| Some(parent) == own))
+    });
+    is_own.then_some(pr)
+}
+
+/// The comment's own pop-up (see [`own_popup`]), as [`PopupInfo`]: `None` when it has none or it
+/// is unreadable.
+fn popup_info(doc: &Document, own: Option<ObjRef>, annot: &Dict) -> Option<PopupInfo> {
+    // Another annotation's rectangle and open state aren't this comment's (review on #2137).
+    let r = own_popup(doc, own, annot)?;
     let p = doc.get(r);
     let p = p.as_dict()?;
     let rect: Vec<f32> = doc.resolve(p.get(b"Rect")?).as_array()?.iter().filter_map(|v| doc.resolve(v).as_f64().map(|x| x as f32)).collect();
@@ -2442,7 +2454,7 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
                 intent: d.get(b"IT").and_then(|o| doc.resolve(o).as_name().map(|n| String::from_utf8_lossy(n).into_owned())),
                 fill_sign: is_fill_sign(doc, d),
                 points,
-                popup: popup_info(doc, d),
+                popup: popup_info(doc, entry.as_ref(), d),
             });
         }
     }

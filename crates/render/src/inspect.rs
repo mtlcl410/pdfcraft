@@ -1349,7 +1349,14 @@ impl<'a> Inspector<'a> {
                     }
                     _ => Vec::new(),
                 };
-                let popup = d.get(b"Popup").ok().and_then(|o| self.dict(o)).map(|p| {
+                // Only the comment's own pop-up: a pop-up annotation whose /Parent, if any, is a
+                // reference to this comment (keep in step with `pdfcraft_annot::summaries`).
+                let own = a.as_reference().ok();
+                let is_own = |p: &&Dictionary| {
+                    self.name(p, b"Subtype").as_deref() == Some("Popup")
+                        && p.get(b"Parent").map_or(true, |parent| parent.as_reference().ok().is_some_and(|id| Some(id) == own))
+                };
+                let popup = d.get(b"Popup").ok().and_then(|o| self.dict(o)).filter(is_own).map(|p| {
                     let [x0, y0, x1, y1] = rect4(self.resolve(p.get(b"Rect").unwrap_or(&Object::Null)));
                     Popup {
                         rect: [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)],
@@ -3847,6 +3854,21 @@ trailer << /Root 1 0 R >>
         let square = info.annotations.iter().find(|a| a.subtype == "Square").expect("the square");
         assert_eq!(square.popup, None);
         assert!(info.annotations.iter().all(|a| a.subtype != "Popup"), "the pop-up is not a comment of its own");
+
+        // #2137 review: a /Popup naming another annotation, a pop-up of another comment, or one
+        // whose /Parent isn't a reference isn't this comment's pop-up; one without /Parent is.
+        for (target, extra, own) in [
+            ("6 0 R", "", false),
+            ("7 0 R", "7 0 obj << /Type /Annot /Subtype /Popup /Rect [0 0 50 50] /Parent 6 0 R >> endobj\n", false),
+            ("7 0 R", "7 0 obj << /Type /Annot /Subtype /Popup /Rect [0 0 50 50] /Parent << >> >> endobj\n", false),
+            ("7 0 R", "7 0 obj << /Type /Annot /Subtype /Popup /Rect [0 0 50 50] >> endobj\n", true),
+        ] {
+            let text =
+                String::from_utf8_lossy(bytes).replace("/Popup 5 0 R", &format!("/Popup {target}")).replace("trailer", &format!("{extra}trailer"));
+            let info = inspect(Arc::new(text.into_bytes()), None).expect("opens");
+            let note = info.annotations.iter().find(|a| a.subtype == "Text").expect("the note");
+            assert_eq!(note.popup.is_some(), own, "/Popup {target} {extra}");
+        }
     }
 
     #[test]
