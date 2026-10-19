@@ -233,6 +233,41 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
     let _ = (std::fs::remove_file(&a), std::fs::remove_file(&b));
 }
 
+/// #1723 review: the same file asked for twice while it is still opening is opened once, and
+/// each request still gets its Print dialog, one after the other.
+#[test]
+fn a_file_asked_for_twice_while_opening_gets_two_print_dialogs() {
+    let a = std::env::temp_dir().join(format!("pdfcraft-print-twice-{}.pdf", std::process::id())).to_string_lossy().into_owned();
+    std::fs::write(&a, include_bytes!("../data/form.pdf")).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app
+    });
+    h.run_steps(2);
+    // After the first frame, so the open goes through the background worker.
+    h.state_mut().open_path(&a);
+    h.state_mut().set_option("print-file", &a).unwrap();
+    h.state_mut().open_path(&a);
+    h.state_mut().set_option("print-file", &a).unwrap();
+    for _ in 0..200 {
+        if h.state().dialog.is_some() {
+            break;
+        }
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(h.state().views.len(), 1, "opened once");
+    assert_eq!(h.state().dialog, Some(Dialog::Print), "the first request's dialog");
+    h.state_mut().dialog = None;
+    h.run_steps(3);
+    assert_eq!(h.state().dialog, Some(Dialog::Print), "the second request's dialog");
+    h.state_mut().dialog = None;
+    h.run_steps(3);
+    assert_eq!(h.state().dialog, None, "no more");
+    let _ = std::fs::remove_file(&a);
+}
+
 /// Pages picked beforehand are what the dialog offers to print (Acrobat's "Selected pages").
 #[test]
 fn print_dialog_prints_the_selected_pages() {
