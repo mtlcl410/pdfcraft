@@ -9069,6 +9069,124 @@ fn ungroup_art(content: &[u8], group: bool, build: impl FnOnce(&mut Document) ->
     images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup).map(|_| ())
 }
 
+/// A nested form, Type 3 font or tiling pattern without `/Resources` takes its names from the
+/// form drawing it (the renderer chains them). Once the form's names are renamed into the page's,
+/// it would find the page's instead (the page's Courier `F1`, not the form's Times), so ungroup
+/// refuses. With resources of its own it is unaffected, and so is a form without resources of
+/// its own, whose names are already the page's.
+#[test]
+fn ungroup_refuses_nested_content_that_inherits_renamed_resources() {
+    let times = || {
+        let mut d = Dict::new();
+        d.set(b"Type".to_vec(), Object::name("Font"));
+        d.set(b"Subtype".to_vec(), Object::name("Type1"));
+        d.set(b"BaseFont".to_vec(), Object::name("Times-Roman"));
+        Object::Dict(d)
+    };
+    let nested = |doc: &mut Document, kind: &str, own: bool| -> (&'static str, Object) {
+        let mut d = Dict::new();
+        if own {
+            d.set(b"Resources".to_vec(), Object::Dict(Dict::new()));
+        }
+        match kind {
+            "form" => {
+                d.set(b"Subtype".to_vec(), Object::name("Form"));
+                d.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+                ("XObject", Object::Ref(doc.add(Object::Stream(Stream::flate(d, b"BT /F1 9 Tf (n) Tj ET")))))
+            }
+            "type3" => {
+                d.set(b"Type".to_vec(), Object::name("Font"));
+                d.set(b"Subtype".to_vec(), Object::name("Type3"));
+                ("Font", Object::Dict(d))
+            }
+            _ => {
+                d.set(b"PatternType".to_vec(), Object::Int(1));
+                ("Pattern", Object::Ref(doc.add(Object::Stream(Stream::flate(d, b"BT /F1 9 Tf (n) Tj ET")))))
+            }
+        }
+    };
+    let content = |kind: &str| -> &'static [u8] {
+        match kind {
+            "form" => b"BT /F1 9 Tf (a) Tj ET /N Do",
+            "type3" => b"BT /F1 9 Tf (a) Tj /N 9 Tf (b) Tj ET",
+            // An uncoloured pattern: the name comes after the colour.
+            _ => b"BT /F1 9 Tf (a) Tj ET [/Pattern /DeviceGray] cs 0.5 /N scn 0 0 10 10 re f",
+        }
+    };
+    let run = |kind: &'static str, own: bool| {
+        ungroup_art(content(kind), false, |doc| {
+            let (cat, obj) = nested(doc, kind, own);
+            let mut fonts = Dict::new();
+            fonts.set(b"F1".to_vec(), times());
+            let mut res = Dict::new();
+            if cat == "Font" {
+                fonts.set(b"N".to_vec(), obj);
+            } else {
+                let mut d = Dict::new();
+                d.set(b"N".to_vec(), obj);
+                res.set(cat.as_bytes().to_vec(), Object::Dict(d));
+            }
+            res.set(b"Font".to_vec(), Object::Dict(fonts));
+            res
+        })
+    };
+    for kind in ["form", "type3", "pattern"] {
+        let r = run(kind, false);
+        assert!(matches!(&r, Err(EditError::Invalid(m)) if m.contains("uses its resources")), "{kind}: {r:?}");
+        assert!(run(kind, true).is_ok(), "{kind} with resources of its own");
+    }
+
+    // An image and a shading pattern have no content to look names up for.
+    let r = ungroup_art(b"BT /F1 9 Tf (a) Tj ET /Im Do /Pattern cs /Sh scn 0 0 10 10 re f", false, |doc| {
+        let mut img = Dict::new();
+        img.set(b"Subtype".to_vec(), Object::name("Image"));
+        img.set(b"Width".to_vec(), Object::Int(1));
+        img.set(b"Height".to_vec(), Object::Int(1));
+        img.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        img.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        let img = doc.add(Object::Stream(Stream::flate(img, b"@")));
+        let mut shading = Dict::new();
+        shading.set(b"ShadingType".to_vec(), Object::Int(2));
+        let mut pattern = Dict::new();
+        pattern.set(b"PatternType".to_vec(), Object::Int(2));
+        pattern.set(b"Shading".to_vec(), Object::Dict(shading));
+        let mut res = Dict::new();
+        let mut d = Dict::new();
+        d.set(b"Im".to_vec(), Object::Ref(img));
+        res.set(b"XObject".to_vec(), Object::Dict(d));
+        let mut d = Dict::new();
+        d.set(b"Sh".to_vec(), Object::Dict(pattern));
+        res.set(b"Pattern".to_vec(), Object::Dict(d));
+        let mut d = Dict::new();
+        d.set(b"F1".to_vec(), times());
+        res.set(b"Font".to_vec(), Object::Dict(d));
+        res
+    });
+    assert!(r.is_ok(), "an image and a shading pattern: {r:?}");
+
+    // The outer form has no resources: the nested form already finds the page's, as it will.
+    let mut doc = fixture();
+    let mut inner = Dict::new();
+    inner.set(b"Subtype".to_vec(), Object::name("Form"));
+    inner.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+    let inner = doc.add(Object::Stream(Stream::flate(inner, b"BT /F1 9 Tf (n) Tj ET")));
+    let mut outer = Dict::new();
+    outer.set(b"Subtype".to_vec(), Object::name("Form"));
+    outer.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+    let outer = doc.add(Object::Stream(Stream::flate(outer, b"/N Do")));
+    doc.update_dict(pdfcraft_cos::ObjRef::new(6, 0), |d| {
+        let mut xo = Dict::new();
+        xo.set(b"Art".to_vec(), Object::Ref(outer));
+        xo.set(b"N".to_vec(), Object::Ref(inner));
+        d.set(b"XObject".to_vec(), Object::Dict(xo));
+    })
+    .unwrap();
+    doc.set(pdfcraft_cos::ObjRef::new(7, 0), Object::Stream(Stream::flate(Dict::new(), b"q /Art Do Q")));
+    let mut doc = reopen(&doc);
+    let art = images::page_images(&doc, 0).unwrap().iter().position(|i| i.name == "Art").unwrap();
+    images::change_image(&mut doc, 0, art, &images::ImageChange::Ungroup).unwrap();
+}
+
 /// #3067 review: a form whose marked content or text objects don't balance within its own
 /// stream is refused: inlined, an extra EMC would close what the page opened, and one left open
 /// would take in the page's later content.
