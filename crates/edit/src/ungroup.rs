@@ -122,6 +122,13 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
     let renamed = |cat: &[u8], name: &[u8]| -> Option<Vec<u8>> {
         renames.iter().find(|(c, _)| *c == cat).and_then(|(_, m)| m.iter().find(|(from, _)| from == name)).map(|(_, to)| to.clone())
     };
+    // A nested form, Type 3 font or tiling pattern without resources of its own looks its names
+    // up in the form's (the renderer chains them to whatever draws it). Drawn from the page, it
+    // would find the page's, which differ wherever a name was renamed (every form resource that
+    // isn't already the page's, the nested item's own entry included).
+    if !renames.is_empty() && ops.iter().any(|op| inherits_resources(doc, &form_res, op)) {
+        return Err(refuse("it draws a nested form, Type 3 font or pattern that uses its resources"));
+    }
     let mut depth = 0usize;
     // Marked content and text objects must balance within the form's own stream: an extra EMC
     // would close one the page opened, and one left open would take in the page's later content.
@@ -248,6 +255,36 @@ struct BlendWalk {
 /// its own `/ExtGState`, a tiling pattern through its content. A nested form or pattern that can't
 /// be read, is nested too deep or draws itself counts as blending, so the caller refuses rather
 /// than guesses.
+/// Whether `op` draws a Form XObject (`Do`), Type 3 font (`Tf`) or tiling pattern (`scn`/`SCN`) from
+/// `resources` that has no `/Resources` of its own, and so inherits the ones it is drawn with.
+fn inherits_resources(doc: &Document, resources: &Dict, op: &Op) -> bool {
+    let (cat, i): (&[u8], usize) = match op.op.as_slice() {
+        b"Do" => (b"XObject", 0),
+        b"Tf" => (b"Font", 0),
+        b"scn" | b"SCN" => match op.operands.len().checked_sub(1) {
+            Some(i) => (b"Pattern", i),
+            None => return false,
+        },
+        _ => return false,
+    };
+    let Some(Object::Name(name)) = op.operands.get(i) else { return false };
+    let Some(entry) = resources.get(cat).map(|d| doc.resolve(d)).and_then(|d| d.as_dict().and_then(|d| d.get(name).cloned())) else {
+        return false;
+    };
+    let dict = match &*doc.resolve(&entry) {
+        Object::Stream(s) => s.dict.clone(),
+        Object::Dict(d) => d.clone(),
+        _ => return false,
+    };
+    let drawn = match cat {
+        b"XObject" => dict.name(b"Subtype") == Some(b"Form"),
+        b"Font" => dict.name(b"Subtype") == Some(b"Type3"),
+        // A shading pattern has no content of its own.
+        _ => dict.int(b"PatternType") == Some(1),
+    };
+    drawn && dict.get(b"Resources").is_none()
+}
+
 fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, walk: &mut BlendWalk) -> bool {
     let category = |cat: &[u8]| resources.get(cat).map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
     let (states, xobjects, patterns) = (category(b"ExtGState"), category(b"XObject"), category(b"Pattern"));
