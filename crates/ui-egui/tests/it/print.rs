@@ -134,6 +134,16 @@ fn the_print_option_opens_the_print_dialog_for_the_open_document() {
     assert_eq!(empty.dialog, None);
 }
 
+/// Runs frames until `done`, for at most 30 s: an open on the background worker (and deriving an
+/// AES-256 key for a password) takes a while on a slow runner (review on #1723).
+fn run_until(h: &mut Harness<'static, PdfCraftApp>, done: impl Fn(&Harness<'static, PdfCraftApp>) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done(h) && std::time::Instant::now() < deadline {
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// #1723 review: `--print-file`, one per file the Print verb couldn't print unattended, gives
 /// each file its own Print dialog once it is open: one that asks for a password gets its dialog
 /// after the password is entered, and the dialogs come one after another, each for its file.
@@ -183,7 +193,9 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
     };
     assert_eq!(printing(&h), (Some(Dialog::Print), Some(a.clone())), "a's dialog");
     h.state_mut().dialog = None;
-    h.run_steps(3);
+    // b opens again on the background worker once its password is in, and an AES-256 key takes
+    // its time on a slow runner (review on #1723: three frames were not enough on CI).
+    run_until(&mut h, |h| h.state().dialog.is_some());
     assert_eq!(printing(&h), (Some(Dialog::Print), Some(b.clone())), "then b's, after its password");
     h.state_mut().dialog = None;
     h.run_steps(3);
@@ -205,13 +217,7 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
     h.state_mut().open_path(&a);
     h.state_mut().set_option("print-file", &b).unwrap();
     h.state_mut().set_option("print-file", &a).unwrap();
-    for _ in 0..200 {
-        if h.state().password_prompt.is_some() {
-            break;
-        }
-        h.run_steps(1);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    run_until(&mut h, |h| h.state().password_prompt.is_some());
     h.run_steps(2);
     assert!(h.state().password_prompt.is_some(), "b asks for its password");
     let field = h.get_by_role(Role::PasswordInput);
@@ -219,16 +225,10 @@ fn each_file_left_by_the_print_verb_gets_its_own_print_dialog() {
     field.type_text("pw");
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
-    for _ in 0..200 {
-        if h.state().dialog.is_some() && h.state().views.len() == 2 {
-            break;
-        }
-        h.run_steps(1);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    run_until(&mut h, |h| h.state().dialog.is_some() && h.state().views.len() == 2);
     assert_eq!(printing(&h), (Some(Dialog::Print), Some(b.clone())), "b's dialog first, as asked");
     h.state_mut().dialog = None;
-    h.run_steps(3);
+    run_until(&mut h, |h| h.state().dialog.is_some());
     assert_eq!(printing(&h), (Some(Dialog::Print), Some(a.clone())), "then a's");
     let _ = (std::fs::remove_file(&a), std::fs::remove_file(&b));
 }
@@ -250,13 +250,7 @@ fn a_file_asked_for_twice_while_opening_gets_two_print_dialogs() {
     h.state_mut().set_option("print-file", &a).unwrap();
     h.state_mut().open_path(&a);
     h.state_mut().set_option("print-file", &a).unwrap();
-    for _ in 0..200 {
-        if h.state().dialog.is_some() {
-            break;
-        }
-        h.run_steps(1);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    run_until(&mut h, |h| h.state().dialog.is_some());
     assert_eq!(h.state().views.len(), 1, "opened once");
     assert_eq!(h.state().dialog, Some(Dialog::Print), "the first request's dialog");
     h.state_mut().dialog = None;
