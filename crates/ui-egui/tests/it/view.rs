@@ -2121,15 +2121,18 @@ fn cut_content_pdf() -> Vec<u8> {
 }
 
 /// A page whose content was cut at the renderer's limits is named in a notice, and listed for
-/// automation, instead of looking complete (#623).
+/// automation (`ui.state`, by page number), instead of looking complete (#623).
 #[test]
 fn a_page_whose_content_was_cut_is_named_in_a_notice() {
     use egui_kittest::kittest::Queryable;
     let _gpu = gpu();
     let pdf = cut_content_pdf();
-    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+    let slot: std::sync::Arc<std::sync::Mutex<Option<pdfcraft_ui_egui::control::ControlClient>>> = Default::default();
+    let s = slot.clone();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |cc| {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
+        *s.lock().unwrap() = Some(app.attach_control(&cc.egui_ctx));
         app.open_bytes("cut.pdf", None, pdf).expect("opens");
         app
     });
@@ -2142,4 +2145,14 @@ fn a_page_whose_content_was_cut_is_named_in_a_notice() {
     assert_eq!(h.state().views[0].cut_pages(), [0]);
     assert!(h.state().views[0].page_errors().is_empty(), "a cut page still draws");
     h.get_by_label_contains("Page 1 holds more content than PdfCraft can read");
+    // Automation counts pages from 1, as the notice does (review on #2113).
+    let client = slot.lock().unwrap().take().expect("the control channel");
+    let rx = client.send("ui.state", serde_json::json!({}));
+    let state = loop {
+        h.run_steps(1);
+        if let Ok(reply) = rx.try_recv() {
+            break reply.expect("ui.state");
+        }
+    };
+    assert_eq!(state["active"]["cut_pages"], serde_json::json!([1]), "{state}");
 }
