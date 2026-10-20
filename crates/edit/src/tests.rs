@@ -2802,6 +2802,59 @@ fn replacing_a_mixed_font_line_again_replaces_its_sequence() {
     }
 }
 
+/// Review on #2955: a leading space is not a word the line's font shows. " cab" (no word the
+/// subset can show) was split into an empty source-font run and a substitute run, so it was
+/// written as a two-font `/PCEdLine` with an empty `Tj` in the line's font; read back, the line
+/// was the substitute's alone, and the next edit took Helvetica for the line's own font. It is
+/// substituted as a whole instead, as a line with no word in the source font always was.
+#[test]
+fn a_leading_space_does_not_make_a_source_font_run() {
+    let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
+    text::replace_line(&mut doc, 0, 0, " cab").unwrap();
+    let doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(!content.contains("/PCEdLine") && !content.contains("() Tj"), "{content}");
+    // With a word in the source font after it, the line is still written in both.
+    let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
+    text::replace_line(&mut doc, 0, 0, " ab cab").unwrap();
+    let doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("/PCEdLine") && !content.contains("() Tj"), "{content}");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(lines.iter().map(|l| (l.text.trim(), l.font.as_str())).collect::<Vec<_>>(), [("ab cab", "F2")]);
+    // The spaces the subset has no glyph for are moves, each one kept: the leading one before
+    // the first word, two between words as two.
+    let flat = |doc: &Document| String::from_utf8_lossy(&page_content_bytes(doc, 0)).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat(&doc).contains("/F2 10 Tf [-330] TJ (ab) Tj"), "{}", flat(&doc));
+    let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
+    text::replace_line(&mut doc, 0, 0, "ab  ba cab").unwrap();
+    let doc = reopen(&doc);
+    assert!(flat(&doc).contains("(ab) Tj [-330] TJ [-330] TJ (ba) Tj"), "{}", flat(&doc));
+    // Before a substitute word, the leading spaces are the substitute's to show, all of them.
+    let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
+    text::replace_line(&mut doc, 0, 0, "  cab ab").unwrap();
+    let doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("(  cab) Tj"), "{content}");
+}
+
+/// Review on #2955: a paragraph rewrite keeps the `/PCEdLine` delimiters of a line an earlier
+/// replacement wrote in two fonts, so a rewritten paragraph's rows can end up inside one. A
+/// later replacement of one of those rows must not take the sequence's other rows with it.
+#[test]
+fn replacing_one_row_of_a_sequence_keeps_the_other_rows() {
+    let content = "BT /F2 10 Tf 72 600 Td /PCEdLine BMC /F2 10 Tf (ab) Tj /F1 10 Tf ( cab) Tj 0 -20 Td /F2 10 Tf (ba) Tj EMC ET";
+    let rows = text::text_lines(&text_page(content), 0).unwrap();
+    assert_eq!(rows.iter().map(|l| l.text.trim()).collect::<Vec<_>>(), ["ab cab", "ba"]);
+    for (row, text, other) in [(0, "ab ab", "ba"), (1, "ab", "ab cab")] {
+        let mut doc = text_page(content);
+        text::replace_line(&mut doc, 0, row, text).unwrap();
+        let doc = reopen(&doc);
+        let after: Vec<String> = text::text_lines(&doc, 0).unwrap().iter().map(|l| l.text.trim().to_string()).collect();
+        assert!(after.iter().any(|t| t == text) && after.iter().any(|t| t == other), "replacing row {row}: {after:?}");
+    }
+}
+
 #[test]
 fn missing_glyphs_substitute_helvetica_and_impossible_text_is_refused() {
     let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");

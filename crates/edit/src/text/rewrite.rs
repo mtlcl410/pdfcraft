@@ -173,17 +173,24 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
     // with the line, or each edit would nest one more (review on #2955). The line then starts in
     // its own font, set again where the sequence was.
     if let Some((open, close)) = target.edited.and_then(|open| Some((open, matching_emc(&ops, open)?))) {
-        drops.extend(open..=close);
-        let size = font_size_before(&ops, first).unwrap_or(target.size);
-        let own_font = |i: usize| ops.get(i).is_some_and(|o| o.is("Tf") && o.name(0) == Some(target.font.as_bytes()) && o.num(1) == Some(size));
-        replacement.insert(0, Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
-        // The same font set just before the sequence (by the last edit) is set again here.
-        if let Some(i) = open.checked_sub(1).filter(|&i| own_font(i)) {
-            drops.insert(i);
-        }
-        // And set back after it: the replacement ends in that font too.
-        if let Some(i) = close.checked_add(1).filter(|&i| own_font(i)) {
-            drops.insert(i);
+        // Only when the sequence holds nothing but this line: a paragraph rewrite keeps the
+        // delimiters, so other rows can be inside it (review on #2955). Then the sequence stays
+        // as it is, since it is also what reads its own two-font line back as one, and only
+        // this line's operators go.
+        let others_inside = lines.iter().any(|l| l.ops.iter().any(|o| (open..=close).contains(o) && !drops.contains(o)));
+        if !others_inside {
+            drops.extend(open..=close);
+            let size = font_size_before(&ops, first).unwrap_or(target.size);
+            let own_font = |i: usize| ops.get(i).is_some_and(|o| o.is("Tf") && o.name(0) == Some(target.font.as_bytes()) && o.num(1) == Some(size));
+            replacement.insert(0, Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
+            // The same font set just before the sequence (by the last edit) is set again here.
+            if let Some(i) = open.checked_sub(1).filter(|&i| own_font(i)) {
+                drops.insert(i);
+            }
+            // And set back after it: the replacement ends in that font too.
+            if let Some(i) = close.checked_add(1).filter(|&i| own_font(i)) {
+                drops.insert(i);
+            }
         }
     }
     let new_data = splice(&pieces, &ops, |i| if i == first { (std::mem::take(&mut replacement), false) } else { (Vec::new(), !drops.contains(&i)) });

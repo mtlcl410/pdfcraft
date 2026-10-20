@@ -623,12 +623,19 @@ pub(crate) fn source_show(metrics: &Metrics, text: &str, size: f64, space: f64, 
 /// in, since [`source_show`] draws spaces the font lacks with a displacement.
 pub(super) fn source_runs(metrics: &Metrics, text: &str) -> Vec<(bool, String)> {
     let mut runs: Vec<(bool, String)> = Vec::new();
+    // Spaces before the first word go with it: on their own they would make a run of the line's
+    // font with nothing to show (review on #2955).
+    let mut lead = String::new();
     for (i, word) in text.split(' ').enumerate() {
-        let own = word.is_empty() || metrics.encode(word).is_some();
         let piece = if i == 0 { word.to_string() } else { format!(" {word}") };
+        if runs.is_empty() && word.is_empty() {
+            lead.push_str(&piece);
+            continue;
+        }
+        let own = word.is_empty() || metrics.encode(word).is_some();
         match runs.last_mut() {
             Some((last, run)) if *last == own || word.is_empty() => run.push_str(&piece),
-            _ => runs.push((own, piece)),
+            _ => runs.push((own, std::mem::take(&mut lead) + &piece)),
         }
     }
     runs
