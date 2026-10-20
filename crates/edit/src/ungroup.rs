@@ -366,40 +366,37 @@ fn blends(doc: &Document, gs: &Dict) -> bool {
     !first.is_some_and(|b| matches!(b.as_name(), Some(b"Normal" | b"Compatible")))
 }
 
-/// Whether the graphics state is translucent, blended or soft-masked at op `at` of stream
-/// `stream`, following `q`/`Q` and `gs` through the page's streams in order. Each `gs` changes
-/// only the parameters it sets.
-pub(crate) fn translucent_at(doc: &Document, resources: &Dict, streams: &[Vec<Op>], stream: usize, at: usize) -> bool {
+/// Whether the graphics state is translucent, blended or soft-masked at op `at` of the page's
+/// streams parsed as one (the indexes `page_images` gives), following `q`/`Q` and `gs`. Each `gs`
+/// changes only the parameters it sets.
+pub(crate) fn translucent_at(doc: &Document, resources: &Dict, ops: &[Op], at: usize) -> bool {
     let states = resources.get(b"ExtGState").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
     // Fill alpha below one, stroke alpha below one, a soft mask, a blend mode other than Normal.
     let mut stack: Vec<[bool; 4]> = Vec::new();
     let mut now = [false; 4];
-    for (si, ops) in streams.iter().enumerate().take(stream.saturating_add(1)) {
-        let end = if si == stream { at.min(ops.len()) } else { ops.len() };
-        for op in ops.iter().take(end) {
-            match op.op.as_slice() {
-                b"q" => stack.push(now),
-                b"Q" => now = stack.pop().unwrap_or([false; 4]),
-                b"gs" => {
-                    let Some(gs) = op.name(0).and_then(|n| states.get(n)).map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()) else {
-                        continue;
-                    };
-                    let alpha = |key: &[u8]| gs.get(key).map(|v| doc.resolve(v)).and_then(|v| v.as_f64()).map(|a| a < 1.0);
-                    if let Some(v) = alpha(b"ca") {
-                        now[0] = v;
-                    }
-                    if let Some(v) = alpha(b"CA") {
-                        now[1] = v;
-                    }
-                    if let Some(m) = gs.get(b"SMask").map(|v| doc.resolve(v)) {
-                        now[2] = m.as_name() != Some(b"None");
-                    }
-                    if gs.get(b"BM").is_some() {
-                        now[3] = blends(doc, &gs);
-                    }
+    for op in ops.iter().take(at) {
+        match op.op.as_slice() {
+            b"q" => stack.push(now),
+            b"Q" => now = stack.pop().unwrap_or([false; 4]),
+            b"gs" => {
+                let Some(gs) = op.name(0).and_then(|n| states.get(n)).map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()) else {
+                    continue;
+                };
+                let alpha = |key: &[u8]| gs.get(key).map(|v| doc.resolve(v)).and_then(|v| v.as_f64()).map(|a| a < 1.0);
+                if let Some(v) = alpha(b"ca") {
+                    now[0] = v;
                 }
-                _ => {}
+                if let Some(v) = alpha(b"CA") {
+                    now[1] = v;
+                }
+                if let Some(m) = gs.get(b"SMask").map(|v| doc.resolve(v)) {
+                    now[2] = m.as_name() != Some(b"None");
+                }
+                if gs.get(b"BM").is_some() {
+                    now[3] = blends(doc, &gs);
+                }
             }
+            _ => {}
         }
     }
     now.iter().any(|v| *v)

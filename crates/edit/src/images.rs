@@ -501,8 +501,7 @@ pub fn change_image(doc: &mut Document, page: usize, index: usize, change: &Imag
                 return Err(EditError::Invalid("only grouped Form artwork can be ungrouped".into()));
             }
             let res = p.dict.get(b"Resources").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
-            let parsed: Vec<Vec<Op>> = all.iter().map(|(_, d)| parse(d).ops).collect();
-            let translucent = crate::ungroup::translucent_at(doc, &res, &parsed, img.stream, img.op);
+            let translucent = crate::ungroup::translucent_at(doc, &res, &ops, img.op);
             let (inline, merged) = crate::ungroup::ungroup_ops(doc, &res, img.name.as_bytes(), translucent)?;
             resources = Some(merged);
             inline

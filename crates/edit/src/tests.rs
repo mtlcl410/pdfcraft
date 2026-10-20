@@ -8973,6 +8973,18 @@ fn ungroup_follows_the_graphics_state_at_the_do() {
     .unwrap();
     let mut doc = reopen(&doc);
     assert!(images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup).is_err(), "carried from the first stream");
+    // #3067 review: the Do's index counts the page's streams as one. Read as an index into its
+    // own stream it ran past the Do to the Q after it, and missed the Multiply it is drawn with.
+    let (mut doc, _) = page_with_form(&[("Group", group("Transparency"))], b"0 0 1 1 re f", "", Some(states.clone()));
+    let first = doc.add(Object::Stream(Stream::flate(Dict::new(), b"0 0 m 1 1 l n")));
+    doc.set(pdfcraft_cos::ObjRef::new(7, 0), Object::Stream(Stream::flate(Dict::new(), b"q /Mul gs /Art Do Q 0 0 m")));
+    doc.update_dict(pdfcraft_cos::ObjRef::new(3, 0), |d| {
+        d.set(b"Contents".to_vec(), Object::Array(vec![Object::Ref(first), Object::Ref(pdfcraft_cos::ObjRef::new(7, 0))]));
+    })
+    .unwrap();
+    let mut doc = reopen(&doc);
+    let r = images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup);
+    assert!(matches!(&r, Err(EditError::Invalid(m)) if m.contains("drawn translucent")), "drawn under Multiply in the second stream: {r:?}");
 }
 
 /// A transparency group's blend modes are looked for where they are used: in the `gs` its
