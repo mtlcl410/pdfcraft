@@ -2,7 +2,8 @@
 //!
 //! Each file is printed on the system default printer without a window, the way Explorer's Print
 //! works for other PDF apps: the Print dialog's defaults (all pages, Fit, comments and markups),
-//! one copy, and the driver's own two-sided setting. A file that can't be printed unattended — it
+//! one copy, and the driver's own two-sided setting. A file that asks for no page scaling
+//! (`/PrintScaling /None`) prints at actual size, since that holds without a dialog too. A file that can't be printed unattended — it
 //! needs a password, its permissions forbid printing, there is no default printer, the spooler
 //! refused the job — is handed back, and the app opens it with the Print dialog showing, so the
 //! person sees why rather than nothing happening.
@@ -10,7 +11,7 @@
 use std::sync::Arc;
 
 use pdfcraft_engine::Session;
-use pdfcraft_engine::print::{self, Content, Layout, Orientation, PAPERS, Subset, spool};
+use pdfcraft_engine::print::{self, Content, Layout, Orientation, PAPERS, SizeMode, Subset, spool};
 
 /// Print `files` unattended. Returns the ones the app should open with the Print dialog instead.
 pub(crate) fn run(files: &[String]) -> Vec<String> {
@@ -38,21 +39,23 @@ fn prepare(path: &str) -> Result<(Vec<u8>, spool::Job), String> {
     let doc = session.get(id).ok_or("the document vanished")?;
     let sizes: Vec<(f64, f64)> = doc.info.pages.iter().map(|p| (f64::from(p.width), f64::from(p.height))).collect();
     let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
-    let settings = settings(&sizes, &labels)?;
+    let actual_size = doc.prints_without_scaling();
+    let settings = settings(&sizes, &labels, actual_size)?;
     // Refuses a document whose permissions forbid printing.
     let pdf = session.print_pdf(id, &settings).map_err(|e| e.to_string())?;
-    Ok((pdf, job(&name)))
+    Ok((pdf, job(&name, actual_size)))
 }
 
-/// The Print dialog's defaults for every page, on the paper of the first page (see [`paper`]).
-fn settings(sizes: &[(f64, f64)], labels: &[String]) -> Result<print::Settings, String> {
+/// The Print dialog's defaults for every page, on the paper of the first page (see [`paper`]):
+/// Fit, or Actual size when the document asks for no page scaling.
+fn settings(sizes: &[(f64, f64)], labels: &[String], actual_size: bool) -> Result<print::Settings, String> {
     let pages = print::select_pages(sizes.len(), None, labels, Subset::All, false).map_err(|e| e.to_string())?;
     let first = sizes.first().copied().ok_or("there are no pages to print")?;
     Ok(print::Settings {
         pages,
         paper: paper(first),
         orientation: Orientation::Auto,
-        layout: Layout::default(),
+        layout: if actual_size { Layout::Size(SizeMode::Actual) } else { Layout::default() },
         content: Content::DocumentAndMarkups,
         // Not a label job, and printed as vectors (the dialog's defaults).
         ..print::Settings::default()
@@ -76,14 +79,16 @@ fn paper(first: (f64, f64)) -> (f64, f64) {
     (first.0.min(first.1).max(72.0), first.0.max(first.1).max(72.0))
 }
 
-/// One copy on the system default printer, with the driver's own two-sided setting.
-fn job(title: &str) -> spool::Job {
+/// One copy on the system default printer, with the driver's own two-sided setting. At actual
+/// size the spooler may not shrink the sheet either: a printer with no such paper refuses the job,
+/// and the file goes to the Print dialog.
+fn job(title: &str, actual_size: bool) -> spool::Job {
     spool::Job {
         printer: None,
         copies: 1,
         collate: true,
         duplex: None,
-        scaling: spool::Scaling::ShrinkToFit,
+        scaling: if actual_size { spool::Scaling::Exact } else { spool::Scaling::ShrinkToFit },
         grayscale: false,
         title: title.to_string(),
         options: Vec::new(),
@@ -123,20 +128,56 @@ mod tests {
     #[test]
     fn every_page_prints_with_the_dialog_defaults_on_the_first_pages_paper() {
         let labels: Vec<String> = ["i", "1", "2"].map(String::from).to_vec();
-        let s = settings(&[A4, LETTER, A4], &labels).unwrap();
+        let s = settings(&[A4, LETTER, A4], &labels, false).unwrap();
         assert_eq!(s.pages, [0, 1, 2]);
         assert_eq!(s.paper, paper_named("A4"));
         assert_eq!(s.layout, Layout::default());
         assert_eq!(s.content, Content::DocumentAndMarkups);
-        assert!(settings(&[], &[]).is_err(), "no pages: an error, not a panic");
+        assert!(settings(&[], &[], false).is_err(), "no pages: an error, not a panic");
+        let actual = settings(&[A4], &labels[..1], true).unwrap();
+        assert_eq!(actual.layout, Layout::Size(SizeMode::Actual), "/PrintScaling /None: Actual size, not Fit");
+        assert_eq!(actual.paper, paper_named("A4"));
     }
 
     #[test]
     fn the_job_goes_to_the_default_printer_and_shrinks_onto_its_paper() {
-        let j = job("report.pdf");
+        let j = job("report.pdf", false);
         assert_eq!((j.printer, j.copies, j.duplex), (None, 1, None));
         assert_eq!(j.scaling, spool::Scaling::ShrinkToFit);
         assert_eq!(j.title, "report.pdf");
+        assert_eq!(job("report.pdf", true).scaling, spool::Scaling::Exact, "no page scaling in the spooler either");
+    }
+
+    /// A one-page A4 PDF whose catalog has `/ViewerPreferences << /PrintScaling value >>`.
+    fn with_print_scaling(value: &str) -> Vec<u8> {
+        let objects = [
+            format!("<< /Type /Catalog /Pages 2 0 R /ViewerPreferences << /PrintScaling {value} >> >>"),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>".to_string(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+        for off in offsets {
+            pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+        pdf
+    }
+
+    /// ISO 32000-2 Table 147: `/PrintScaling` is honoured when the print dialog is suppressed, as
+    /// it is here.
+    #[test]
+    fn a_file_that_asks_for_no_page_scaling_prints_at_actual_size() {
+        let (_d1, none) = file_with(&with_print_scaling("/None"));
+        assert_eq!(prepare(&none).unwrap().1.scaling, spool::Scaling::Exact);
+        let (_d2, app_default) = file_with(&with_print_scaling("/AppDefault"));
+        assert_eq!(prepare(&app_default).unwrap().1.scaling, spool::Scaling::ShrinkToFit);
     }
 
     /// A file in a fresh temporary folder, removed with the folder.
