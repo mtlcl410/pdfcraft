@@ -350,6 +350,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
         return Some(c);
     }
     if !shaped_by_a_face(t) {
+        // Acrobat's stand-in for Courier has no glyphs for the extra letters (it draws boxes,
+        // seen in Acrobat Pro, review on #3076), so Courier keeps refusing them.
+        if t.family == Family::Courier
+            && let Some(c) = t.text.chars().find(|c| pdfcraft_fonts::extra_letter(*c).is_some())
+        {
+            return Some(c);
+        }
         // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
         // that is also how `draw` redraws an existing item, so it's checked that way.
         // The extra letters need codes of their own in one encoding for the whole item; a text
@@ -770,7 +777,7 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
             // Central European letters (č ć đ ł ő …) the standard fonts have but WinAnsi has no
             // code for get codes of their own in `/Differences` (#2098). Text that also needs a
             // shaping face keeps plain WinAnsi for its Latin runs (see `first_undrawable`).
-            let latin = pdfcraft_fonts::LatinEncoding::for_text(&t.text);
+            let latin = pdfcraft_fonts::LatinEncoding::for_text(&t.text).filter(|_| t.family != Family::Courier);
             let name = match &latin {
                 Some(e) => format!("{}L{}", font_name(base), e.tag()),
                 None => font_name(base),
@@ -790,6 +797,15 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
                 encoding.set(b"BaseEncoding".to_vec(), Object::name("WinAnsiEncoding"));
                 encoding.set(b"Differences".to_vec(), Object::Array(differences));
                 font.set(b"Encoding".to_vec(), Object::Dict(encoding));
+                // Widths and text by code: Acrobat takes neither from the /Differences glyph
+                // names, so it drew the letters on top of one another and copied them without
+                // their accents (review on #3076).
+                font.set(b"FirstChar".to_vec(), Object::Int(0));
+                font.set(b"LastChar".to_vec(), Object::Int(255));
+                let face = t.family.std14(t.bold, t.italic);
+                font.set(b"Widths".to_vec(), Object::Array(e.widths(face).into_iter().map(Object::Real).collect()));
+                let cmap = doc.add(Object::Stream(Stream::flate(Dict::new(), e.to_unicode().as_bytes())));
+                font.set(b"ToUnicode".to_vec(), Object::Ref(cmap));
             } else if t.family != Family::Courier || !t.text.is_ascii() {
                 font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
             }
@@ -1043,6 +1059,9 @@ fn validate(c: &Content) -> Result<(), EditError> {
                 first_undrawable(t)
             };
             if let Some(c) = undrawable {
+                if t.family == Family::Courier && pdfcraft_fonts::extra_letter(c).is_some() {
+                    return Err(EditError::Invalid(crate::courier_undrawable_message(c)));
+                }
                 return Err(crate::undrawable(c));
             }
         }

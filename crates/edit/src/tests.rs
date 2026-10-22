@@ -5933,6 +5933,40 @@ fn central_european_letters_on_several_lines_keep_their_codes() {
     }
 }
 
+/// Review on #3076, checked in Acrobat Pro: a font with extra letters carries their widths and
+/// their text by code (`/FirstChar 0 /LastChar 255 /Widths`, `/ToUnicode`), as Acrobat took
+/// neither from the glyph names; and Courier refuses them, since Acrobat's stand-in for Courier
+/// draws boxes for them.
+#[test]
+fn central_european_letters_carry_widths_and_text_and_courier_refuses_them() {
+    let mut doc = fixture();
+    let item = AddedText { rect: [72.0, 600.0, 500.0, 700.0], text: "Đakovo čć".into(), size: 14.0, ..AddedText::default() };
+    add_content(&mut doc, 0, &Content::Text(item)).unwrap();
+    let doc = reopen(&doc);
+    let page = page_list(&doc).swap_remove(0);
+    let res = page.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap();
+    let fonts = res.get(b"Font").map(|f| doc.resolve(f)).and_then(|f| f.as_dict().cloned()).unwrap();
+    let font =
+        fonts.iter().find_map(|(k, v)| k.starts_with(b"PCFHelveticaL").then(|| doc.resolve(v).as_dict().cloned()).flatten()).expect("the font");
+    assert_eq!((font.get(b"FirstChar").and_then(Object::as_int), font.get(b"LastChar").and_then(Object::as_int)), (Some(0), Some(255)));
+    let widths = font.get(b"Widths").map(|o| doc.resolve(o)).and_then(|o| o.as_array().map(Vec::len));
+    assert_eq!(widths, Some(256));
+    let cmap = font.get(b"ToUnicode").map(|o| doc.resolve(o)).expect("a ToUnicode CMap");
+    let Object::Stream(cmap) = &*cmap else { panic!("not a stream") };
+    let cmap = String::from_utf8(cmap.decoded().unwrap().to_vec()).unwrap();
+    assert!(cmap.contains("<0110>") && cmap.contains("<010D>") && cmap.contains("<0107>"), "{cmap}");
+
+    let mut doc = fixture();
+    let courier =
+        AddedText { rect: [72.0, 600.0, 500.0, 700.0], text: "Đakovo".into(), size: 14.0, family: Family::Courier, ..AddedText::default() };
+    assert_eq!(first_undrawable(&courier), Some('Đ'));
+    let err = add_content(&mut doc, 0, &Content::Text(courier)).unwrap_err().to_string();
+    assert_eq!(err, crate::courier_undrawable_message('Đ'));
+    let plain =
+        AddedText { rect: [72.0, 600.0, 500.0, 700.0], text: "Zagreb šuma".into(), size: 14.0, family: Family::Courier, ..AddedText::default() };
+    add_content(&mut doc, 0, &Content::Text(plain)).unwrap();
+}
+
 #[test]
 fn central_european_letters_are_added_in_the_standard_fonts() {
     // Review on #3076: more extra letters than the codes the text leaves to spare is refused,

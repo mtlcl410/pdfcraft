@@ -1,9 +1,11 @@
 //! Central European letters in the standard 14 fonts (#2098). WinAnsiEncoding has codes for
 //! š ž Š Ž but not for č ć đ ł ő ę and the rest of Latin Extended-A, which the twelve text faces
 //! nonetheless carry. Text that uses them is written with an `/Encoding` whose `/Differences` give
-//! the letters it uses codes of their own ([`LatinEncoding`]); every viewer draws them from its
-//! standard fonts and reads them back by their standard glyph names (ISO 32000-2 §9.6.5,
-//! §9.10.2), so nothing is embedded.
+//! the letters it uses codes of their own ([`LatinEncoding`]), drawn from the viewer's standard
+//! fonts (ISO 32000-2 §9.6.5), so nothing is embedded. The font also gets `/Widths` and a
+//! `/ToUnicode` CMap ([`LatinEncoding::widths`], [`LatinEncoding::to_unicode`]): checked in Acrobat
+//! Pro (review on #3076), Acrobat took neither the widths nor the text from the glyph names, so
+//! the letters were drawn on top of one another and copied without their accents.
 
 use crate::std14::Std14;
 use crate::std14_metrics::EXTRA_LETTERS;
@@ -26,7 +28,9 @@ pub(crate) fn extra_letter_named(name: &str) -> Option<char> {
 }
 
 fn extra(c: char) -> Option<(&'static str, &'static [u16; 12])> {
-    EXTRA_LETTERS.iter().find(|(l, ..)| *l == c).map(|(_, name, widths)| (*name, widths))
+    // EXTRA_LETTERS is in code point order (`extra_letters_are_in_code_point_order`).
+    let i = EXTRA_LETTERS.binary_search_by_key(&c, |(l, ..)| *l).ok()?;
+    EXTRA_LETTERS.get(i).map(|(_, name, widths)| (*name, widths))
 }
 
 /// Whether the standard text fonts can draw `c`: in WinAnsi (a tab counts, as a space) or one of
@@ -127,6 +131,78 @@ impl LatinEncoding {
             .collect()
     }
 
+    /// The `/Widths` of codes 0 to 255 (`/FirstChar 0 /LastChar 255`) in `font`: each extra
+    /// letter's Core14 width at its code, the WinAnsi widths elsewhere. A viewer that doesn't
+    /// take widths from the `/Differences` glyph names (Acrobat) would otherwise give the
+    /// letters' codes no advance.
+    pub fn widths(&self, font: Std14) -> Vec<f64> {
+        (0..=255u8)
+            .map(|code| match self.letters.iter().find(|&&(_, at, _)| at == code) {
+                Some(&(c, ..)) => match (extra(c), font.text_face()) {
+                    (Some((_, widths)), Some(face)) => widths.get(face).copied().map_or(0.0, f64::from),
+                    _ => 0.0,
+                },
+                None => font.width(code),
+            })
+            .collect()
+    }
+
+    /// A `/ToUnicode` CMap for this encoding: each extra letter's code to the letter, every
+    /// other code WinAnsi defines to its character. Text is read from it before the glyph
+    /// names (ISO 32000-2 §9.10.2).
+    pub fn to_unicode(&self) -> String {
+        let mut pairs: Vec<(u8, char)> = Vec::new();
+        for code in 0..=255u8 {
+            let c = match self.letters.iter().find(|&&(_, at, _)| at == code) {
+                Some(&(c, ..)) => Some(c),
+                None => crate::encodings::WIN_ANSI.get(usize::from(code)).copied().filter(|u| *u != 0).and_then(char::from_u32),
+            };
+            if let Some(c) = c {
+                pairs.push((code, c));
+            }
+        }
+        let mut out = String::from(
+            "/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+             /CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+",
+        );
+        // At most 100 mappings per block (ISO 32000-2 §9.10.3).
+        for block in pairs.chunks(100) {
+            out.push_str(&format!(
+                "{} beginbfchar
+",
+                block.len()
+            ));
+            for &(code, c) in block {
+                let mut units = [0u16; 2];
+                let hex: String = c.encode_utf16(&mut units).iter().map(|u| format!("{u:04X}")).collect();
+                out.push_str(&format!(
+                    "<{code:02X}> <{hex}>
+"
+                ));
+            }
+            out.push_str(
+                "endbfchar
+",
+            );
+        }
+        out.push_str(
+            "endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+",
+        );
+        out
+    }
+
     /// The `/Differences` array: each extra letter's code and glyph name, in code order.
     pub fn differences(&self) -> Vec<(u8, &'static str)> {
         let mut d: Vec<(u8, &'static str)> = self.letters.iter().map(|&(_, code, name)| (code, name)).collect();
@@ -153,6 +229,39 @@ impl LatinEncoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `extra` looks letters up by binary search.
+    #[test]
+    fn extra_letters_are_in_code_point_order() {
+        assert!(EXTRA_LETTERS.windows(2).all(|w| w[0].0 < w[1].0));
+        for (c, name, _) in &EXTRA_LETTERS {
+            assert_eq!(extra_letter(*c), Some(*name));
+        }
+        assert_eq!(extra_letter('a'), None);
+    }
+
+    /// Review on #3076: Acrobat took neither the widths nor the text from the glyph names, so
+    /// the font carries both by code. Each extra letter's code has its Core14 width and maps to
+    /// the letter; the other codes keep their WinAnsi width and character.
+    #[test]
+    fn the_encoding_gives_widths_and_text_by_code() {
+        let e = LatinEncoding::for_text("čćđ Đakovo").expect("an encoding");
+        let code = |c: char| e.encode(&c.to_string())[0];
+        let w = e.widths(Std14::Helvetica);
+        assert_eq!(w.len(), 256);
+        assert_eq!(w[usize::from(code('č'))], 500.0, "Helvetica ccaron");
+        assert_eq!(w[usize::from(code('Đ'))], 722.0, "Helvetica Dcroat");
+        assert_eq!(w[usize::from(b'a')], 556.0, "WinAnsi a");
+        assert_eq!(e.widths(Std14::TimesRoman)[usize::from(code('č'))], 444.0, "Times-Roman ccaron");
+        let cmap = e.to_unicode();
+        assert!(cmap.contains(&format!("<{:02X}> <010D>", code('č'))), "{cmap}");
+        assert!(cmap.contains(&format!("<{:02X}> <0110>", code('Đ'))));
+        assert!(cmap.contains("<61> <0061>") && cmap.contains("<80> <20AC>"), "WinAnsi a and the euro");
+        // No block over 100 mappings (ISO 32000-2 9.10.3).
+        for block in cmap.split("beginbfchar").skip(1) {
+            assert!(block.lines().filter(|l| l.starts_with('<')).count() <= 100);
+        }
+    }
 
     #[test]
     fn croatian_letters_get_codes_of_their_own() {
