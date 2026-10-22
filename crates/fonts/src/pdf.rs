@@ -1234,7 +1234,7 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
 /// glyph order, 29 below ASCII, so `Solid` read as `6ROLG` and typing set the wrong glyphs (#3962).
 /// Codes without a glyph, or whose glyph has no name with a Unicode value, are left out.
 fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
-    use skrifa::{GlyphId, raw::TableProvider as _};
+    use skrifa::{GlyphId, raw::TableProvider as _, raw::tables::cmap::PlatformId};
     let Some(descriptor) = dict(doc, font.get(b"FontDescriptor")) else { return Vec::new() };
     // Flag bit 6, Nonsymbolic (ISO 32000-2 Table 121).
     let flags = descriptor.get(b"Flags").and_then(|v| doc.resolve(v).as_f64()).unwrap_or(0.0) as i64;
@@ -1249,7 +1249,18 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
     let (Ok(cmap), Ok(post)) = (face.cmap(), face.post()) else { return Vec::new() };
     (0..=255u32)
         .filter_map(|code| {
-            let glyph = [0, 0xF000, 0xF100, 0xF200].into_iter().find_map(|o| cmap.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))?;
+            // The records in order, as the renderer's `map_code` reads a symbolic font: a Windows
+            // symbol or Unicode cmap with the code and the code at 0xF000, 0xF100 and 0xF200, a
+            // Macintosh or Unicode-platform one with the code alone; the first glyph found wins.
+            let glyph = cmap.encoding_records().iter().find_map(|record| {
+                let offsets: &[u32] = match (record.platform_id(), record.encoding_id()) {
+                    (PlatformId::Windows, 0 | 1) => &[0, 0xF000, 0xF100, 0xF200],
+                    (PlatformId::Macintosh | PlatformId::Unicode, 0) => &[0],
+                    _ => return None,
+                };
+                let subtable = record.subtable(cmap.offset_data()).ok()?;
+                offsets.iter().find_map(|o| subtable.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))
+            })?;
             let glyph = skrifa::raw::types::GlyphId16::new(u16::try_from(glyph.to_u32()).ok()?);
             Some((code, glyph_text(post.glyph_name(glyph)?)?))
         })
@@ -1567,6 +1578,8 @@ mod tests {
     /// `post` table names the glyphs its codes select, and typing encodes back to those codes.
     /// A (3,0) symbol cmap at 0xF000 + code is read too: code 0x20, `.notdef` in the Mac table,
     /// shows `k` there, code 0xC0 `é`, and code 0xC1 the variant `a.1`, whose suffix is dropped.
+    /// Records are read in order, each with its offsets, as the renderer reads them: 0xC2 is the
+    /// symbol cmap's `x`, not a later (3,1) cmap's `z`.
     #[test]
     fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
         use skrifa::{MetadataProvider as _, raw::TableProvider as _};
@@ -1586,26 +1599,51 @@ mod tests {
         }
         let mac_len = 10 + 2 * glyphs.len() as u16;
         let gid = |c: char| u16::try_from(charmap.map(c).unwrap().to_u32()).unwrap();
-        // Two subtables: the Mac one at 20, the symbol one after it.
-        let mut cmap = vec![0, 0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 20, 0, 3, 0, 0];
-        cmap.extend_from_slice(&(20 + u32::from(mac_len)).to_be_bytes());
-        cmap.extend_from_slice(&[0, 6]);
-        cmap.extend_from_slice(&mac_len.to_be_bytes());
-        cmap.extend_from_slice(&[0, 0]);
-        cmap.extend_from_slice(&first.to_be_bytes());
-        cmap.extend_from_slice(&(glyphs.len() as u16).to_be_bytes());
-        glyphs.iter().for_each(|g| cmap.extend_from_slice(&g.to_be_bytes()));
-        // Format 4: 0xF020 → k, 0xF0C0 → é, 0xF0C1 → a.1, then the closing 0xFFFF segment.
-        let segments = [(0xF020u16, gid('k')), (0xF0C0, gid('é')), (0xF0C1, variant), (0xFFFF, 0)];
-        let words: Vec<u16> = [4, 16 + 8 * 4, 0, 8, 8, 2, 0]
-            .into_iter()
-            .chain(segments.iter().map(|s| s.0))
-            .chain([0])
-            .chain(segments.iter().map(|s| s.0))
-            .chain(segments.iter().map(|&(code, glyph)| if code == 0xFFFF { 1 } else { glyph.wrapping_sub(code) }))
-            .chain([0, 0, 0, 0])
-            .collect();
-        words.iter().for_each(|w| cmap.extend_from_slice(&w.to_be_bytes()));
+        let mut mac = vec![0, 6];
+        mac.extend_from_slice(&mac_len.to_be_bytes());
+        mac.extend_from_slice(&[0, 0]);
+        mac.extend_from_slice(&first.to_be_bytes());
+        mac.extend_from_slice(&(glyphs.len() as u16).to_be_bytes());
+        glyphs.iter().for_each(|g| mac.extend_from_slice(&g.to_be_bytes()));
+        // A format 4 subtable: one segment per code, then the closing 0xFFFF segment.
+        let format4 = |map: &[(u16, u16)]| {
+            let segments: Vec<(u16, u16)> = map.iter().copied().chain([(0xFFFF, 0)]).collect();
+            let n = segments.len() as u16;
+            let words: Vec<u16> = [4, 16 + 8 * n, 0, 2 * n, 2, 0, 2 * n - 2]
+                .into_iter()
+                .chain(segments.iter().map(|s| s.0))
+                .chain([0])
+                .chain(segments.iter().map(|s| s.0))
+                .chain(segments.iter().map(|&(code, glyph)| if code == 0xFFFF { 1 } else { glyph.wrapping_sub(code) }))
+                .chain(segments.iter().map(|_| 0))
+                .collect();
+            words.iter().flat_map(|w| w.to_be_bytes()).collect::<Vec<u8>>()
+        };
+        // Symbol (3,0): 0xF020 → k, 0xF0C0 → é, 0xF0C1 → a.1, 0xF0C2 → x.
+        let symbol = format4(&[(0xF020, gid('k')), (0xF0C0, gid('é')), (0xF0C1, variant), (0xF0C2, gid('x')), (0xF0C3, gid('w'))]);
+        // Unicode (3,1), after it: 0xC2 → z. The renderer reads the (3,0) record, offsets and
+        // all, before this one, so code 0xC2 is `x`.
+        let unicode = format4(&[(0xC2, gid('z'))]);
+        // A Unicode-platform (0,3) record, first, which the renderer doesn't read: 0xC3 → q there,
+        // so code 0xC3 is the symbol cmap's `w`.
+        let platform0 = format4(&[(0xC3, gid('q'))]);
+        // Four records, in platform order as the cmap table requires.
+        let at = |n: usize| (36 + n) as u32;
+        let mut cmap = vec![0, 0, 0, 4];
+        for (platform, encoding, offset) in [
+            (0u16, 3u16, at(0)),
+            (1, 0, at(platform0.len())),
+            (3, 0, at(platform0.len() + mac.len())),
+            (3, 1, at(platform0.len() + mac.len() + symbol.len())),
+        ] {
+            cmap.extend_from_slice(&platform.to_be_bytes());
+            cmap.extend_from_slice(&encoding.to_be_bytes());
+            cmap.extend_from_slice(&offset.to_be_bytes());
+        }
+        cmap.extend(platform0);
+        cmap.extend(mac);
+        cmap.extend(symbol);
+        cmap.extend(unicode);
         let mut subset = original.to_vec();
         let count = u16::from_be_bytes(subset[4..6].try_into().unwrap()) as usize;
         let entry = (0..count).map(|i| 12 + i * 16).find(|i| &subset[*i..*i + 4] == b"cmap").unwrap();
@@ -1629,7 +1667,7 @@ mod tests {
         };
         let symbolic = metrics(4, None);
         assert_eq!(symbolic.decode(&codes), TEXT);
-        assert_eq!(symbolic.decode(&[0x20, 0xC0, 0xC1]), "kéa");
+        assert_eq!(symbolic.decode(&[0x20, 0xC0, 0xC1, 0xC2, 0xC3]), "kéaxw");
         assert_eq!(symbolic.encode("Solid").as_deref(), Some(&codes[..5]), "typing sets the same glyphs");
         // A named encoding, or the Nonsymbolic flag, says what the codes are: they read through it.
         assert_eq!(metrics(4, Some(Object::name("WinAnsiEncoding"))).decode(&codes), "6ROLGVWDWH");
