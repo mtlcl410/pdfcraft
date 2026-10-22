@@ -1234,7 +1234,7 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
 /// glyph order, 29 below ASCII, so `Solid` read as `6ROLG` and typing set the wrong glyphs (#3962).
 /// Codes without a glyph, or whose glyph has no name with a Unicode value, are left out.
 fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
-    use skrifa::{GlyphId, raw::TableProvider as _};
+    use skrifa::{GlyphId, raw::TableProvider as _, raw::tables::cmap::PlatformId};
     let Some(descriptor) = dict(doc, font.get(b"FontDescriptor")) else { return Vec::new() };
     // Flag bit 6, Nonsymbolic (ISO 32000-2 Table 121).
     let flags = descriptor.get(b"Flags").and_then(|v| doc.resolve(v).as_f64()).unwrap_or(0.0) as i64;
@@ -1249,7 +1249,18 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
     let (Ok(cmap), Ok(post)) = (face.cmap(), face.post()) else { return Vec::new() };
     (0..=255u32)
         .filter_map(|code| {
-            let glyph = [0, 0xF000, 0xF100, 0xF200].into_iter().find_map(|o| cmap.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))?;
+            // The records in order, as the renderer's `map_code` reads a symbolic font: a Windows
+            // symbol or Unicode cmap with the code and the code at 0xF000, 0xF100 and 0xF200, a
+            // Macintosh or Unicode-platform one with the code alone; the first glyph found wins.
+            let glyph = cmap.encoding_records().iter().find_map(|record| {
+                let offsets: &[u32] = match (record.platform_id(), record.encoding_id()) {
+                    (PlatformId::Windows, 0 | 1) => &[0, 0xF000, 0xF100, 0xF200],
+                    (PlatformId::Macintosh | PlatformId::Unicode, 0) => &[0],
+                    _ => return None,
+                };
+                let subtable = record.subtable(cmap.offset_data()).ok()?;
+                offsets.iter().find_map(|o| subtable.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))
+            })?;
             let glyph = skrifa::raw::types::GlyphId16::new(u16::try_from(glyph.to_u32()).ok()?);
             Some((code, glyph_text(post.glyph_name(glyph)?)?))
         })
