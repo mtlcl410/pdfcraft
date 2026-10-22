@@ -1177,15 +1177,21 @@ pub fn callout_knee(rect: [f64; 4], point: [f64; 2]) -> [f64; 2] {
     callout_knee_on(rect, callout_side(rect, point))
 }
 
+/// How far apart, in points, two positions of a callout's box or line may be and still count as the
+/// same. The page hands a box back as `f32` values, which moves a coordinate such as 323.05 by a few
+/// hundred-thousandths of a point (review on #4094).
+const CALLOUT_SLACK: f64 = 0.01;
+
 /// Whether `end` lies on `side` of the text box `rect`: the leader line can stay where it meets it.
 fn on_side(rect: [f64; 4], side: Side, end: [f64; 2]) -> bool {
     let [x0, y0, x1, y1] = normalize(rect);
-    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let near = |a: f64, b: f64| (a - b).abs() < CALLOUT_SLACK;
+    let within = |v: f64, lo: f64, hi: f64| v > lo - CALLOUT_SLACK && v < hi + CALLOUT_SLACK;
     match side {
-        Side::Left => near(end[0], x0) && (y0..=y1).contains(&end[1]),
-        Side::Right => near(end[0], x1) && (y0..=y1).contains(&end[1]),
-        Side::Top => near(end[1], y1) && (x0..=x1).contains(&end[0]),
-        Side::Bottom => near(end[1], y0) && (x0..=x1).contains(&end[0]),
+        Side::Left => near(end[0], x0) && within(end[1], y0, y1),
+        Side::Right => near(end[0], x1) && within(end[1], y0, y1),
+        Side::Top => near(end[1], y1) && within(end[0], x0, x1),
+        Side::Bottom => near(end[1], y0) && within(end[0], x0, x1),
     }
 }
 
@@ -2087,7 +2093,8 @@ fn apply_text_box(doc: &mut Document, r: ObjRef, rect: [f64; 4], meta: &Meta, ne
 /// A callout's leader line (`/CL`, ISO 32000-2 Table 177): four numbers (start, end) or six
 /// (start, knee, end), as points in user space. `None` when the annotation has no usable `/CL`.
 fn callout_line(doc: &Document, d: &Dict) -> Option<Vec<[f64; 2]>> {
-    let l: Vec<f64> = doc.resolve(d.get(b"CL")?).as_array()?.iter().filter_map(|x| doc.resolve(x).as_f64()).collect();
+    // All or nothing: a non-number would shift every later number into the wrong point.
+    let l: Vec<f64> = doc.resolve(d.get(b"CL")?).as_array()?.iter().map(|x| doc.resolve(x).as_f64()).collect::<Option<_>>()?;
     (matches!(l.len(), 4 | 6) && finite(&l)).then(|| l.as_chunks::<2>().0.to_vec())
 }
 
@@ -2143,7 +2150,9 @@ fn place_text_box(doc: &mut Document, r: ObjRef, rect: [f64; 4], lead: Option<&[
             let toward = knee.unwrap_or(start);
             Some(match old_box {
                 // Moved, not resized: the knee and the end come along.
-                Some(b) if ((rect[2] - rect[0]) - (b[2] - b[0])).abs() < 1e-6 && ((rect[3] - rect[1]) - (b[3] - b[1])).abs() < 1e-6 => {
+                Some(b)
+                    if ((rect[2] - rect[0]) - (b[2] - b[0])).abs() < CALLOUT_SLACK && ((rect[3] - rect[1]) - (b[3] - b[1])).abs() < CALLOUT_SLACK =>
+                {
                     let (dx, dy) = (rect[0] - b[0], rect[1] - b[1]);
                     let shift = |p: [f64; 2]| [p[0] + dx, p[1] + dy];
                     [start].into_iter().chain(knee.map(shift)).chain([shift(end)]).collect()

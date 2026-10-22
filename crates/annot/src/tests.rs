@@ -1774,6 +1774,58 @@ fn a_callout_is_laid_out_again_when_its_end_leaves_the_box() {
     assert_eq!(nums(&list(&doc, 0)[c], b"CL"), [200.0, 520.0, 238.0, 615.0, 250.0, 615.0]);
 }
 
+/// Review on #4094: the page sends a callout's text box back as `f32` values, so a box moved or
+/// resized on screen comes back a few hundred-thousandths of a point off. That still counts as a
+/// move (the knee comes along) and as the same side (the line stays), not as a new layout.
+#[test]
+fn a_callout_box_sent_back_as_f32_still_moves_and_keeps_its_line() {
+    let mut doc = fixture();
+    let c = add_annotation(
+        &mut doc,
+        &new(
+            0,
+            Shape::Callout {
+                rect: [323.05, 292.14, 506.98, 374.91],
+                knee: [311.05, 333.53],
+                point: [299.05, 274.83],
+                font_size: 12.0,
+                ending: LineEnding::OpenArrow,
+            },
+        ),
+        &meta("c"),
+    )
+    .unwrap();
+    let f32s = |r: [f64; 4]| r.map(|v| f64::from(v as f32));
+    let cl = |doc: &Document| nums(&list(doc, 0)[c], b"CL");
+    let before = cl(&doc);
+    // Resized from the bottom right, its left side where it was.
+    set_rect(&mut doc, 0, c, f32s([323.05, 250.14, 540.98, 374.91]), &meta("r")).unwrap();
+    assert_eq!(cl(&doc), before, "the line stays");
+    // Moved by (47.62, 26.13), same size.
+    let tb = text_box_of(&list(&doc, 0)[c]);
+    set_rect(&mut doc, 0, c, f32s([tb[0] + 47.62, tb[1] + 26.13, tb[2] + 47.62, tb[3] + 26.13]), &meta("m")).unwrap();
+    let after = cl(&doc);
+    assert!((after[2] - (before[2] + 47.62)).abs() < 0.01 && (after[3] - (before[3] + 26.13)).abs() < 0.01, "the knee came along: {after:?}");
+    assert_eq!((after[0], after[1]), (before[0], before[1]), "the arrow point stayed");
+}
+
+/// Review on #4094: a `/CL` with something other than a number in it is not read at all, rather
+/// than read with its numbers shifted into the wrong points.
+#[test]
+fn a_callout_line_with_a_non_number_is_not_read() {
+    let (mut doc, c) = callout_fixture();
+    let (_, r) = annot_ref(&mut doc, 0, c).unwrap();
+    doc.update_dict(r, |d| {
+        d.set(
+            b"CL".to_vec(),
+            Object::Array(vec![Object::name("x"), Object::Real(200.0), Object::Real(520.0), Object::Real(260.0), Object::Real(620.0)]),
+        )
+    })
+    .unwrap();
+    assert!(matches!(set_points(&mut doc, 0, c, &[[1.0, 1.0]], &meta("x")), Err(AnnotError::Invalid(_))), "not a callout line it can reshape");
+    assert_eq!(summaries(&doc).into_iter().find(|s| s.index == c).map(|s| (s.points.len(), s.text_box.is_some())), Some((0, false)));
+}
+
 /// A new callout's knee is Acrobat's: 12 pt out from the middle of the side facing the arrow.
 #[test]
 fn a_new_callouts_knee_line_is_twelve_points() {
