@@ -190,6 +190,22 @@ fn mac_subset_cmap_uses_pdf_unicode_without_changing_source_program() {
     assert!(append_editor_cmap(&mut broken, &std::collections::BTreeMap::from([(65, 1)])).is_none());
 }
 
+/// The names read once give what `Post::glyph_name` gives, for every glyph of a font with its
+/// own names (Inter's version 2.0 table), and none past the last glyph.
+#[test]
+fn post_names_read_once_match_the_table() {
+    use skrifa::raw::TableProvider as _;
+    let face = skrifa::FontRef::new(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf")).unwrap();
+    let post = face.post().unwrap();
+    let custom = post_custom_names(&post);
+    assert!(custom.len() > 100, "Inter names glyphs of its own: {}", custom.len());
+    let glyphs = face.maxp().unwrap().num_glyphs();
+    for g in 0..glyphs {
+        assert_eq!(post_name(&post, &custom, g), post.glyph_name(skrifa::raw::types::GlyphId16::new(g)), "glyph {g}");
+    }
+    assert_eq!(post_name(&post, &custom, glyphs), None);
+}
+
 /// #3962: a symbolic TrueType subset with no `/Encoding` whose codes are glyph positions in
 /// the Macintosh order, 29 below ASCII, mapped by a Mac (1,0) cmap. Its text is what the
 /// `post` table names the glyphs its codes select, and typing encodes back to those codes.

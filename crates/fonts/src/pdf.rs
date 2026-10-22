@@ -1260,6 +1260,7 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
         None => face.post(),
     };
     let Ok(post) = post else { return Vec::new() };
+    let custom = post_custom_names(&post);
     (0..=255u32)
         .filter_map(|code| {
             // The records in order, as the renderer's `map_code` reads a symbolic font: a Windows
@@ -1274,10 +1275,35 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
                 let subtable = record.subtable(cmap.offset_data()).ok()?;
                 offsets.iter().find_map(|o| subtable.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))
             })?;
-            let glyph = skrifa::raw::types::GlyphId16::new(u16::try_from(glyph.to_u32()).ok()?);
-            Some((code, glyph_text(post.glyph_name(glyph)?)?))
+            let glyph = u16::try_from(glyph.to_u32()).ok()?;
+            Some((code, glyph_text(post_name(&post, &custom, glyph)?)?))
         })
         .collect()
+}
+
+/// The names a version 2.0 `post` table spells out, in order, read once. `Post::glyph_name` walks
+/// this data from its start for each glyph it is asked about, which over a font program of up to
+/// 16 MiB, asked about 256 codes, is work an untrusted file can make large. Reading stops at the
+/// first name that can't be read, as each lookup would.
+fn post_custom_names<'a>(post: &skrifa::raw::tables::post::Post<'a>) -> Vec<&'a str> {
+    post.string_data().map(|names| names.iter().map_while(|name| name.ok().map(|n| n.as_str())).collect()).unwrap_or_default()
+}
+
+/// `glyph`'s name in `post`, as `Post::glyph_name` gives it, with the table's own names from
+/// [`post_custom_names`].
+fn post_name<'a>(post: &skrifa::raw::tables::post::Post<'a>, custom: &[&'a str], glyph: u16) -> Option<&'a str> {
+    use skrifa::raw::{tables::post::DEFAULT_GLYPH_NAMES, types::Version16Dot16};
+    match post.version() {
+        Version16Dot16::VERSION_1_0 => DEFAULT_GLYPH_NAMES.get(usize::from(glyph)).copied(),
+        Version16Dot16::VERSION_2_0 => {
+            let index = usize::from(post.glyph_name_index()?.get(usize::from(glyph))?.get());
+            match index.checked_sub(DEFAULT_GLYPH_NAMES.len()) {
+                None => DEFAULT_GLYPH_NAMES.get(index).copied(),
+                Some(i) => custom.get(i).copied(),
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Code → Unicode for a font: its ToUnicode CMap (for a composite font, also the name
