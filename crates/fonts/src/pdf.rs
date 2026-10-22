@@ -1566,13 +1566,18 @@ mod tests {
     /// the Macintosh order, 29 below ASCII, mapped by a Mac (1,0) cmap. Its text is what the
     /// `post` table names the glyphs its codes select, and typing encodes back to those codes.
     /// A (3,0) symbol cmap at 0xF000 + code is read too: code 0x20, `.notdef` in the Mac table,
-    /// shows `k` there, and code 0xC0 `é`.
+    /// shows `k` there, code 0xC0 `é`, and code 0xC1 the variant `a.1`, whose suffix is dropped.
     #[test]
     fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
-        use skrifa::MetadataProvider as _;
+        use skrifa::{MetadataProvider as _, raw::TableProvider as _};
         const TEXT: &str = "Solid state";
         let original = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
-        let charmap = skrifa::FontRef::new(original).unwrap().charmap();
+        let face = skrifa::FontRef::new(original).unwrap();
+        let charmap = face.charmap();
+        let post = face.post().unwrap();
+        let variant = (1..face.maxp().unwrap().num_glyphs())
+            .find(|&g| post.glyph_name(skrifa::raw::types::GlyphId16::new(g)) == Some("a.1"))
+            .expect("Inter has a.1");
         // A format 6 Mac cmap over codes 3..=0x57: each letter at its code minus 29.
         let (first, last) = (3u16, 0x57u16);
         let mut glyphs = vec![0u16; usize::from(last - first + 1)];
@@ -1590,15 +1595,15 @@ mod tests {
         cmap.extend_from_slice(&first.to_be_bytes());
         cmap.extend_from_slice(&(glyphs.len() as u16).to_be_bytes());
         glyphs.iter().for_each(|g| cmap.extend_from_slice(&g.to_be_bytes()));
-        // Format 4: 0xF020 → k, 0xF0C0 → é, then the closing 0xFFFF segment.
-        let segments = [(0xF020u16, gid('k')), (0xF0C0, gid('é')), (0xFFFF, 0)];
-        let words: Vec<u16> = [4, 16 + 8 * 3, 0, 6, 4, 1, 2]
+        // Format 4: 0xF020 → k, 0xF0C0 → é, 0xF0C1 → a.1, then the closing 0xFFFF segment.
+        let segments = [(0xF020u16, gid('k')), (0xF0C0, gid('é')), (0xF0C1, variant), (0xFFFF, 0)];
+        let words: Vec<u16> = [4, 16 + 8 * 4, 0, 8, 8, 2, 0]
             .into_iter()
             .chain(segments.iter().map(|s| s.0))
             .chain([0])
             .chain(segments.iter().map(|s| s.0))
             .chain(segments.iter().map(|&(code, glyph)| if code == 0xFFFF { 1 } else { glyph.wrapping_sub(code) }))
-            .chain([0, 0, 0])
+            .chain([0, 0, 0, 0])
             .collect();
         words.iter().for_each(|w| cmap.extend_from_slice(&w.to_be_bytes()));
         let mut subset = original.to_vec();
@@ -1624,7 +1629,7 @@ mod tests {
         };
         let symbolic = metrics(4, None);
         assert_eq!(symbolic.decode(&codes), TEXT);
-        assert_eq!(symbolic.decode(&[0x20, 0xC0]), "ké");
+        assert_eq!(symbolic.decode(&[0x20, 0xC0, 0xC1]), "kéa");
         assert_eq!(symbolic.encode("Solid").as_deref(), Some(&codes[..5]), "typing sets the same glyphs");
         // A named encoding, or the Nonsymbolic flag, says what the codes are: they read through it.
         assert_eq!(metrics(4, Some(Object::name("WinAnsiEncoding"))).decode(&codes), "6ROLGVWDWH");
