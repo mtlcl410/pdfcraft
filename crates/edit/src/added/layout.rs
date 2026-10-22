@@ -1,4 +1,4 @@
-use super::types::{AddedImage, AddedText};
+use super::types::{AddedImage, AddedText, Family};
 use super::{
     Content, Document, EditError, GlyphError, Level, ObjRef, Object, ParagraphBidiInfo, ShapedCluster, ShapedScript, shape_arabic, shape_hebrew,
     shape_thai,
@@ -138,6 +138,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
         return Some(c);
     }
     if !shaped_by_a_face(t) {
+        // Acrobat's stand-in for Courier has no glyphs for the extra letters (it draws boxes,
+        // seen in Acrobat Pro, review on #3076), so Courier keeps refusing them.
+        if t.family == Family::Courier
+            && let Some(c) = t.text.chars().find(|c| pdfcraft_fonts::extra_letter(*c).is_some())
+        {
+            return Some(c);
+        }
         // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
         // that is also how `draw` redraws an existing item, so it's checked that way.
         // The extra letters need codes of their own in one encoding for the whole item; a text

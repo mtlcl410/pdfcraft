@@ -274,7 +274,7 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
             // Central European letters (č ć đ ł ő …) the standard fonts have but WinAnsi has no
             // code for get codes of their own in `/Differences` (#2098). Text that also needs a
             // shaping face keeps plain WinAnsi for its Latin runs (see `first_undrawable`).
-            let latin = pdfcraft_fonts::LatinEncoding::for_text(&t.text);
+            let latin = pdfcraft_fonts::LatinEncoding::for_text(&t.text).filter(|_| t.family != Family::Courier);
             let name = match &latin {
                 Some(e) => format!("{}L{}", font_name(base), e.tag()),
                 None => font_name(base),
@@ -294,6 +294,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                 encoding.set(b"BaseEncoding".to_vec(), Object::name("WinAnsiEncoding"));
                 encoding.set(b"Differences".to_vec(), Object::Array(differences));
                 font.set(b"Encoding".to_vec(), Object::Dict(encoding));
+                // Widths and text by code: Acrobat takes neither from the /Differences glyph
+                // names, so it drew the letters on top of one another and copied them without
+                // their accents (review on #3076).
+                font.set(b"FirstChar".to_vec(), Object::Int(0));
+                font.set(b"LastChar".to_vec(), Object::Int(255));
+                let face = t.family.std14(t.bold, t.italic);
+                font.set(b"Widths".to_vec(), Object::Array(e.widths(face).into_iter().map(Object::Real).collect()));
+                let cmap = doc.add(Object::Stream(Stream::flate(Dict::new(), e.to_unicode().as_bytes())));
+                font.set(b"ToUnicode".to_vec(), Object::Ref(cmap));
             } else if t.family != Family::Courier || !t.text.is_ascii() {
                 font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
             }
