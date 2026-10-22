@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn plain_and_undrawable_text_get_no_encoding() {
         assert_eq!(LatinEncoding::for_text("Zagreb šuma"), None, "all WinAnsi");
-        assert_eq!(LatinEncoding::for_text("č ș"), None, "ș has a comma accent the renderer can't draw yet");
+        assert_eq!(LatinEncoding::for_text("č ș"), None, "ș has a comma accent, not one of the extra letters yet");
         assert_eq!(first_non_latin("čćđ ș"), Some('ș'));
         assert_eq!(first_non_latin("Łódź, Kraków, Győr, Brașov"), Some('ș'));
         assert_eq!(first_non_latin("Łódź, Kraków, Győr, Plzeň, Ďáblice"), None);

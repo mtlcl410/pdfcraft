@@ -5916,8 +5916,8 @@ fn a_clipping_copy_on_the_same_baseline_is_refused() {
 /// #2098: the Central European letters the standard fonts carry but WinAnsi has no code for
 /// (č ć đ ł ő …) are added in those fonts, through an `/Encoding` whose `/Differences` names
 /// them. Two items with different letters get different font entries, so neither redraws the
-/// other's codes; the text reads back as typed; letters the renderer can't draw yet (comma
-/// accents) are still refused.
+/// other's codes; the text reads back as typed; the comma-accent letters, which aren't among the
+/// extra letters yet, are still refused.
 #[test]
 fn central_european_letters_on_several_lines_keep_their_codes() {
     // Review on #3076: the line separator counted as a letter no standard font has, so text on
