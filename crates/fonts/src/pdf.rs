@@ -1234,7 +1234,8 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
 /// glyph order, 29 below ASCII, so `Solid` read as `6ROLG` and typing set the wrong glyphs (#3962).
 /// Codes without a glyph, or whose glyph has no name with a Unicode value, are left out.
 fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
-    use skrifa::{GlyphId, raw::TableProvider as _, raw::tables::cmap::PlatformId};
+    use skrifa::GlyphId;
+    use skrifa::raw::{FontData, FontRead as _, TableProvider as _, tables::cmap::PlatformId, tables::post::Post, types::Tag};
     let Some(descriptor) = dict(doc, font.get(b"FontDescriptor")) else { return Vec::new() };
     // Flag bit 6, Nonsymbolic (ISO 32000-2 Table 121).
     let flags = descriptor.get(b"Flags").and_then(|v| doc.resolve(v).as_f64()).unwrap_or(0.0) as i64;
@@ -1246,7 +1247,19 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
     let Object::Stream(stream) = object.as_ref() else { return Vec::new() };
     let Ok(bytes) = stream.decoded_within(16 << 20) else { return Vec::new() };
     let Ok(face) = skrifa::FontRef::from_index(&bytes, 0) else { return Vec::new() };
-    let (Ok(cmap), Ok(post)) = (face.cmap(), face.post()) else { return Vec::new() };
+    let Ok(cmap) = face.cmap() else { return Vec::new() };
+    // A `post` version written with its 16-bit halves swapped (`00 00 00 02` for 2.0, as ScanSoft
+    // PDF Create! writes it) is read as the version it means, as the renderer reads it (#2946,
+    // vendored hayro-interpret patch (49)); otherwise its names would be lost here alone.
+    let repaired = face.table_data(Tag::new(b"post")).and_then(|data| match data.as_bytes() {
+        [0, 0, 0, n @ 1..=3, rest @ ..] => Some([&[0, *n, 0, 0], rest].concat()),
+        _ => None,
+    });
+    let post = match &repaired {
+        Some(bytes) => Post::read(FontData::new(bytes)),
+        None => face.post(),
+    };
+    let Ok(post) = post else { return Vec::new() };
     (0..=255u32)
         .filter_map(|code| {
             // The records in order, as the renderer's `map_code` reads a symbolic font: a Windows

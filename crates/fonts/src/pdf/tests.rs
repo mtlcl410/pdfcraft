@@ -284,6 +284,20 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     };
     let symbolic = metrics(4, None);
     assert_eq!(symbolic.decode(&codes), TEXT);
+    // The same font with its `post` version halves swapped (`00 00 00 02`) reads the same,
+    // as the renderer reads it (#2946).
+    let post = (0..count).map(|i| 12 + i * 16).find(|i| &subset[*i..*i + 4] == b"post").unwrap();
+    let at = u32::from_be_bytes(subset[post + 8..post + 12].try_into().unwrap()) as usize;
+    assert_eq!(subset[at..at + 4], [0, 2, 0, 0], "Inter's post is version 2.0");
+    let mut swapped = subset.clone();
+    swapped[at..at + 4].copy_from_slice(&[0, 0, 0, 2]);
+    let mut doc = Document::new_empty();
+    let program = doc.add(Object::Stream(Stream::flate(Dict::new(), &swapped)));
+    let mut descriptor = Dict::new();
+    descriptor.set(b"Flags".to_vec(), Object::Int(4));
+    descriptor.set(b"FontFile2".to_vec(), Object::Ref(program));
+    let f = font(&mut doc, vec![("Subtype", Object::name("TrueType")), ("FontDescriptor", Object::Dict(descriptor))]);
+    assert_eq!(Metrics::from_dict(&doc, &f).decode(&codes), TEXT, "a swapped post version");
     assert_eq!(symbolic.decode(&[0x20, 0xC0, 0xC1, 0xC2, 0xC3]), "kéaxw");
     assert_eq!(symbolic.encode("Solid").as_deref(), Some(&codes[..5]), "typing sets the same glyphs");
     // A named encoding, or the Nonsymbolic flag, says what the codes are: they read through it.
