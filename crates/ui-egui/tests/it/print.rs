@@ -923,7 +923,7 @@ fn a_booklet_decides_two_sided_itself() {
 /// unknown name or a scale outside the dialog's range keeps the default (#2001).
 #[test]
 fn print_preferences_survive_a_restart_but_the_jobs_own_choices_reset() {
-    use pdfcraft_engine::print::{Binding, Content, Orientation, SizeMode, Subset, spool::Duplex};
+    use pdfcraft_engine::print::{Binding, BookletSubset, Content, LABEL_PAPER, Orientation, PAPERS, PageOrder, SizeMode, Subset, spool::Duplex};
     use pdfcraft_ui_egui::{PrintHandling, PrintWhich};
     let open = |saved: Option<&str>| {
         let mut app = PdfCraftApp::new();
@@ -950,15 +950,28 @@ fn print_preferences_survive_a_restart_but_the_jobs_own_choices_reset() {
     d.subset = Subset::Even;
     d.reverse = true;
     d.handling = PrintHandling::Booklet;
+    d.booklet_subset = BookletSubset::FrontOnly;
+    d.per_sheet = 16;
+    d.order = PageOrder::CutStack;
     d.orientation = Orientation::Landscape;
     let saved = app.persist();
 
-    // Opened again in the same session: this job's choices start over, the rest carry on.
+    // Opened again in the same session: this job's choices, the layout's own options included,
+    // start over; the rest carry on.
     app.open_print();
     let d = &app.print_draft;
     assert_eq!((d.copies, d.which, d.range.as_str(), d.subset, d.reverse), (1, PrintWhich::All, "", Subset::All, false));
     assert_eq!((d.handling, d.orientation), (PrintHandling::Size, Orientation::Auto));
-    assert_eq!((d.duplex, d.grayscale, d.collate, d.size), (Some(Duplex::LongEdge), true, false, SizeMode::Custom(62.5)));
+    assert_eq!((d.booklet_subset, d.per_sheet, d.order), (BookletSubset::BothSides, 2, PageOrder::Horizontal));
+    assert_eq!((d.duplex, d.grayscale, d.collate, d.size, d.binding), (Some(Duplex::LongEdge), true, false, SizeMode::Custom(62.5), Binding::Right));
+
+    // A job printed on label stock: the next one is back on the paper Label replaced (#3564).
+    let a4 = PAPERS.iter().position(|(name, _)| *name == "A4").unwrap();
+    app.print_draft.paper = a4;
+    app.print_draft.set_handling(PrintHandling::Label);
+    assert_eq!(app.print_draft.paper, LABEL_PAPER);
+    app.open_print();
+    assert_eq!((app.print_draft.handling, app.print_draft.paper), (PrintHandling::Size, a4));
 
     let again = open(Some(&saved));
     let d = &again.print_draft;

@@ -146,17 +146,23 @@ impl PdfCraftApp {
         let default = default_printer(&printers);
         let current = self.views[i].current;
         let selected: Vec<usize> = self.views[i].selected.iter().copied().collect();
-        let keep = std::mem::take(&mut self.print_draft);
+        let mut keep = std::mem::take(&mut self.print_draft);
+        // Leaving Label gives back the paper it replaced (#3564), before the layout resets below.
+        if keep.handling == Handling::Label {
+            keep.set_handling(Handling::Size);
+        }
         // The printer picked last time, Save as PDF included, while it is still listed (#3537).
         let picked = keep.printer_picked && offered(keep.printer.as_deref(), &printers);
         let printer = if picked { keep.printer.clone() } else { default };
         // Picked pages are what Print is for (Acrobat's "Selected pages"); without any, the whole
         // document.
         let which = if selected.is_empty() { Which::All } else { Which::Selected };
-        // Copies, pages, layout and orientation are this job's, and start from the defaults each
-        // time the dialog opens: ISO 32000-2 Table 147 initialises them per document when the print
-        // dialog opens (NumCopies, "typically 1"; PrintPageRange). The choices that describe how
-        // this computer prints carry over, and are remembered across restarts (#2001).
+        // Copies, pages, the layout with its own options and orientation are this job's, and start
+        // from the defaults each time the dialog opens: ISO 32000-2 Table 147 initialises them per
+        // document when the print dialog opens (NumCopies, "typically 1"; PrintPageRange). The
+        // choices that describe how this computer prints (two-sided, grayscale, collate, sizing,
+        // Comments & forms, a booklet's binding) carry over, and are remembered across restarts
+        // (#2001).
         let fresh = PrintDraft::default();
         self.print_draft = PrintDraft {
             copies: fresh.copies,
@@ -164,6 +170,15 @@ impl PdfCraftApp {
             subset: fresh.subset,
             reverse: fresh.reverse,
             handling: fresh.handling,
+            per_sheet: fresh.per_sheet,
+            order: fresh.order,
+            border: fresh.border,
+            auto_rotate: fresh.auto_rotate,
+            booklet_subset: fresh.booklet_subset,
+            poster_scale: fresh.poster_scale,
+            overlap: fresh.overlap,
+            cut_marks: fresh.cut_marks,
+            label_flip: fresh.label_flip,
             orientation: fresh.orientation,
             crops: Vec::new(),
             crop_pages: None,
