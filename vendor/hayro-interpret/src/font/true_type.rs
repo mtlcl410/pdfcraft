@@ -220,6 +220,9 @@ struct EmbeddedKind {
     cached_mappings: RefCell<HashMap<u8, GlyphId>>,
     /// PostScript name from the PDF.
     postscript_name: Option<String>,
+    /// PdfCraft patch: (see vendor/README.md hayro-interpret (51)) each glyph's `post` table name,
+    /// for the names that give a Unicode value.
+    text_names: HashMap<GlyphId, String>,
 }
 
 impl EmbeddedKind {
@@ -236,6 +239,11 @@ impl EmbeddedKind {
             .and_then(|d| OpenTypeFontBlob::new(Arc::new(d.to_vec()), 0))?;
 
         let glyph_names = base_font.glyph_names();
+        let text_names = glyph_names
+            .iter()
+            .filter(|(name, _)| glyph_names::get(name).is_some() || unicode_from_name(name).is_some())
+            .map(|(name, glyph)| (*glyph, name.clone()))
+            .collect();
 
         let cff_font_blob = base_font
             .font_ref()
@@ -258,6 +266,7 @@ impl EmbeddedKind {
             encoding,
             cached_mappings: RefCell::new(HashMap::new()),
             postscript_name,
+            text_names,
         })
     }
 
@@ -291,10 +300,32 @@ impl EmbeddedKind {
             // `Encoding::text_alias`.
             .or_else(|| self.encoding.text_alias(code))
             .or_else(|| self.encoding.map_code(code))
+            .or_else(|| self.symbolic_glyph_name(code))
             // The last resort reads the code as WinAnsi whatever the font said, so it takes the
             // same aliasing.
             .or_else(|| Encoding::WinAnsi.text_alias(code))
             .or_else(|| win_ansi::get(code))
+    }
+
+    /// PdfCraft patch (51): a symbolic font without an encoding selects its glyphs through its
+    /// own `cmap`, so its codes need not mean anything in WinAnsi. FrameMaker files distilled
+    /// with Distiller 3 number them in the Macintosh glyph order, 29 below ASCII, and read as
+    /// WinAnsi `Solid` came out as `6ROLG` (#3962). The name the `post` table gives the glyph the
+    /// code selects says what it is, as MuPDF reads it. `None` when the font is non-symbolic,
+    /// has an encoding, selects no glyph for the code, or names it with no Unicode value: the
+    /// code is then read as WinAnsi, as before.
+    fn symbolic_glyph_name(&self, code: u8) -> Option<&str> {
+        if self.is_non_symbolic()
+            || !matches!(self.encoding, Encoding::BuiltIn)
+            || self.cff_blob.is_some()
+        {
+            return None;
+        }
+        let glyph = self.map_code(code);
+        if glyph == GlyphId::NOTDEF {
+            return None;
+        }
+        self.text_names.get(&glyph).map(String::as_str)
     }
 
     fn outline_glyph(&self, glyph: GlyphId) -> BezPath {
