@@ -1227,6 +1227,35 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
     chars.next().filter(|_| chars.len() == 0)
 }
 
+/// What each code of an embedded TrueType font that isn't flagged non-symbolic and names no base
+/// encoding shows, by the `post` table name of the glyph its `cmap` selects (the way the renderer
+/// selects it: the code, then at 0xF000, 0xF100 and 0xF200). Such a font's codes need not be
+/// Standard or WinAnsi: FrameMaker files distilled with Distiller 3 number them in the Macintosh
+/// glyph order, 29 below ASCII, so `Solid` read as `6ROLG` and typing set the wrong glyphs (#3962).
+/// Codes without a glyph, or whose glyph has no name with a Unicode value, are left out.
+fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
+    use skrifa::{GlyphId, raw::TableProvider as _};
+    let Some(descriptor) = dict(doc, font.get(b"FontDescriptor")) else { return Vec::new() };
+    // Flag bit 6, Nonsymbolic (ISO 32000-2 Table 121).
+    let flags = descriptor.get(b"Flags").and_then(|v| doc.resolve(v).as_f64()).unwrap_or(0.0) as i64;
+    if flags & 32 != 0 {
+        return Vec::new();
+    }
+    let Some(object) = descriptor.get(b"FontFile2") else { return Vec::new() };
+    let object = doc.resolve(object);
+    let Object::Stream(stream) = object.as_ref() else { return Vec::new() };
+    let Ok(bytes) = stream.decoded_within(16 << 20) else { return Vec::new() };
+    let Ok(face) = skrifa::FontRef::from_index(&bytes, 0) else { return Vec::new() };
+    let (Ok(cmap), Ok(post)) = (face.cmap(), face.post()) else { return Vec::new() };
+    (0..=255u32)
+        .filter_map(|code| {
+            let glyph = [0, 0xF000, 0xF100, 0xF200].into_iter().find_map(|o| cmap.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))?;
+            let glyph = skrifa::raw::types::GlyphId16::new(u16::try_from(glyph.to_u32()).ok()?);
+            Some((code, glyph_text(post.glyph_name(glyph)?)?))
+        })
+        .collect()
+}
+
 /// Code → Unicode for a font: its ToUnicode CMap (for a composite font, also the name
 /// `/Identity-H` or `/Identity-V`, read as code = Unicode), else (simple fonts) its encoding.
 fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> Unicode {
@@ -1268,6 +1297,11 @@ fn unicode_map(doc: &Document, font: &Dict, composite: bool) -> Unicode {
             if let Some(c) = char::from_u32(*u).filter(|_| *u != 0) {
                 out.encoding.insert(code as u32, c.to_string());
             }
+        }
+        // A font named as Symbol or ZapfDingbats keeps reporting nothing: its names may be as
+        // un-Latin as its codes (WordPerfect's WPTypographicSymbols calls its apostrophe `equal`).
+        if base_name.is_none() && !symbolic_builtin {
+            out.encoding.extend(symbolic_glyph_texts(doc, font));
         }
         if let Some(Object::Dict(d)) = enc.as_deref()
             && let Some(diffs) = d.get(b"Differences").map(|x| doc.resolve(x)).and_then(|x| x.as_array().cloned())
