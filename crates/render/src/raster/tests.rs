@@ -1636,19 +1636,21 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     use skrifa::MetadataProvider;
     use skrifa::raw::TableProvider;
     const TEXT: &str = "Solid state";
-    // One more code, 0x3D, selects a glyph whose name has no Unicode value (a stylistic
-    // variant such as `a.ss01`): it still reads as WinAnsi, `=`.
-    const UNNAMED: u16 = 0x3D;
-    // And 0x3E one named `uniXXXX`, which reads as that code point.
+    // Four more codes: 0x3D selects `W.cv07`, a variant whose suffix is dropped (`W`); 0x3E a
+    // glyph named `uniXXXX`, that code point; 0x3F `EMquad`, a name with no text, so the code
+    // reads as WinAnsi (`?`); 0x40 the ligature `less_equal.liga`, two characters (`<=`).
+    const SUFFIXED: u16 = 0x3D;
     const UNI: u16 = 0x3E;
+    const UNNAMED: u16 = 0x3F;
+    const LIGATURE: u16 = 0x40;
     let font = include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf");
     let face = skrifa::FontRef::new(font).expect("the test font parses");
     let charmap = face.charmap();
     let post = face.post().expect("the test font has a post table");
     let glyphs = face.maxp().expect("the test font has a maxp table").num_glyphs();
-    let variant = (1..glyphs)
-        .find(|&g| post.glyph_name(skrifa::raw::types::GlyphId16::new(g)).is_some_and(|n| n.contains('.') && !n.starts_with('.')))
-        .expect("the test font has a variant glyph");
+    let named = |name: &str| {
+        (1..glyphs).find(|&g| post.glyph_name(skrifa::raw::types::GlyphId16::new(g)) == Some(name)).expect("the test font has the glyph")
+    };
     let (uni, uni_char) = (1..glyphs)
         .find_map(|g| {
             let name = post.glyph_name(skrifa::raw::types::GlyphId16::new(g))?;
@@ -1659,8 +1661,10 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     // Codes 29 below ASCII, mapped by a (3,0) symbol cmap at 0xF000 + code.
     let mut map: Vec<(u16, u16)> =
         TEXT.chars().map(|c| (0xF000 + c as u16 - 29, charmap.map(c).expect("the test font has the letter").to_u32() as u16)).collect();
-    map.push((0xF000 + UNNAMED, variant));
+    map.push((0xF000 + SUFFIXED, named("W.cv07")));
     map.push((0xF000 + UNI, uni));
+    map.push((0xF000 + UNNAMED, named("EMquad")));
+    map.push((0xF000 + LIGATURE, named("less_equal.liga")));
     map.sort_unstable();
     map.dedup();
     // A format 4 subtable: one segment per code, then the closing 0xFFFF segment.
@@ -1691,7 +1695,8 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     program[entry + 12..entry + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
 
     let text_of = |encoding: &str| -> String {
-        let codes: String = TEXT.chars().map(|c| format!("{:02X}", c as u8 - 29)).collect::<String>() + &format!("{UNNAMED:02X}{UNI:02X}");
+        let codes: String = TEXT.chars().map(|c| format!("{:02X}", c as u8 - 29)).collect::<String>()
+            + &format!("{SUFFIXED:02X}{UNI:02X}{UNNAMED:02X}{LIGATURE:02X}");
         let content = format!("BT /F1 14 Tf 10 40 Td <{codes}> Tj ET");
         let objects: Vec<Vec<u8>> = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -1720,9 +1725,11 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
         let page = r.filtered_text(0, crate::text::TextFilter::default()).expect("the page has text");
         page.glyphs.iter().map(|g| g.text.as_str()).collect()
     };
-    assert_eq!(text_of(""), format!("Solid state={uni_char}"));
+    assert_eq!(text_of(""), format!("Solid stateW{uni_char}?<="));
     // An encoding says what the codes are, so they read through it.
-    assert_eq!(text_of("/Encoding /WinAnsiEncoding "), "6ROLGVWDWH=>");
+    assert_eq!(text_of("/Encoding /WinAnsiEncoding "), "6ROLGVWDWH=>?@");
+    // `/Differences` still names its code: 0x36 reads `A`, not the glyph's `S`.
+    assert_eq!(text_of("/Encoding << /Differences [54 /A] >> "), format!("Aolid stateW{uni_char}?<="));
 }
 
 /// Issue #102: an A4 page (595.28×841.89 pt) rendered 595×841 at 72 dpi, dropping the last
