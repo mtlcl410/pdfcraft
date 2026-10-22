@@ -776,7 +776,7 @@ fn paper_choice_survives_cancel_and_settings_restore() {
     h.get_by_label("A4").click();
     h.run_steps(2);
     assert_eq!(h.state().print_draft.paper, a4);
-    // Only paper should be added to persistence; these choices still belong to this session.
+    // Paper persists; copies, pages and orientation belong to this job (grayscale is remembered, #2001).
     let draft = &mut h.state_mut().print_draft;
     draft.copies = 5;
     draft.which = pdfcraft_ui_egui::PrintWhich::Range;
@@ -793,8 +793,10 @@ fn paper_choice_survives_cancel_and_settings_restore() {
     assert_eq!(json["print_paper"], "A4", "store the canonical name, not its position");
     let mut app = PdfCraftApp::new();
     app.restore(&saved);
-    let expected = pdfcraft_ui_egui::PrintDraft { paper: a4, ..Default::default() };
-    assert_eq!(app.print_draft, expected, "no other print preference becomes persistent");
+    // Grayscale is one of the preferences remembered across restarts (#2001); copies, pages and
+    // orientation are this job's and are not saved.
+    let expected = pdfcraft_ui_egui::PrintDraft { paper: a4, grayscale: true, ..Default::default() };
+    assert_eq!(app.print_draft, expected, "only the paper and the remembered preferences persist");
     let mut restarted = harness_with_settings(Some(saved));
     assert!(restarted.state_mut().execute("print.dialog"));
     restarted.run_steps(3);
