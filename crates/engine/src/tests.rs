@@ -492,6 +492,7 @@ fn pdf_page_stamps_fit_inside_an_explicit_box() {
         name: "Diagram".into(),
         file: MarkFile { name: "diagram.pdf".into(), bytes: bytes.clone(), page: 0 },
         author: "Test".into(),
+        line: None,
     };
     session.apply(id, stamp([56.0, 400.0, 539.0, 700.0])).unwrap();
     assert_eq!(session.get(id).unwrap().info.annotations[0].rect, [56.0, 429.25, 539.0, 670.75]);
