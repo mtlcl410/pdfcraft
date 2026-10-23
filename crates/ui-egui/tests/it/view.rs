@@ -2148,10 +2148,15 @@ fn a_page_whose_content_was_cut_is_named_in_a_notice() {
     // Automation counts pages from 1, as the notice does (review on #2113).
     let client = slot.lock().unwrap().take().expect("the control channel");
     let rx = client.send("ui.state", serde_json::json!({}));
+    // Bounded by wall-clock time rather than frames, so a busy runner doesn't fail it, and a
+    // dropped channel fails at once instead of stalling the run.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let state = loop {
         h.run_steps(1);
-        if let Ok(reply) = rx.try_recv() {
-            break reply.expect("ui.state");
+        match rx.try_recv() {
+            Ok(reply) => break reply.expect("ui.state"),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => panic!("ui.state: the control channel closed without a reply"),
+            Err(std::sync::mpsc::TryRecvError::Empty) => assert!(std::time::Instant::now() < deadline, "ui.state: no reply within 30 s"),
         }
     };
     assert_eq!(state["active"]["cut_pages"], serde_json::json!([1]), "{state}");
