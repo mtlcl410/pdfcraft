@@ -41,8 +41,9 @@ pub(super) fn find(page: &PageText, query: &str, sensitive: bool, whole_words: b
     matched = 0;
     // A neighbour bounds a word only in a script that puts spaces between words. Han, kana, Thai
     // and the like run their words together, so a character of theirs next to the match is no
-    // reason to reject it: Acrobat finds 台北 inside 台北市 with Whole words only on.
-    let word = |i: Option<usize>| i.and_then(|i| chars.get(i)).is_some_and(|c| c.0.is_alphanumeric() && !unspaced_script(c.0));
+    // reason to reject it: Acrobat finds 台北 inside 台北市 with Whole words only on. Digits still
+    // bound, in any script: ๑ is not a whole word inside the number ๑๒.
+    let word = |i: Option<usize>| i.and_then(|i| chars.get(i)).is_some_and(|c| c.0.is_alphanumeric() && (c.0.is_numeric() || !unspaced_script(c.0)));
     let mut hits = Vec::new();
     for (i, &(c, owner)) in chars.iter().enumerate() {
         matched = advance(&needle, &prefix, matched, c);
@@ -97,8 +98,12 @@ fn unspaced_script(c: char) -> bool {
         | 0x31F0..=0x31FF    // katakana phonetic extensions
         | 0x3400..=0x4DBF    // CJK extension A
         | 0x4E00..=0x9FFF    // CJK unified ideographs
+        | 0xA9E0..=0xA9FF    // Myanmar extended-B
+        | 0xAA60..=0xAA7F    // Myanmar extended-A
         | 0xF900..=0xFAFF    // CJK compatibility ideographs
         | 0xFF66..=0xFF9F    // halfwidth katakana
-        | 0x20000..=0x3134F  // CJK extensions B to G
+        // The supplementary and tertiary ideographic planes, all CJK ideographs (extensions B
+        // to J, compatibility supplement).
+        | 0x20000..=0x3FFFF
     )
 }
