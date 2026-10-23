@@ -325,7 +325,10 @@ pub enum LinkTarget {
         preserve_rb: bool,
     },
     /// A local-file remote Go-To action. The caller resolves `file` relative to the source path.
+    /// `launch` marks a Launch action that names a PDF file (see `launch_pdf`), opened the same
+    /// way: as a document in PdfCraft, never by the operating system.
     RemoteGoTo {
+        launch: bool,
         file: String,
         destination: RemoteDestination,
         new_window: Option<bool>,
@@ -1375,6 +1378,7 @@ impl<'a> Inspector<'a> {
                 }
                 Some("SetOCGState") => self.layer_state(a),
                 Some("GoToR") => self.remote_go_to(a).unwrap_or_else(|| LinkTarget::Other("GoToR".into())),
+                Some("Launch") => self.launch_pdf(a).unwrap_or_else(|| LinkTarget::Other("Launch".into())),
                 Some(other) => LinkTarget::Other(other.to_string()),
                 None => return None,
             }
@@ -1432,7 +1436,23 @@ impl<'a> Inspector<'a> {
             Ok(Object::Boolean(value)) => Some(*value),
             _ => None,
         };
-        Some(LinkTarget::RemoteGoTo { file, destination, new_window })
+        Some(LinkTarget::RemoteGoTo { launch: false, file, destination, new_window })
+    }
+
+    /// A Launch action (ISO 32000-2 §12.6.4.6, Table 207) whose `/F` names a `.pdf` file, read as
+    /// the remote Go-To to that file's first page that it amounts to (#4168). Launching anything
+    /// else, or with the deprecated `/Win` launch parameters (an application, an operation, its
+    /// arguments), is not followed: a document must not start programs. `\` separators, which
+    /// Windows writers put in such paths, are read as `/` (§7.11.2.1 separates components with
+    /// `/`) when the path has no `/` of its own.
+    fn launch_pdf(&self, action: &Dictionary) -> Option<LinkTarget> {
+        if action.has(b"Win") {
+            return None;
+        }
+        let Some(LinkTarget::RemoteGoTo { file, new_window, .. }) = self.remote_go_to(action) else { return None };
+        let file = if file.contains('/') { file } else { file.replace('\\', "/") };
+        let pdf = file.rsplit('/').next().is_some_and(|name| name.len() > 4 && name.to_ascii_lowercase().ends_with(".pdf"));
+        pdf.then_some(LinkTarget::RemoteGoTo { launch: true, file, destination: RemoteDestination::Default, new_window })
     }
 
     fn pdf_text(&self, o: &Object, max_bytes: usize) -> Option<String> {
@@ -3119,6 +3139,43 @@ trailer << /Root 1 0 R >>
         );
     }
 
+    /// #4168: a Launch action naming a `.pdf` file is read as the link to that file it amounts
+    /// to, `\` separators included. One naming anything else, with no file, or with `/Win`
+    /// launch parameters stays an action that isn't followed.
+    #[test]
+    fn launch_actions_that_name_a_pdf_open_it_like_a_remote_link() {
+        let pdf = "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Annots [30 0 R 31 0 R 32 0 R 33 0 R 34 0 R 35 0 R 36 0 R 37 0 R] >> endobj\n\
+             30 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /Launch /F (..\\\\se\\\\se_ST.pdf) >> >> endobj\n\
+             31 0 obj << /Type /Annot /Subtype /Link /Rect [0 20 10 30] /A << /S /Launch /F << /Type /Filespec /F (chapters/Two.PDF) >> /NewWindow true >> >> endobj\n\
+             32 0 obj << /Type /Annot /Subtype /Link /Rect [0 40 10 50] /A << /S /Launch /F (tool.exe) >> >> endobj\n\
+             33 0 obj << /Type /Annot /Subtype /Link /Rect [0 60 10 70] /A << /S /Launch /F (a.pdf) /Win << /F (cmd.exe) /P (/c x) >> >> >> endobj\n\
+             34 0 obj << /Type /Annot /Subtype /Link /Rect [0 80 10 90] /A << /S /Launch /Win << /F (b.pdf) >> >> >> endobj\n\
+             35 0 obj << /Type /Annot /Subtype /Link /Rect [0 100 10 110] /A << /S /Launch /F (.pdf) >> >> endobj\n\
+             36 0 obj << /Type /Annot /Subtype /Link /Rect [0 120 10 130] /A << /S /Launch /F (dir/a\\\\b.pdf) >> >> endobj\n\
+             37 0 obj << /Type /Annot /Subtype /Link /Rect [0 140 10 150] /A << /S /Launch /FS /URL /F (https://example.com/x.pdf) >> >> endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF";
+        let info = inspect(Arc::new(pdf.as_bytes().to_vec()), None).expect("opens");
+        let targets: Vec<_> = info.links.iter().map(|l| l.target.clone()).collect();
+        let launch =
+            |file: &str, new_window| LinkTarget::RemoteGoTo { launch: true, file: file.into(), destination: RemoteDestination::Default, new_window };
+        let other = || LinkTarget::Other("Launch".into());
+        assert_eq!(
+            targets,
+            [
+                launch("../se/se_ST.pdf", None),
+                launch("chapters/Two.PDF", Some(true)),
+                other(),
+                other(),
+                other(),
+                other(),
+                launch("dir/a\\b.pdf", None),
+                other(),
+            ]
+        );
+    }
+
     #[test]
     fn links_read_bounded_local_remote_go_to_actions() {
         use DestView::{Fit, Xyz};
@@ -3147,6 +3204,7 @@ trailer << /Root 1 0 R >>
         let targets: Vec<_> = info.links.iter().map(|l| (l.index, l.target.clone())).collect();
         let huge_page_target = usize::try_from(i64::MAX)
             .map(|page| LinkTarget::RemoteGoTo {
+                launch: false,
                 file: "chapter.pdf".into(),
                 destination: RemoteDestination::Page { page, view: Fit },
                 new_window: None,
@@ -3158,6 +3216,7 @@ trailer << /Root 1 0 R >>
                 (
                     1,
                     LinkTarget::RemoteGoTo {
+                        launch: false,
                         file: "chapters/remote.pdf".into(),
                         destination: RemoteDestination::Page { page: 2, view: Xyz { left: Some(10.0), top: Some(20.0), zoom: Some(1.5) } },
                         new_window: Some(true),
@@ -3166,16 +3225,33 @@ trailer << /Root 1 0 R >>
                 (
                     2,
                     LinkTarget::RemoteGoTo {
+                        launch: false,
                         file: "foo.pdf".into(),
                         destination: RemoteDestination::Page { page: 0, view: Fit },
                         new_window: Some(false),
                     }
                 ),
-                (3, LinkTarget::RemoteGoTo { file: "remote.pdf".into(), destination: RemoteDestination::Default, new_window: None }),
-                (4, LinkTarget::RemoteGoTo { file: "chapter.pdf".into(), destination: RemoteDestination::Named("chapter".into()), new_window: None }),
+                (3, LinkTarget::RemoteGoTo { launch: false, file: "remote.pdf".into(), destination: RemoteDestination::Default, new_window: None }),
+                (
+                    4,
+                    LinkTarget::RemoteGoTo {
+                        launch: false,
+                        file: "chapter.pdf".into(),
+                        destination: RemoteDestination::Named("chapter".into()),
+                        new_window: None
+                    }
+                ),
                 (5, LinkTarget::Other("GoToR".into())),
                 (6, LinkTarget::Other("GoToR".into())),
-                (7, LinkTarget::RemoteGoTo { file: "chapter.pdf".into(), destination: RemoteDestination::Named("chapter".into()), new_window: None }),
+                (
+                    7,
+                    LinkTarget::RemoteGoTo {
+                        launch: false,
+                        file: "chapter.pdf".into(),
+                        destination: RemoteDestination::Named("chapter".into()),
+                        new_window: None
+                    }
+                ),
                 (8, LinkTarget::Other("GoToR".into())),
                 (9, LinkTarget::Other("GoToR".into())),
                 (10, huge_page_target),
