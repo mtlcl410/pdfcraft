@@ -1387,25 +1387,7 @@ impl<'a> Inspector<'a> {
     }
 
     fn remote_go_to(&self, action: &Dictionary) -> Option<LinkTarget> {
-        if self.name(action, b"FS").as_deref() == Some("URL") {
-            return None;
-        }
-        let file = match self.resolve(action.get(b"F").ok()?) {
-            Object::String(bytes, _) => limited_pdf_string(bytes, MAX_REMOTE_FILE_SPEC_BYTES)?,
-            Object::Dictionary(spec) => {
-                if self.name(spec, b"FS").as_deref() == Some("URL") {
-                    return None;
-                }
-                spec.get(b"UF")
-                    .ok()
-                    .and_then(|o| self.pdf_text(o, MAX_REMOTE_FILE_SPEC_BYTES))
-                    .or_else(|| spec.get(b"F").ok().and_then(|o| self.pdf_text(o, MAX_REMOTE_FILE_SPEC_BYTES)))?
-            }
-            _ => return None,
-        };
-        if file.is_empty() {
-            return None;
-        }
+        let file = self.action_file(action)?;
         let destination = match action.get(b"D") {
             Err(_) => RemoteDestination::Default,
             Ok(o) => match self.resolve(o) {
@@ -1432,11 +1414,36 @@ impl<'a> Inspector<'a> {
                 _ => return None,
             },
         };
-        let new_window = match action.get(b"NewWindow").map(|o| self.resolve(o)) {
+        Some(LinkTarget::RemoteGoTo { launch: false, file, destination, new_window: self.new_window(action) })
+    }
+
+    /// The non-empty local file an action's `/F` names (a string or a file specification), shared
+    /// by GoToR and Launch. A URL file system (`/FS /URL`) names no local file.
+    fn action_file(&self, action: &Dictionary) -> Option<String> {
+        if self.name(action, b"FS").as_deref() == Some("URL") {
+            return None;
+        }
+        let file = match self.resolve(action.get(b"F").ok()?) {
+            Object::String(bytes, _) => limited_pdf_string(bytes, MAX_REMOTE_FILE_SPEC_BYTES)?,
+            Object::Dictionary(spec) => {
+                if self.name(spec, b"FS").as_deref() == Some("URL") {
+                    return None;
+                }
+                spec.get(b"UF")
+                    .ok()
+                    .and_then(|o| self.pdf_text(o, MAX_REMOTE_FILE_SPEC_BYTES))
+                    .or_else(|| spec.get(b"F").ok().and_then(|o| self.pdf_text(o, MAX_REMOTE_FILE_SPEC_BYTES)))?
+            }
+            _ => return None,
+        };
+        (!file.is_empty()).then_some(file)
+    }
+
+    fn new_window(&self, action: &Dictionary) -> Option<bool> {
+        match action.get(b"NewWindow").map(|o| self.resolve(o)) {
             Ok(Object::Boolean(value)) => Some(*value),
             _ => None,
-        };
-        Some(LinkTarget::RemoteGoTo { launch: false, file, destination, new_window })
+        }
     }
 
     /// A Launch action (ISO 32000-2 §12.6.4.6, Table 207) whose `/F` names a `.pdf` file, read as
@@ -1444,12 +1451,14 @@ impl<'a> Inspector<'a> {
     /// else, or with the deprecated `/Win` launch parameters (an application, an operation, its
     /// arguments), is not followed: a document must not start programs. `\` separators, which
     /// Windows writers put in such paths, are read as `/` (§7.11.2.1 separates components with
-    /// `/`) when the path has no `/` of its own.
+    /// `/`) when the path has no `/` of its own. Launch has no `/D`, so one present (written
+    /// for GoToR, or junk) is ignored rather than checked as a destination.
     fn launch_pdf(&self, action: &Dictionary) -> Option<LinkTarget> {
         if action.has(b"Win") {
             return None;
         }
-        let Some(LinkTarget::RemoteGoTo { file, new_window, .. }) = self.remote_go_to(action) else { return None };
+        let file = self.action_file(action)?;
+        let new_window = self.new_window(action);
         let file = if file.contains('/') { file } else { file.replace('\\', "/") };
         let pdf = file.rsplit('/').next().is_some_and(|name| name.len() > 4 && name.to_ascii_lowercase().ends_with(".pdf"));
         pdf.then_some(LinkTarget::RemoteGoTo { launch: true, file, destination: RemoteDestination::Default, new_window })
@@ -3140,13 +3149,14 @@ trailer << /Root 1 0 R >>
     }
 
     /// #4168: a Launch action naming a `.pdf` file is read as the link to that file it amounts
-    /// to, `\` separators included. One naming anything else, with no file, or with `/Win`
-    /// launch parameters stays an action that isn't followed.
+    /// to, `\` separators included, and a stray `/D` (which Launch has no use for) doesn't stop
+    /// it. One naming anything else, with no file, or with `/Win` launch parameters stays an
+    /// action that isn't followed.
     #[test]
     fn launch_actions_that_name_a_pdf_open_it_like_a_remote_link() {
         let pdf = "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
              2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj\n\
-             3 0 obj << /Type /Page /Parent 2 0 R /Annots [30 0 R 31 0 R 32 0 R 33 0 R 34 0 R 35 0 R 36 0 R 37 0 R] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Annots [30 0 R 31 0 R 32 0 R 33 0 R 34 0 R 35 0 R 36 0 R 37 0 R 38 0 R] >> endobj\n\
              30 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /Launch /F (..\\\\se\\\\se_ST.pdf) >> >> endobj\n\
              31 0 obj << /Type /Annot /Subtype /Link /Rect [0 20 10 30] /A << /S /Launch /F << /Type /Filespec /F (chapters/Two.PDF) >> /NewWindow true >> >> endobj\n\
              32 0 obj << /Type /Annot /Subtype /Link /Rect [0 40 10 50] /A << /S /Launch /F (tool.exe) >> >> endobj\n\
@@ -3155,6 +3165,7 @@ trailer << /Root 1 0 R >>
              35 0 obj << /Type /Annot /Subtype /Link /Rect [0 100 10 110] /A << /S /Launch /F (.pdf) >> >> endobj\n\
              36 0 obj << /Type /Annot /Subtype /Link /Rect [0 120 10 130] /A << /S /Launch /F (dir/a\\\\b.pdf) >> >> endobj\n\
              37 0 obj << /Type /Annot /Subtype /Link /Rect [0 140 10 150] /A << /S /Launch /FS /URL /F (https://example.com/x.pdf) >> >> endobj\n\
+             38 0 obj << /Type /Annot /Subtype /Link /Rect [0 160 10 170] /A << /S /Launch /F (c.pdf) /D 0 >> >> endobj\n\
              trailer << /Root 1 0 R >>\n%%EOF";
         let info = inspect(Arc::new(pdf.as_bytes().to_vec()), None).expect("opens");
         let targets: Vec<_> = info.links.iter().map(|l| l.target.clone()).collect();
@@ -3172,6 +3183,7 @@ trailer << /Root 1 0 R >>
                 other(),
                 launch("dir/a\\b.pdf", None),
                 other(),
+                launch("c.pdf", None),
             ]
         );
     }
