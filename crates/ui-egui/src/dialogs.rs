@@ -52,6 +52,10 @@ struct Pending {
     overwrite_elsewhere: bool,
     signed_edit_now: bool,
     remove_security_now: bool,
+    /// What waited on the signed-document answer: run once this dialog is closed
+    /// ([`finish_close`]), so a dialog it raises (Save over the changed file?) isn't closed
+    /// with this one.
+    resume_now: Option<crate::Resume>,
     summarize_now: bool,
     optimize_now: bool,
     duplicate_now: Option<Edit>,
@@ -1734,9 +1738,7 @@ fn finish_requests(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, re
                 app.active = Some(i);
                 app.apply_edit(e);
             }
-            if let Some(resume) = app.resume_after_signed_edit.take() {
-                resume(app);
-            }
+            req.resume_now = app.resume_after_signed_edit.take();
         }
     } else if dialog == Dialog::SignedEdit && (req.close || modal_closed) {
         // Cancelled (or closed any other way): the change is not made, nor what waited on it.
@@ -1941,6 +1943,9 @@ fn finish_close(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, req: 
         app.unmarked_page = Default::default();
     } else {
         app.dialog = Some(req.next.unwrap_or(dialog));
+    }
+    if let Some(resume) = req.resume_now.take() {
+        resume(app);
     }
     if let Some(cmd) = req.link_command {
         app.execute(cmd);
