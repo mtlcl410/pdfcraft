@@ -255,7 +255,9 @@ fn main() -> eframe::Result {
     if let (Some(logger), Some(dir)) =
         (logger, pdfcraft_ui_egui::portable::data_dir().map(std::path::Path::to_path_buf).or_else(|| eframe::storage_dir("PdfCraft")))
     {
-        match logger.attach_dir(&dir.join("logs")) {
+        // The Print verb runs once per selected file, all at once: add to the log, don't rotate.
+        let attached = if print { logger.append_dir(&dir.join("logs")) } else { logger.attach_dir(&dir.join("logs")) };
+        match attached {
             Ok(path) => log::info!("PdfCraft {}, log file {}", pdfcraft_engine::build_info::version(), path.display()),
             // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
             Err(e) => log::warn!("no log file: {e}"),
