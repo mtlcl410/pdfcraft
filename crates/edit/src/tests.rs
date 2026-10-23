@@ -9112,6 +9112,112 @@ fn ungroup_looks_for_blend_modes_where_they_are_used() {
     assert!(!attempt(b"/Inner Do", Some((b"", "Inner")), true), "a nested form that draws itself");
 }
 
+/// Ungroup the form `Art` drawn by fixture page 1, with `content`; `build` adds the form's other
+/// entries (`/Group`, `/Resources`) and the objects they refer to.
+fn ungroup_built(content: &[u8], build: impl FnOnce(&mut Document, &mut Dict)) -> Result<(), EditError> {
+    let mut doc = fixture();
+    let mut form = Dict::new();
+    form.set(b"Subtype".to_vec(), Object::name("Form"));
+    form.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+    build(&mut doc, &mut form);
+    let artwork = doc.add(Object::Stream(Stream::flate(form, content)));
+    doc.update_dict(pdfcraft_cos::ObjRef::new(6, 0), |d| {
+        let mut xo = Dict::new();
+        xo.set(b"Art".to_vec(), Object::Ref(artwork));
+        d.set(b"XObject".to_vec(), Object::Dict(xo));
+    })
+    .unwrap();
+    doc.set(pdfcraft_cos::ObjRef::new(7, 0), Object::Stream(Stream::flate(Dict::new(), b"q /Art Do Q")));
+    let mut doc = reopen(&doc);
+    images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup).map(|_| ())
+}
+
+/// #3067 review: the entries a refusal depends on count when they are indirect objects too
+/// (ISO 32000-2 §7.3.10): a group's `/S` and `/K`, and the `/Subtype` or `/PatternType` of what
+/// the form draws.
+#[test]
+fn ungroup_reads_indirect_group_and_type_entries() {
+    let refused = |r: Result<(), EditError>, why: &str| match r {
+        Err(EditError::Invalid(m)) => assert!(m.contains(why), "{m}"),
+        other => panic!("expected a refusal mentioning {why:?}, got {other:?}"),
+    };
+    let fill = b"1 0 0 rg 0 0 10 10 re f";
+    let group = |doc: &mut Document, form: &mut Dict, s: bool, k: Option<bool>| {
+        let mut g = Dict::new();
+        let name = Object::name("Transparency");
+        g.set(b"S".to_vec(), if s { Object::Ref(doc.add(name)) } else { name });
+        if let Some(k) = k {
+            g.set(b"K".to_vec(), Object::Ref(doc.add(Object::Bool(k))));
+        }
+        form.set(b"Group".to_vec(), Object::Dict(g));
+    };
+    refused(ungroup_built(fill, |doc, form| group(doc, form, true, Some(true))), "knockout");
+    refused(
+        ungroup_built(fill, |doc, form| {
+            group(doc, form, false, None);
+            let k = Object::Ref(doc.add(Object::Bool(true)));
+            if let Some(Object::Dict(g)) = form.get_mut(b"Group") {
+                g.set(b"K".to_vec(), k);
+            }
+        }),
+        "knockout",
+    );
+    ungroup_built(fill, |doc, form| group(doc, form, true, Some(false))).unwrap();
+
+    // A nested form whose /Subtype is indirect is still looked into for blend modes.
+    refused(
+        ungroup_built(b"/Inner Do", |doc, form| {
+            group(doc, form, true, None);
+            let mut bm = Dict::new();
+            bm.set(b"BM".to_vec(), Object::name("Multiply"));
+            let mut states = Dict::new();
+            states.set(b"Mul".to_vec(), Object::Dict(bm));
+            let mut inner_res = Dict::new();
+            inner_res.set(b"ExtGState".to_vec(), Object::Dict(states));
+            let mut inner = Dict::new();
+            inner.set(b"Subtype".to_vec(), Object::Ref(doc.add(Object::name("Form"))));
+            inner.set(b"BBox".to_vec(), Object::Array([0, 0, 10, 10].map(Object::Int).to_vec()));
+            inner.set(b"Resources".to_vec(), Object::Dict(inner_res));
+            let inner = doc.add(Object::Stream(Stream::flate(inner, b"/Mul gs 0 0 1 1 re f")));
+            let mut xo = Dict::new();
+            xo.set(b"Inner".to_vec(), Object::Ref(inner));
+            let mut res = Dict::new();
+            res.set(b"XObject".to_vec(), Object::Dict(xo));
+            form.set(b"Resources".to_vec(), Object::Dict(res));
+        }),
+        "blend",
+    );
+
+    // A nested form or tiling pattern without resources, typed through an indirect object, still
+    // inherits the form's renamed ones.
+    for (cat, content) in [("XObject", &b"BT /F1 9 Tf (a) Tj ET /N Do"[..]), ("Pattern", b"BT /F1 9 Tf (a) Tj ET /Pattern cs /N scn 0 0 10 10 re f")]
+    {
+        let r = ungroup_built(content, |doc, form| {
+            let mut d = Dict::new();
+            if cat == "XObject" {
+                d.set(b"Subtype".to_vec(), Object::Ref(doc.add(Object::name("Form"))));
+                d.set(b"BBox".to_vec(), Object::Array([0, 0, 100, 50].map(Object::Int).to_vec()));
+            } else {
+                d.set(b"PatternType".to_vec(), Object::Ref(doc.add(Object::Int(1))));
+            }
+            let nested = doc.add(Object::Stream(Stream::flate(d, b"BT /F1 9 Tf (n) Tj ET")));
+            let mut times = Dict::new();
+            times.set(b"Type".to_vec(), Object::name("Font"));
+            times.set(b"Subtype".to_vec(), Object::name("Type1"));
+            times.set(b"BaseFont".to_vec(), Object::name("Times-Roman"));
+            let mut fonts = Dict::new();
+            fonts.set(b"F1".to_vec(), Object::Dict(times));
+            let mut named = Dict::new();
+            named.set(b"N".to_vec(), Object::Ref(nested));
+            let mut res = Dict::new();
+            res.set(b"Font".to_vec(), Object::Dict(fonts));
+            res.set(cat.as_bytes().to_vec(), Object::Dict(named));
+            form.set(b"Resources".to_vec(), Object::Dict(res));
+        });
+        refused(r, "uses its resources");
+    }
+}
+
 /// Ungroup the form `Art` drawn by fixture page 1, with `content` and `resources`, as a
 /// transparency group or not; `build` adds what the resources refer to first.
 fn ungroup_art(content: &[u8], group: bool, build: impl FnOnce(&mut Document) -> Dict) -> Result<(), EditError> {
