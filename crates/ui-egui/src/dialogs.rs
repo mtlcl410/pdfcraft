@@ -1345,6 +1345,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
     if dialog == Dialog::OverwriteChanged && (modal.should_close() || close) {
         app.pending_overwrite = None;
     }
+    // What waited on the signed-document answer runs once this dialog is closed (below), so a
+    // dialog it raises (Save over the changed file?) isn't closed with this one.
+    let mut resume_now: Option<crate::Resume> = None;
     if signed_edit_now {
         if let Some((id, e)) = app.pending_signed_edit.take() {
             app.signed_edits_confirmed.insert(id);
@@ -1353,9 +1356,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                 app.active = Some(i);
                 app.apply_edit(e);
             }
-            if let Some(resume) = app.resume_after_signed_edit.take() {
-                resume(app);
-            }
+            resume_now = app.resume_after_signed_edit.take();
         }
     } else if dialog == Dialog::SignedEdit && (close || modal.should_close()) {
         // Cancelled (or closed any other way): the change is not made, nor what waited on it.
@@ -1509,6 +1510,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.bulk_field_props = None;
     } else {
         app.dialog = Some(next);
+    }
+    if let Some(resume) = resume_now {
+        resume(app);
     }
     if let Some(cmd) = link_command {
         app.execute(cmd);
