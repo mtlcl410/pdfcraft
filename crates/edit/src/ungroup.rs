@@ -1,8 +1,8 @@
-//! Edit a PDF ▸ Ungroup: draw a Form XObject's content in place of its `Do` (#2964, #3005).
+//! Edit a PDF â–¸ Ungroup: draw a Form XObject's content in place of its `Do` (#2964, #3005).
 //!
 //! Text inside grouped Form artwork can't be edited, because editing rewrites only the page's own
 //! content streams. Ungrouping copies the form's content into the page at the same place,
-//! wrapped as `q <Matrix> cm <BBox> re W n … Q`, with the form's resources merged into a copy of
+//! wrapped as `q <Matrix> cm <BBox> re W n â€¦ Q`, with the form's resources merged into a copy of
 //! the page's under names that don't clash. Its text then edits like any other. The form object
 //! itself is left alone, so another page or placement that draws it is unchanged.
 //!
@@ -11,7 +11,12 @@
 //! a blend mode other than Normal inside, or a group drawn translucent, blended or under a soft
 //! mask. Those are refused rather than changed, as is tagged form content (its structure link
 //! would be lost) and content whose marked content or text objects don't balance (inlined, they
-//! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC … BDC … EMC`.
+//! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC â€¦ BDC â€¦ EMC`.
+//!
+//! A pattern's matrix maps pattern space to the default space of the content stream that uses it
+//! (ISO 32000-2 Â§8.7.2): inside the form that is the form's space at the `Do`, on the page it is
+//! the page's. So each pattern the form selects with `scn`/`SCN` is drawn from a copy whose
+//! `/Matrix` also carries the form's placement; one that can't be copied that way is refused.
 
 use std::collections::HashMap;
 
@@ -24,16 +29,25 @@ use crate::EditError;
 /// any real form, and a bomb must not be copied into the page.
 const MAX_FORM_BYTES: usize = 64 << 20;
 
-/// Resource categories a content stream refers to by name (ISO 32000-2 §7.8.3, Table 34).
+/// Resource categories a content stream refers to by name (ISO 32000-2 Â§7.8.3, Table 34).
 const CATEGORIES: [&[u8]; 7] = [b"Font", b"XObject", b"ExtGState", b"ColorSpace", b"Pattern", b"Shading", b"Properties"];
 
-/// A name map for one resource category: form name → name in the page's resources.
+/// The most distinct patterns one ungrouped form may select; each becomes a new object.
+const MAX_MOVED_PATTERNS: usize = 256;
+
+/// A name map for one resource category: form name â†’ name in the page's resources.
 type Renames = Vec<(Vec<u8>, Vec<u8>)>;
 
-/// The ops that draw form `name` (from the page's `resources`) inline, and the page resources
-/// with the form's merged in. `translucent` says whether the graphics state at the `Do` is
-/// translucent, blended or soft-masked, which a transparency group composites as a whole.
-pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translucent: bool) -> Result<(Vec<Op>, Dict), EditError> {
+/// What [`ungroup_ops`] gives back: the ops that draw the form inline, the page resources with
+/// the form's merged in, and the pattern copies to add to the document, each under the name in
+/// the merged `/Pattern` dictionary that the ops already use.
+pub(crate) type Ungrouped = (Vec<Op>, Dict, Vec<(Vec<u8>, Object)>);
+
+/// Ungroup form `name` from the page's `resources`. `translucent` says whether the graphics state
+/// at the `Do` is translucent, blended or soft-masked, which a transparency group composites as a
+/// whole. `placement` maps the form's space to the page's default space at the `Do` (its
+/// `/Matrix`, then the CTM there).
+pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translucent: bool, placement: Matrix) -> Result<Ungrouped, EditError> {
     let refuse = |why: &str| EditError::Invalid(format!("this artwork can't be ungrouped: {why}"));
     let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).ok_or_else(|| refuse("it is missing"))?;
     let form = xobjects.get(name).ok_or_else(|| refuse("it is missing"))?;
@@ -189,6 +203,56 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
         return Err(refuse("its content leaves marked content or a text object open"));
     }
 
+    // Patterns keep their place relative to the shapes they fill: each one the form selects is
+    // drawn from a copy that also carries the placement. Nested forms and patterns inside
+    // patterns keep their own parents, so only this stream's selections change.
+    let mut patterns: Vec<(Vec<u8>, Object)> = Vec::new();
+    if placement != Matrix::IDENTITY {
+        let mut table = merged.get(b"Pattern").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+        let mut moved: Renames = Vec::new();
+        let mut n = 0u32;
+        for op in &mut ops {
+            if !(op.is("scn") || op.is("SCN")) {
+                continue;
+            }
+            let Some(i) = op.operands.len().checked_sub(1) else { continue };
+            let Some(Object::Name(from)) = op.operands.get(i) else { continue };
+            // A name the resources don't have selects nothing, inline or not.
+            let Some(entry) = table.get(from).cloned() else { continue };
+            let to = match moved.iter().find(|(f, _)| f == from) {
+                Some((_, to)) => to.clone(),
+                None => {
+                    if moved.len() >= MAX_MOVED_PATTERNS {
+                        return Err(refuse("it paints with too many patterns"));
+                    }
+                    let copy =
+                        moved_pattern(doc, &entry, placement).ok_or_else(|| refuse("it paints with a pattern whose position can't be kept"))?;
+                    let fresh = loop {
+                        n = n.saturating_add(1);
+                        let candidate = format!("PCUgPat{n}").into_bytes();
+                        if table.get(&candidate).is_none() {
+                            break candidate;
+                        }
+                        if n == u32::MAX {
+                            return Err(refuse("too many resources"));
+                        }
+                    };
+                    // Reserved here; the caller replaces it with the copy's reference.
+                    table.set(fresh.clone(), Object::Null);
+                    patterns.push((fresh.clone(), copy));
+                    moved.push((from.clone(), fresh.clone()));
+                    fresh
+                }
+            };
+            if let Some(operand) = op.operands.get_mut(i) {
+                *operand = Object::Name(to);
+            }
+        }
+        if !patterns.is_empty() {
+            merged.set(b"Pattern".to_vec(), Object::Dict(table));
+        }
+    }
+
     // A form in a layer (/OC) stays in it: its content is marked with the same membership.
     let layer = match s.dict.get(b"OC") {
         None => None,
@@ -231,7 +295,37 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
     if layer.is_some() {
         out.push(Op::new("EMC", Vec::new()));
     }
-    Ok((out, merged))
+    Ok((out, merged, patterns))
+}
+
+/// A copy of pattern `entry` whose `/Matrix` maps its space to the page's default space instead
+/// of the form's: its own matrix, then `placement`. `None` when it isn't a readable pattern, its
+/// matrix is unreadable, the result isn't finite or a tiling pattern is too large to copy.
+fn moved_pattern(doc: &Document, entry: &Object, placement: Matrix) -> Option<Object> {
+    let resolved = doc.resolve(entry);
+    let (mut dict, stream) = match &*resolved {
+        Object::Stream(s) => (s.dict.clone(), Some(s)),
+        Object::Dict(d) => (d.clone(), None),
+        _ => return None,
+    };
+    let own = match dict.get(b"Matrix") {
+        None => Matrix::IDENTITY,
+        Some(m) => {
+            let m = doc.resolve(m);
+            let nums: Vec<Object> = m.as_array()?.iter().map(|x| doc.resolve(x).as_ref().clone()).collect();
+            Matrix::from_operands(&nums)?
+        }
+    };
+    let moved = own.then(&placement);
+    if !moved.0.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    dict.set(b"Matrix".to_vec(), Object::Array(moved.0.iter().map(|v| Object::Real(*v)).collect()));
+    match stream {
+        Some(s) if s.raw.len() > MAX_FORM_BYTES => None,
+        Some(s) => Some(Object::Stream(pdfcraft_cos::Stream { dict, raw: s.raw.clone() })),
+        None => Some(Object::Dict(dict)),
+    }
 }
 
 /// How deep [`blends_inside`] follows nested forms; deeper ones count as blending.

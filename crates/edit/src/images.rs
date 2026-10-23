@@ -502,7 +502,14 @@ pub fn change_image(doc: &mut Document, page: usize, index: usize, change: &Imag
             }
             let res = p.dict.get(b"Resources").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
             let translucent = crate::ungroup::translucent_at(doc, &res, &ops, img.op);
-            let (inline, merged) = crate::ungroup::ungroup_ops(doc, &res, img.name.as_bytes(), translucent)?;
+            let (inline, mut merged, patterns) = crate::ungroup::ungroup_ops(doc, &res, img.name.as_bytes(), translucent, Matrix(img.matrix))?;
+            if !patterns.is_empty() {
+                let mut table = merged.get(b"Pattern").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+                for (name, copy) in patterns {
+                    table.set(name, Object::Ref(doc.add(copy)));
+                }
+                merged.set(b"Pattern".to_vec(), Object::Dict(table));
+            }
             resources = Some(merged);
             inline
         }
