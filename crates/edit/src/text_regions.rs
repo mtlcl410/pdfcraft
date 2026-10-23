@@ -1023,7 +1023,7 @@ pub(super) fn rewrite_styled_block(
         block_ops.push(Op::new("Tm", o.tlm.iter().map(|v| n(*v)).collect()));
     }
     let at = if split { start } else { o.bt_op };
-    let mut advances = dropped_advances(doc, &ops, &fonts, &drop);
+    let mut advances = dropped_advances(doc, &ops, &res, &drop)?;
     let data = splice(&pieces, &ops, |i| {
         let mut insert = if i == at { std::mem::take(&mut block_ops) } else { Vec::new() };
         let keep = !drop.contains(&i);

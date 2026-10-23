@@ -680,10 +680,17 @@ pub(crate) fn dropped_side_effects(ops: &[Op], i: usize, keep: bool, split_at: O
 /// the text matrix as far as that operator's text did without drawing anything (as
 /// [`clear_block`] does). Text shown later in the same text object without its own `Td` or `Tm`,
 /// such as a run in another style or column on the same baseline, then stays where it was. An
-/// advance a `TJ` can't express (spacing at a zero font size) is left out.
-pub(crate) fn dropped_advances(doc: &Document, ops: &[Op], fonts: &Dict, drop: &std::collections::HashSet<usize>) -> HashMap<usize, Op> {
+/// advance a `TJ` can't express (spacing at a zero font size) is left out. `resources` is the
+/// page's resource dictionary; a page whose text can't be interpreted is an error, as for
+/// [`clear_block`].
+pub(crate) fn dropped_advances(
+    doc: &Document,
+    ops: &[Op],
+    resources: &Dict,
+    drop: &std::collections::HashSet<usize>,
+) -> Result<HashMap<usize, Op>, EditError> {
     let mut out = HashMap::new();
-    for s in interpret(doc, ops, fonts, &mut HashMap::new(), &mut Carry::new(), None, None) {
+    for s in interpret(doc, ops, resources, &mut HashMap::new(), &mut Carry::new(), None, None)? {
         if !drop.contains(&s.op) || s.advance == 0.0 {
             continue;
         }
@@ -693,7 +700,7 @@ pub(crate) fn dropped_advances(doc: &Document, ops: &[Op], fonts: &Dict, drop: &
             out.entry(s.op).or_insert_with(|| Op::new("TJ", vec![Object::Array(vec![pdfcraft_content::num(adjustment)])]));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Rewrite a page's content (its streams joined, see [`Pieces`]): `edit(i)` gives the operators
@@ -3072,7 +3079,7 @@ fn rewrite_block_from(
         block_ops.push(Op::new("Tm", emit.tlm.iter().map(|v| n(*v)).collect()));
     }
     let at = if split { start } else { emit.bt_op };
-    let mut advances = dropped_advances(doc, &ops, &fonts_res, &drop);
+    let mut advances = dropped_advances(doc, &ops, &res, &drop)?;
     let new_data = splice(&pieces, &ops, |i| {
         let mut insert = if i == at { std::mem::take(&mut block_ops) } else { Vec::new() };
         let keep = !drop.contains(&i);
