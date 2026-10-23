@@ -52,7 +52,7 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
     let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).ok_or_else(|| refuse("it is missing"))?;
     let form = xobjects.get(name).ok_or_else(|| refuse("it is missing"))?;
     let Object::Stream(s) = &*doc.resolve(form) else { return Err(refuse("it is not a Form XObject")) };
-    if s.dict.name(b"Subtype") != Some(b"Form") {
+    if !is_name(doc, &s.dict, b"Subtype", b"Form") {
         return Err(refuse("it is not a Form XObject"));
     }
     let numbers = |key: &[u8], n: usize| -> Option<Vec<f64>> {
@@ -76,9 +76,9 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
     if s.dict.get(b"StructParent").is_some() || s.dict.get(b"StructParents").is_some() {
         return Err(refuse("it is tagged content (Tags panel); edit its text in a copy without tags"));
     }
-    let group = s.dict.get(b"Group").map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()).filter(|g| g.name(b"S") == Some(b"Transparency"));
+    let group = s.dict.get(b"Group").map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()).filter(|g| is_name(doc, g, b"S", b"Transparency"));
     if let Some(group) = &group {
-        if matches!(group.get(b"K"), Some(Object::Bool(true))) {
+        if group.get(b"K").is_some_and(|k| matches!(*doc.resolve(k), Object::Bool(true))) {
             return Err(refuse("it is a knockout transparency group"));
         }
         if translucent {
@@ -371,10 +371,10 @@ fn inherits_resources(doc: &Document, resources: &Dict, op: &Op) -> bool {
         _ => return false,
     };
     let drawn = match cat {
-        b"XObject" => dict.name(b"Subtype") == Some(b"Form"),
-        b"Font" => dict.name(b"Subtype") == Some(b"Type3"),
+        b"XObject" => is_name(doc, &dict, b"Subtype", b"Form"),
+        b"Font" => is_name(doc, &dict, b"Subtype", b"Type3"),
         // A shading pattern has no content of its own.
-        _ => dict.int(b"PatternType") == Some(1),
+        _ => int_of(doc, &dict, b"PatternType") == Some(1),
     };
     drawn && dict.get(b"Resources").is_none()
 }
@@ -397,8 +397,8 @@ fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, wal
         let Some(o) = o else { continue };
         let resolved = doc.resolve(o);
         let nested = match &*resolved {
-            Object::Stream(st) if op.is("Do") && st.dict.name(b"Subtype") == Some(b"Form") => st,
-            Object::Stream(st) if !op.is("Do") && st.dict.int(b"PatternType") == Some(1) => st,
+            Object::Stream(st) if op.is("Do") && is_name(doc, &st.dict, b"Subtype", b"Form") => st,
+            Object::Stream(st) if !op.is("Do") && int_of(doc, &st.dict, b"PatternType") == Some(1) => st,
             // A shading pattern.
             Object::Stream(st) if !op.is("Do") => {
                 if state_blends(st.dict.get(b"ExtGState")) {
@@ -448,6 +448,17 @@ fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, wal
         }
     }
     false
+}
+
+/// Whether `d`'s `key` is the name `want`, directly or through an indirect object (any value may
+/// be one, ISO 32000-2 §7.3.10).
+fn is_name(doc: &Document, d: &Dict, key: &[u8], want: &[u8]) -> bool {
+    d.get(key).is_some_and(|v| doc.resolve(v).as_name() == Some(want))
+}
+
+/// `d`'s integer `key`, directly or through an indirect object.
+fn int_of(doc: &Document, d: &Dict, key: &[u8]) -> Option<i64> {
+    d.get(key).and_then(|v| doc.resolve(v).as_int())
 }
 
 /// Whether an ExtGState blends with something other than Normal.
