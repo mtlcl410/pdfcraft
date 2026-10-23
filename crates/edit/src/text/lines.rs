@@ -121,7 +121,9 @@ pub(crate) fn dropped_side_effects(ops: &[Op], i: usize, keep: bool, split_at: O
 /// the text matrix as far as that operator's text did without drawing anything (as
 /// [`super::clear_block`] does). Text shown later in the same text object without its own `Td`
 /// or `Tm`, such as a run in another style or column on the same baseline, then stays where it
-/// was. An advance a `TJ` can't express (spacing at a zero font size) is left out.
+/// was. An advance a `TJ` can't express (spacing at a zero font size) is left out. `resources` is
+/// the page's resource dictionary; a page whose text can't be interpreted is an error, as for
+/// [`super::clear_block`].
 pub(crate) fn dropped_advances(
     doc: &Document,
     ops: &[Op],
