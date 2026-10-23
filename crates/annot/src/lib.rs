@@ -1807,8 +1807,6 @@ fn unlocked(doc: &Document, r: ObjRef) -> Result<(), AnnotError> {
     if flags(doc, r) & FLAG_LOCKED != 0 { Err(AnnotError::Invalid("the comment is locked".into())) } else { Ok(()) }
 }
 
-/// Lock or unlock a comment (the Locked flag). A locked comment can't be moved, resized,
-/// restyled or deleted; its text and replies stay editable, as in Acrobat.
 /// Open, close or move a comment's pop-up window (Acrobat: double-click a comment to open it,
 /// drag its title bar to move it). `rect` is the pop-up's new `/Rect` in user space; `open` its
 /// `/Open`. A comment without a `/Popup` gets one, placed to the right of the comment as new
@@ -1880,6 +1878,8 @@ pub fn set_popup(doc: &mut Document, page: usize, index: usize, rect: Option<[f6
     Ok(())
 }
 
+/// Lock or unlock a comment (the Locked flag). A locked comment can't be moved, resized,
+/// restyled or deleted; its text and replies stay editable, as in Acrobat.
 pub fn set_locked(doc: &mut Document, page: usize, index: usize, locked: bool) -> Result<(), AnnotError> {
     let (_, r) = annot_ref(doc, page, index)?;
     let f = if locked { flags(doc, r) | FLAG_LOCKED } else { flags(doc, r) & !FLAG_LOCKED };
