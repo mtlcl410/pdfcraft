@@ -2265,6 +2265,9 @@ pub struct Summary {
     /// A line's two ends (`/L`), or the corners of connected lines, a polygon or a cloud
     /// (`/Vertices`), in user space; empty for other comments.
     pub points: Vec<[f32; 2]>,
+    /// Keeps its size on the screen whatever the zoom: the NoZoom flag or a note, as
+    /// `pdfcraft_render::Annotation::no_zoom` decides it.
+    pub no_zoom: bool,
 }
 
 fn text_value(doc: &Document, d: &Dict, key: &[u8]) -> Option<String> {
@@ -2283,6 +2286,20 @@ fn text_value(doc: &Document, d: &Dict, key: &[u8]) -> Option<String> {
 /// 3D, PrinterMark, TrapNet, Watermark) are not.
 pub fn is_comment_subtype(subtype: &str) -> bool {
     !matches!(subtype, "Link" | "Widget" | "Popup" | "Screen" | "Movie" | "RichMedia" | "3D" | "PrinterMark" | "TrapNet" | "Watermark")
+}
+
+/// Whether the renderer keeps an annotation of `subtype` the same size on the screen whatever
+/// the zoom (ISO 32000-2 §12.5.3, hayro-interpret patch 51): the NoZoom flag, with `/F` read as
+/// the renderer reads it (a real truncated, a value that isn't a `u32` no flags), or a note
+/// (`/Text`), which behaves as if it had the flag (§12.5.6.4). Never a form field or a link.
+fn keeps_screen_size(doc: &Document, d: &Dict, subtype: &str) -> bool {
+    let f = match d.get(b"F").map(|f| doc.resolve(f)).as_deref() {
+        Some(Object::Int(i)) => *i,
+        Some(Object::Real(r)) => *r as i64,
+        _ => 0,
+    };
+    let no_zoom = u32::try_from(f).is_ok_and(|f| i64::from(f) & FLAG_NO_ZOOM != 0);
+    (no_zoom || subtype == "Text") && !matches!(subtype, "Widget" | "Link")
 }
 
 /// Every comment (see [`is_comment_subtype`]), ordered by page and then top edge.
@@ -2326,6 +2343,7 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
                 _ => Vec::new(),
             };
             let in_reply_to = d.get(b"IRT").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).and_then(|p| text_value(doc, &p, b"NM"));
+            let no_zoom = keeps_screen_size(doc, d, &subtype);
             out.push(Summary {
                 page,
                 index,
@@ -2345,6 +2363,7 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
                 intent: d.get(b"IT").and_then(|o| doc.resolve(o).as_name().map(|n| String::from_utf8_lossy(n).into_owned())),
                 fill_sign: is_fill_sign(doc, d),
                 points,
+                no_zoom,
             });
         }
     }

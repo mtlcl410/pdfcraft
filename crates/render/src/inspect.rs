@@ -439,6 +439,11 @@ pub struct Annotation {
     /// The points that shape a line (its two ends, `/L`) or connected lines, a polygon or a
     /// cloud (their corners, `/Vertices`), in user space; empty for other comments.
     pub points: Vec<[f32; 2]>,
+    /// The comment keeps its size on the screen whatever the zoom, pinned at the upper-left
+    /// corner of `rect` (ISO 32000-2 §12.5.3): it has the NoZoom flag (`/F` bit 4), or it is a
+    /// note (`/Text`), which behaves as if it had (§12.5.6.4). Never a form field or a link.
+    /// The renderer draws it so at a [`crate::RenderRequest::magnification`].
+    pub no_zoom: bool,
 }
 
 impl Annotation {
@@ -1338,6 +1343,7 @@ impl<'a> Inspector<'a> {
                     }
                     _ => Vec::new(),
                 };
+                let no_zoom = keeps_screen_size(&subtype, d.get(b"F").ok().map(|f| self.resolve(f)));
                 let annotation = Annotation {
                     page,
                     subtype,
@@ -1357,6 +1363,7 @@ impl<'a> Inspector<'a> {
                     intent: self.name(d, b"IT"),
                     fill_sign,
                     points,
+                    no_zoom,
                 };
                 kept = kept.saturating_add(retained(&annotation));
                 if kept > MAX_ANNOTATION_BYTES {
@@ -1862,6 +1869,19 @@ fn close_outline(open: &mut Vec<(usize, OutlineItem)>, roots: &mut Vec<OutlineIt
             None => roots.push(item),
         }
     }
+}
+
+/// Whether an annotation of `subtype` with `/F` `flags` keeps its size on the screen, as the
+/// renderer decides it (hayro-interpret patch 51): the NoZoom flag (bit 4) or a note, but never a
+/// form field or a link. A real `/F` is truncated, and one that isn't a `u32` counts as no flags.
+fn keeps_screen_size(subtype: &str, flags: Option<&Object>) -> bool {
+    let f = match flags {
+        Some(Object::Integer(i)) => *i,
+        Some(Object::Real(r)) => *r as i64,
+        _ => 0,
+    };
+    let no_zoom = u32::try_from(f).unwrap_or(0) & 8 != 0;
+    (no_zoom || subtype == "Text") && !matches!(subtype, "Widget" | "Link")
 }
 
 fn rect4(o: &Object) -> [f32; 4] {

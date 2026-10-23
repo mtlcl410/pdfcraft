@@ -16,7 +16,7 @@ use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use pdfcraft_engine::{Edit, LineEnding, Markup, NewAnnotation, NoteIcon, ReviewState, Rgb, Shape, Style};
 use pdfcraft_render::{Annotation, DocInfo, PageInfo, PageText};
 
-use crate::canvas::{DocView, PageXform};
+use crate::canvas::{DocView, PT, PageXform};
 use crate::theme::{self, Tokens};
 use crate::{QuickTool, icons};
 
@@ -618,8 +618,21 @@ impl PageCx<'_> {
         self.xf.norm_to_screen(v[0] / self.xf.pw, v[1] / self.xf.ph)
     }
 
+    /// Where a comment is drawn on screen (a NoZoom comment or a note keeps its size).
     fn screen_rect(&self, a: &Annotation) -> Rect {
-        self.xf.user_rect(self.info, self.page, a.rect)
+        self.zoomed_screen_rect(a, a.rect.map(f64::from))
+    }
+
+    /// The page's magnification on screen (1.0 = 100%): what the canvas asks the renderer to
+    /// draw it at.
+    fn magnification(&self) -> f32 {
+        self.xf.zoom() / PT
+    }
+
+    /// Where `a` is drawn on screen with its `/Rect` at `rect`: [`zoomed_rect`] at this page's
+    /// magnification.
+    fn zoomed_screen_rect(&self, a: &Annotation, rect: [f64; 4]) -> Rect {
+        self.xf.user_rect(self.info, self.page, zoomed_rect(a, rect, self.magnification()).map(|v| v as f32))
     }
 
     /// Top-level comments on this page, in paint order.
@@ -688,16 +701,13 @@ impl PageCx<'_> {
         if let Some(Edit::ResizeAnnotation { page, index, rect }) = pending
             && (*page, *index) == (self.page, a.index)
         {
-            return self.xf.user_rect(self.info, self.page, rect.map(|v| v as f32));
+            return self.zoomed_screen_rect(a, *rect);
         }
         if let Some(Edit::MoveAnnotation { page, index, dx, dy }) = pending
             && (*page, *index) == (self.page, a.index)
         {
-            return self.xf.user_rect(
-                self.info,
-                self.page,
-                [a.rect[0] + *dx as f32, a.rect[1] + *dy as f32, a.rect[2] + *dx as f32, a.rect[3] + *dy as f32],
-            );
+            let r = a.rect.map(f64::from);
+            return self.zoomed_screen_rect(a, [r[0] + *dx, r[1] + *dy, r[2] + *dx, r[3] + *dy]);
         }
         match (gesture, pointer) {
             (Some(Gesture::Move { page, index, from }), Some(p)) if (*page, *index) == (self.page, a.index) => r.translate(p - *from),
@@ -711,6 +721,30 @@ impl PageCx<'_> {
 
 fn is_markup(subtype: &str) -> bool {
     matches!(subtype, "Highlight" | "Underline" | "StrikeOut" | "Squiggly")
+}
+
+/// Where `a`, with its `/Rect` at `rect`, is drawn in user space on a page shown at
+/// `magnification` (the view's zoom, 1.0 = 100%): `rect`, or for a comment that keeps its size on
+/// the screen ([`Annotation::no_zoom`]) `rect` scaled by `1/magnification` about its upper-left
+/// corner, which stays where it is on the page (ISO 32000-2 §12.5.3). The renderer draws it there
+/// (hayro-interpret patch 51). A magnification that isn't finite and greater than zero leaves
+/// `rect` as it is, as the renderer does.
+pub(crate) fn zoomed_rect(a: &Annotation, rect: [f64; 4], magnification: f32) -> [f64; 4] {
+    let s = 1.0 / f64::from(magnification);
+    if !(a.no_zoom && magnification.is_finite() && magnification > 0.0 && s.is_finite()) {
+        return rect;
+    }
+    let [x0, y0, x1, y1] = [rect[0].min(rect[2]), rect[1].min(rect[3]), rect[0].max(rect[2]), rect[1].max(rect[3])];
+    [x0, y1 - (y1 - y0) * s, x0 + (x1 - x0) * s, y1]
+}
+
+/// The `/Rect` that [`zoomed_rect`] draws in the user-space box `shown`: its inverse, for a box
+/// resized as drawn. The upper-left corner stays, and the sides grow by `magnification`.
+pub(crate) fn rect_for_zoomed(a: &Annotation, shown: [f64; 4], magnification: f32) -> [f64; 4] {
+    let m = f64::from(magnification);
+    let [x0, y0, x1, y1] = [shown[0].min(shown[2]), shown[1].min(shown[3]), shown[0].max(shown[2]), shown[1].max(shown[3])];
+    let rect = [x0, y1 - (y1 - y0) * m, x0 + (x1 - x0) * m, y1];
+    if a.no_zoom && m.is_finite() && m > 0.0 && rect.iter().all(|v| v.is_finite()) { rect } else { shown }
 }
 
 /// Rectangles, ovals, text boxes, stamps and drawings (drawn signatures among them). A callout's
@@ -1230,7 +1264,7 @@ fn select_input(
                     let from_rect = cx.screen_rect(a);
                     let shift = ui.input(|i| i.modifiers.shift);
                     let r = resized(from_rect, handle, p - from, corner_ratio(from_rect, aspect_ratio, shift));
-                    let rect = cx.rect_to_user(r);
+                    let rect = rect_for_zoomed(a, cx.rect_to_user(r), cx.magnification());
                     if r.width() >= 4.0 && r.height() >= 4.0 {
                         view.pending_edit = Some(Edit::ResizeAnnotation { page, index, rect });
                     }
@@ -2406,6 +2440,7 @@ mod tests {
                 intent: None,
                 fill_sign: false,
                 points: Vec::new(),
+                no_zoom: false,
             }],
             ..Default::default()
         };
