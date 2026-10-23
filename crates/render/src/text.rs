@@ -2249,6 +2249,23 @@ mod tests {
         assert_eq!(t.find_opts("カタカナ", false, true), vec![12..16]);
     }
 
+    /// #2075 review: digits still bound a whole word in those scripts (๑ is not a word inside
+    /// the number ๑๒), and letters from the later Myanmar and Han blocks don't.
+    #[test]
+    fn whole_words_in_unspaced_scripts_keep_digits_and_later_blocks() {
+        let one = |text: &str| {
+            let mut v = Vec::new();
+            word(&mut v, text, 10.0, 10.0, 6.0);
+            layout(v)
+        };
+        assert!(one("๑๒").find_opts("๑", false, true).is_empty(), "a Thai digit beside it bounds");
+        assert!(one("台北3").find_opts("台北", false, true).is_empty(), "so does an ASCII digit");
+        // Myanmar Extended-A (U+AA60), Myanmar Extended-B (U+A9E0), CJK Extension H (U+31350).
+        for text in ["\u{AA60}PDF", "\u{A9E0}PDF", "\u{31350}PDF"] {
+            assert_eq!(one(text).find_opts("PDF", false, true), vec![1..4], "{text}");
+        }
+    }
+
     #[test]
     fn turkish_dotted_and_dotless_i_match_in_any_case() {
         // "İSTANBUL IRMAK KIŞ" on one line: each word typed in lower case must find it, and the

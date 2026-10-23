@@ -26,9 +26,11 @@ fn unspaced(c: char) -> bool {
             | 0x31F0..=0x31FF
             | 0x3400..=0x4DBF
             | 0x4E00..=0x9FFF
+            | 0xA9E0..=0xA9FF
+            | 0xAA60..=0xAA7F
             | 0xF900..=0xFAFF
             | 0xFF66..=0xFF9F
-            | 0x20000..=0x3134F
+            | 0x20000..=0x3FFFF
     )
 }
 
@@ -51,8 +53,9 @@ fn reference(page: &PageText, query: &str, sensitive: bool, whole: bool, limit: 
             }
         }
     }
-    // A neighbour bounds a word only in a script written with spaces between words.
-    let word = |i: Option<usize>| i.and_then(|i| chars.get(i)).is_some_and(|&(c, _)| c.is_alphanumeric() && !unspaced(c));
+    // A neighbour bounds a word only in a script written with spaces between words, or when it
+    // is a digit.
+    let word = |i: Option<usize>| i.and_then(|i| chars.get(i)).is_some_and(|&(c, _)| c.is_alphanumeric() && (c.is_numeric() || !unspaced(c)));
     let mut hits = Vec::new();
     let mut start = 0;
     while start + needle.len() <= chars.len() {
