@@ -6861,16 +6861,73 @@ fn ungroup_renames_every_kind_of_resource() {
     for cat in categories {
         let hits: Vec<_> = used.iter().filter(|(c, _)| *c == cat).collect();
         assert!(!hits.is_empty(), "{cat} is used: {used:?}");
-        assert!(
-            hits.iter().any(|(_, n)| lookup(cat, n) == Some(tag(&format!("form {cat}")))),
-            "{cat}: the inline content names the form's object: {hits:?}"
-        );
+        // The form is placed by its Matrix [2 0 0 2 0 0] after the page's `1 0 0 1 40 80 cm`, so
+        // its pattern is drawn from a copy that carries that placement (ISO 32000-2 §8.7.2).
+        let want = match tag(&format!("form {cat}")) {
+            Object::Dict(mut d) if cat == "Pattern" => {
+                d.set(b"Matrix".to_vec(), Object::Array([2, 0, 0, 2, 40, 80].map(Object::Int).to_vec()));
+                Object::Dict(d)
+            }
+            other => other,
+        };
+        assert!(hits.iter().any(|(_, n)| lookup(cat, n) == Some(want.clone())), "{cat}: the inline content names the form's object: {hits:?}");
     }
     assert!(
         used.iter().filter(|(c, _)| *c == "ColorSpace").all(|(_, n)| lookup("ColorSpace", n) == Some(tag("form ColorSpace"))),
         "cs and the inline image's /CS both point at the form's colour space"
     );
     assert_eq!(lookup("ExtGState", b"G"), Some(tag("page ExtGState")), "the page's own G is kept");
+}
+
+/// #3067 review: a pattern's matrix maps pattern space to the default space of the stream that
+/// uses it (ISO 32000-2 §8.7.2), so drawn from the page a form's pattern would lose the form's
+/// placement. Ungroup draws it from a copy whose `/Matrix` carries that placement. A pattern
+/// selected twice is copied once, the form keeps its own for the other placement, and a pattern
+/// whose matrix can't be read is refused rather than drawn somewhere else.
+#[test]
+fn ungroup_carries_the_placement_into_the_patterns_it_selects() {
+    let pattern = |matrix: Object| {
+        let mut d = Dict::new();
+        d.set(b"PatternType".to_vec(), Object::Int(2));
+        d.set(b"Shading".to_vec(), Object::Dict(Dict::new()));
+        d.set(b"Matrix".to_vec(), matrix);
+        Object::Dict(d)
+    };
+    let form_with = |p: Object| {
+        let mut patterns = Dict::new();
+        patterns.set(b"P".to_vec(), p);
+        let mut res = Dict::new();
+        res.set(b"Pattern".to_vec(), Object::Dict(patterns));
+        page_with_form(&[("Resources", Object::Dict(res))], b"/Pattern cs /P scn 0 0 10 10 re f /P scn 0 0 5 5 re f", "", None)
+    };
+    let own = pattern(Object::Array([1, 0, 0, 1, 3, 4].map(Object::Int).to_vec()));
+    let (mut doc, artwork) = form_with(own.clone());
+    images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup).unwrap();
+    let doc = reopen(&doc);
+    let page = pdfcraft_model::pages(&doc).into_iter().next().unwrap();
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    let table = doc.resolve(res.get(b"Pattern").unwrap()).as_dict().cloned().unwrap();
+    let Object::Stream(s) = doc.resolve(page.dict.get(b"Contents").unwrap()).as_ref().clone() else { panic!("one content stream") };
+    let selected: Vec<Vec<u8>> =
+        pdfcraft_content::parse(&s.decoded().unwrap()).ops.iter().filter(|o| o.is("scn")).filter_map(|o| o.name(0).map(<[u8]>::to_vec)).collect();
+    assert_eq!(selected.len(), 2, "{selected:?}");
+    assert!(selected[0] == selected[1] && selected[0] != b"P", "both selections use one copy: {selected:?}");
+    let copy = doc.resolve(table.get(&selected[0]).unwrap()).as_dict().cloned().unwrap();
+    // [1 0 0 1 3 4], then the form's Matrix [2 0 0 2 0 0], then the page's `1 0 0 1 40 80 cm`.
+    let matrix = copy.get(b"Matrix").and_then(Object::as_array).and_then(|a| pdfcraft_content::Matrix::from_operands(a));
+    assert_eq!(matrix.map(|m| m.0), Some([2.0, 0.0, 0.0, 2.0, 46.0, 88.0]));
+    assert_eq!(table.iter().filter(|(k, _)| k.starts_with(b"PCUgPat")).count(), 1, "one copy");
+    let Object::Stream(form) = doc.get(artwork).as_ref().clone() else { panic!("the form") };
+    let form_res = doc.resolve(form.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    let form_patterns = doc.resolve(form_res.get(b"Pattern").unwrap()).as_dict().cloned().unwrap();
+    assert_eq!(form_patterns.get(b"P"), Some(&own), "the form keeps its own pattern for its other placement");
+
+    let (mut doc, _) =
+        form_with(pattern(Object::Array(vec![Object::Int(1), Object::Int(0), Object::Int(0), Object::Int(1), Object::name("Bad"), Object::Int(4)])));
+    match images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup) {
+        Err(EditError::Invalid(m)) => assert!(m.contains("position can't be kept"), "{m}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
 
 /// Ungroup draws the form where the `Do` drew it and only inside its bounding box: the inline
