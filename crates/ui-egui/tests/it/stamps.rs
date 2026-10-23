@@ -177,6 +177,21 @@ fn a_dynamic_custom_stamp_keeps_its_line_and_fills_it_in_when_placed() {
     h.drop_at(p);
     h.run_steps(4);
     let s = h.state();
+    let saved = s.session.save_bytes(s.views[0].id).unwrap();
+    let pdf = pdfcraft_cos::Document::open(saved).unwrap();
+    let line = pdf
+        .scan_objects()
+        .find_map(|(_, object)| match object.as_ref() {
+            pdfcraft_cos::Object::Dict(dict) => dict.get(b"PCByLine").and_then(pdfcraft_cos::Object::as_string).map(pdfcraft_cos::PdfString::to_text),
+            _ => None,
+        })
+        .expect("placed custom stamp stores PCByLine in the PDF");
+    assert!(line.starts_with("By Ada at "), "expanded stamp line: {line:?}");
+    assert!(
+        !line.contains("{name}") && !line.contains("{date}") && !line.contains("{time}"),
+        "the saved stamp line must not contain unexpanded placeholders: {line:?}"
+    );
+
     let doc = s.session.get(s.views[0].id).unwrap();
     let r = doc.info.annotations.iter().find(|a| a.subtype == "Stamp").expect("placed").rect;
     let aspect = (r[2] - r[0]) / (r[3] - r[1]);
