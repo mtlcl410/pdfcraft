@@ -2478,19 +2478,20 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
                 }
             }
             let quads = nums(b"QuadPoints").as_chunks::<8>().0.to_vec();
-            // Keep in step with `pdfcraft_render::inspect`.
-            let callout = (subtype == "FreeText").then(|| callout_line(doc, d)).flatten();
+            // Keep in step with `pdfcraft_render::inspect`: a callout gives its points only with a
+            // readable text box, without which they can't be changed either.
+            let callout = (subtype == "FreeText").then(|| callout_line(doc, d).zip(callout_text_box(doc, d))).flatten();
             let points = match subtype.as_str() {
                 "Line" => Some(nums(b"L")).filter(|l| l.len() == 4).map(|l| l.as_chunks::<2>().0.to_vec()).unwrap_or_default(),
                 "PolyLine" | "Polygon" => nums(b"Vertices").as_chunks::<2>().0.to_vec(),
                 "FreeText" => callout
-                    .as_deref()
-                    .and_then(<[[f64; 2]]>::split_last)
+                    .as_ref()
+                    .and_then(|(line, _)| line.split_last())
                     .map(|(_, lead)| lead.iter().map(|p| [p[0] as f32, p[1] as f32]).collect())
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
-            let text_box = callout.and(callout_text_box(doc, d)).map(|t| t.map(|v| v as f32));
+            let text_box = callout.map(|(_, t)| t.map(|v| v as f32));
             let in_reply_to = d.get(b"IRT").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).and_then(|p| text_value(doc, &p, b"NM"));
             out.push(Summary {
                 page,

@@ -1908,3 +1908,22 @@ fn summaries_give_a_callouts_points_and_text_box() {
     let square = summaries(&doc).into_iter().find(|s| s.subtype == "Square").unwrap();
     assert_eq!((square.points.len(), square.text_box), (0, None));
 }
+
+/// A callout whose text box can't be read (no `/RD`, a negative inset, or no box left inside
+/// `/Rect`) lists no points either, as `pdfcraft_render::inspect` does: `set_points` refuses it.
+#[test]
+fn summaries_give_no_callout_points_without_a_text_box() {
+    for rd in [None, Some([-1.0, 0.0, 0.0, 0.0]), Some([0.0, 0.0, 0.0, 1000.0])] {
+        let (mut doc, c) = callout_fixture();
+        let (_, r) = annot_ref(&mut doc, 0, c).unwrap();
+        doc.update_dict(r, |d| match rd {
+            Some(rd) => d.set(b"RD".to_vec(), num_array(&rd)),
+            None => {
+                d.remove(b"RD");
+            }
+        })
+        .unwrap();
+        let s = summaries(&doc).into_iter().find(|s| s.index == c).unwrap();
+        assert_eq!((s.points.len(), s.text_box), (0, None), "/RD {rd:?}");
+    }
+}
