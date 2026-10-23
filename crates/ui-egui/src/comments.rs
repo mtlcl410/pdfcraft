@@ -2626,6 +2626,7 @@ mod tests {
                 intent: None,
                 fill_sign: false,
                 points: Vec::new(),
+                popup: None,
             }],
             ..Default::default()
         };
