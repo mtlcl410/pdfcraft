@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::geometry::{corner_ratio, is_markup, resized};
+use super::geometry::{corner_ratio, is_markup, resized, zoomed_rect};
 use super::{Annotation, CommentPrefs, CommentTool, DocInfo, Edit, PagePointer, PageXform, Pos2, QuickTool, Rect};
 
 /// The user's login name, which Acrobat uses as the default comment author.
@@ -338,9 +338,24 @@ impl PageCx<'_> {
         self.info.pages.get(self.page).map_or(0, |p| p.rotation)
     }
 
-    /// Where a comment is drawn on screen (a sticky note stays upright on a turned page).
+    /// Where a comment is drawn on screen (a NoZoom comment or a note keeps its size, and a
+    /// sticky note stays upright on a turned page).
     pub(super) fn screen_rect(&self, a: &Annotation) -> Rect {
-        self.xf.user_rect(self.info, self.page, a.shown_rect(self.rotation()))
+        self.zoomed_screen_rect(a, a.rect.map(f64::from))
+    }
+
+    /// The page's magnification on screen (1.0 = 100%): what the canvas asks the renderer to
+    /// draw it at.
+    pub(super) fn magnification(&self) -> f32 {
+        self.xf.zoom() / crate::canvas::PT
+    }
+
+    /// Where `a` is drawn on screen with its `/Rect` at `rect`: [`zoomed_rect`] at this page's
+    /// magnification, then turned upright for a NoRotate comment ([`Annotation::shown`]). Both
+    /// keep the upper-left corner of `/Rect` in place, as the renderer's scale and turn do.
+    fn zoomed_screen_rect(&self, a: &Annotation, rect: [f64; 4]) -> Rect {
+        let shown = a.shown(zoomed_rect(a, rect, self.magnification()), self.rotation());
+        self.xf.user_rect(self.info, self.page, shown.map(|v| v as f32))
     }
 
     /// Top-level comments on this page, in paint order.
@@ -410,13 +425,13 @@ impl PageCx<'_> {
         if let Some(Edit::ResizeAnnotation { page, index, rect }) = pending
             && (*page, *index) == (self.page, a.index)
         {
-            return self.xf.user_rect(self.info, self.page, a.shown(*rect, self.rotation()).map(|v| v as f32));
+            return self.zoomed_screen_rect(a, *rect);
         }
         if let Some(Edit::MoveAnnotation { page, index, dx, dy }) = pending
             && (*page, *index) == (self.page, a.index)
         {
-            let r = a.shown_rect(self.rotation());
-            return self.xf.user_rect(self.info, self.page, [r[0] + *dx as f32, r[1] + *dy as f32, r[2] + *dx as f32, r[3] + *dy as f32]);
+            let r = a.rect.map(f64::from);
+            return self.zoomed_screen_rect(a, [r[0] + *dx, r[1] + *dy, r[2] + *dx, r[3] + *dy]);
         }
         match (gesture, pointer) {
             (Some(Gesture::Move { page, index, from }), Some(p)) if (*page, *index) == (self.page, a.index) => r.translate(p - *from),

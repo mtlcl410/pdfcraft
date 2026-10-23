@@ -2489,6 +2489,9 @@ fn plan_renders(ui: &egui::Ui, view: &mut DocView, info: &DocInfo, renders: Page
             // It is the whole-page request whose scale is not the current one; sharp tiles
             // and whole-page finals always draw everything.
             preview: tile.is_none() && (wanted_scale != scale || wanted_tag != tag),
+            // The page is on screen at the view's zoom: NoZoom comments and notes keep their
+            // size (ISO 32000-2 §12.5.3), and `comments::zoomed_rect` hit-tests them there.
+            magnification: Some(view.zoom),
         })
         .collect();
     // While the zoom or pan is settling, hold back sharp re-renders of pages that already
@@ -2539,6 +2542,7 @@ fn plan_renders(ui: &egui::Ui, view: &mut DocView, info: &DocInfo, renders: Page
         scale: 1.0,
         tag: TEXT_TAG,
         preview: false,
+        magnification: None,
     }));
     view.frame_queue = queue;
     view.frame_visible = visible_now.iter().copied().collect();

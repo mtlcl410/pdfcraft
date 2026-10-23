@@ -320,6 +320,7 @@ impl DocView {
                     tag: THUMB_TAG | u64::from(scale.to_bits()),
                     // Thumbnails are previews: tiny images are skipped for them.
                     preview: true,
+                    magnification: None,
                 })
             })
             .collect()
@@ -668,7 +669,7 @@ impl DocView {
             let tag = scale_tag(scale) | PRINT_TAG | if self.grayscale { GRAYSCALE_TAG } else { 0 };
             let fresh = self.print_pages.get(&page).is_some_and(|(have, _)| *have == tag);
             if !fresh {
-                self.frame_queue.push(RenderRequest { page, kind: RequestKind::Pixels, tile: None, scale, tag, preview: false });
+                self.frame_queue.push(RenderRequest { page, kind: RequestKind::Pixels, tile: None, scale, tag, preview: false, magnification: None });
             }
         }
     }

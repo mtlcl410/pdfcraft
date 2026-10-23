@@ -179,7 +179,7 @@ endstream endobj
 trailer << /Root 1 0 R >>
 %%EOF";
     let mut r = pdfcraft_render::PageRenderer::new(Arc::new(pdf.to_vec()), Default::default());
-    let out = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.5, tag: 0, preview: false });
+    let out = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.5, tag: 0, preview: false, magnification: None });
     assert!(out.error.is_none(), "{:?}", out.error);
     let size = [out.width as usize, out.height as usize];
     let copied = egui::ColorImage::from_rgba_premultiplied(size, &out.rgba);
@@ -1524,6 +1524,36 @@ fn edit_text_boxes_stay_drawn_while_page_input_is_blocked() {
     let app = h.state();
     let generation = app.session.get(app.views[0].id).unwrap().edit_generation();
     assert_eq!(app.views[0].edit_lines.get(&0).map(|(g, _)| *g), Some(generation), "the boxes follow the edit while input is blocked");
+}
+
+/// The page view asks for its pages at the view's zoom as the magnification, so NoZoom
+/// comments and notes keep their size on screen (ISO 32000-2 §12.5.3); thumbnails, text
+/// layers and the rest have no on-screen magnification.
+#[test]
+fn the_page_view_renders_with_its_zoom_as_the_magnification() {
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        let bytes = app.session.create_blank(300.0, 400.0, 2).unwrap();
+        app.open_bytes("magnification.pdf", None, bytes.as_ref().clone()).unwrap();
+        app.set_option("left", "pages").unwrap();
+        app
+    });
+    let (mut pages, mut others) = (Vec::new(), Vec::new());
+    for step in 0..44 {
+        if step == 4 {
+            h.state_mut().set_option("zoom", "250").unwrap();
+        }
+        h.run_steps(1);
+        let v = &h.state().views[0];
+        for r in &v.last_queue {
+            let page_view = r.kind == RequestKind::Pixels && r.tag & (THUMB_TAG | TEXT_TAG | GRID_TAG | PRINT_TAG) == 0;
+            if page_view { pages.push((r.magnification, v.zoom)) } else { others.push(r.magnification) }
+        }
+    }
+    assert!(pages.iter().any(|(m, _)| *m == Some(2.5)), "the page is rendered at 250%: {pages:?}");
+    assert!(pages.iter().all(|(m, zoom)| *m == Some(*zoom)), "{pages:?}");
+    // Thumbnails and text layers are asked for whenever their results happen to be pending.
+    assert!(others.iter().all(Option::is_none), "{others:?}");
 }
 
 #[test]
