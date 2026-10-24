@@ -41,6 +41,8 @@ pub use model::{
 };
 #[cfg(test)]
 use navigation::{OUTLINE_DEPTH, OUTLINE_WINDOW};
+#[cfg(test)]
+use resources::LABEL_DECODES;
 pub use resources::attachment_data;
 #[cfg(test)]
 use resources::{MAX_LAYER_LABEL_CHARS, MAX_LAYER_ORDER_ROWS, xfa_config_dynamic_render, xfa_packet_text};

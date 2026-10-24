@@ -25,6 +25,12 @@ pub(super) const MAX_LAYER_ORDER_ROWS: usize = 4096;
 const MAX_LAYER_ORDER_DEPTH: usize = 32;
 pub(super) const MAX_LAYER_LABEL_CHARS: usize = 256;
 
+#[cfg(test)]
+thread_local! {
+    /// Layer labels decoded by [`Inspector::layer_order`] on this thread.
+    pub(super) static LABEL_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'a> Inspector<'a> {
     // ── object helpers ──────────────────────────────────────────────────────────────────────
 
@@ -183,8 +189,9 @@ impl<'a> Inspector<'a> {
     /// a nested array may start with a text string, a label that is not a group. Groups not
     /// listed aren't presented, and `/Order` defaults to the empty array in the default
     /// configuration, so a document without one presents no layers. An entry that is neither a
-    /// group in `/OCGs` nor an array is skipped. Bounded by `MAX_LAYER_ORDER_*`, and an indirect
-    /// array is read once, so a cycle ends.
+    /// group in `/OCGs` nor an array is skipped. Bounded by `MAX_LAYER_ORDER_*`, an indirect
+    /// array is read once, so a cycle ends, and an indirect label is decoded once, however many
+    /// arrays it heads.
     pub(super) fn layer_order(&self, catalog: &Dictionary, layers: &[Layer]) -> Vec<LayerRow> {
         let mut out = Vec::new();
         let Some(config) = catalog.get(b"OCProperties").ok().and_then(|o| self.dict(o)).and_then(|p| p.get(b"D").ok()).and_then(|o| self.dict(o))
@@ -198,17 +205,20 @@ impl<'a> Inspector<'a> {
             seen.insert(*id);
         }
         if let Ok(items) = self.resolve(order).as_array() {
-            self.layer_order_rows(items, 0, &index, &mut seen, &mut out);
+            self.layer_order_rows(items, 0, &index, &mut seen, &mut HashMap::new(), &mut out);
         }
         out
     }
 
+    /// `labels` holds each indirect label already decoded: one string object can head any
+    /// number of direct arrays, and each decode costs its full length before the cut.
     fn layer_order_rows(
         &self,
         items: &'a [Object],
         depth: usize,
         index: &HashMap<ObjectId, usize>,
         seen: &mut HashSet<ObjectId>,
+        labels: &mut HashMap<ObjectId, String>,
         out: &mut Vec<LayerRow>,
     ) {
         if depth > MAX_LAYER_ORDER_DEPTH {
@@ -231,13 +241,21 @@ impl<'a> Inspector<'a> {
             let Ok(nested) = self.resolve(item).as_array() else { continue };
             let rest = match nested.split_first() {
                 Some((first, rest)) if let Object::String(bytes, _) = self.resolve(first) => {
-                    let label: String = text_string(bytes).chars().take(MAX_LAYER_LABEL_CHARS).collect();
+                    let decode = || {
+                        #[cfg(test)]
+                        LABEL_DECODES.with(|n| n.set(n.get().saturating_add(1)));
+                        text_string(bytes).chars().take(MAX_LAYER_LABEL_CHARS).collect::<String>()
+                    };
+                    let label = match first {
+                        Object::Reference(id) => labels.entry(*id).or_insert_with(decode).clone(),
+                        _ => decode(),
+                    };
                     out.push(LayerRow { depth, item: LayerItem::Label(label) });
                     rest
                 }
                 _ => nested.as_slice(),
             };
-            self.layer_order_rows(rest, depth.saturating_add(1), index, seen, out);
+            self.layer_order_rows(rest, depth.saturating_add(1), index, seen, labels, out);
         }
     }
 

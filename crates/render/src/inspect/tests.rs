@@ -821,6 +821,15 @@ trailer << /Root 1 0 R >>
     // Many rows stop at the cap.
     let many = format!("/Order [{}]", "5 0 R ".repeat(MAX_LAYER_ORDER_ROWS + 10));
     assert_eq!(rows(&many, "").len(), MAX_LAYER_ORDER_ROWS);
+    // One long indirect label heading many direct arrays is decoded once, and cut short in
+    // every row.
+    let shared = format!("/Order [{}]", "[13 0 R 5 0 R] ".repeat(100));
+    let label = format!("13 0 obj ({}) endobj", "y".repeat(10_000));
+    let before = LABEL_DECODES.with(std::cell::Cell::get);
+    let got = rows(&shared, &label);
+    assert_eq!(LABEL_DECODES.with(std::cell::Cell::get) - before, 1);
+    assert_eq!(got.len(), 200);
+    assert!(got.iter().step_by(2).all(|s| s.len() == MAX_LAYER_LABEL_CHARS + 2), "{:?}", got.first());
 }
 
 /// ISO 32000-2 §8.11.4.4: the View auto state (`/AS`) decides the initial state of the groups
