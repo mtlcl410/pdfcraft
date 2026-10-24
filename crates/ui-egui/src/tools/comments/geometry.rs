@@ -20,6 +20,22 @@ pub(crate) fn zoomed_rect(a: &Annotation, rect: [f64; 4], magnification: f32) ->
     [x0, y1 - (y1 - y0) * s, x0 + (x1 - x0) * s, y1]
 }
 
+/// Where the user-space box `bounds` (a text markup quadrilateral's) of `a` is drawn on a page
+/// shown at `magnification`: for a comment that keeps its size on the screen, scaled by
+/// `1/magnification` about the upper-left corner of `a`'s `/Rect`, as the renderer scales its
+/// appearance (hayro-interpret patch 51), and as it is otherwise. The guards are
+/// [`zoomed_rect`]'s, and a scaled box that isn't finite leaves `bounds` as it is.
+pub(crate) fn zoomed_quad(a: &Annotation, bounds: [f64; 4], magnification: f32) -> [f64; 4] {
+    let s = 1.0 / f64::from(magnification);
+    if !(a.no_zoom && magnification.is_finite() && magnification > 0.0 && s.is_finite()) {
+        return bounds;
+    }
+    let r = a.rect.map(f64::from);
+    let (px, py) = (r[0].min(r[2]), r[1].max(r[3]));
+    let scaled = [px + (bounds[0] - px) * s, py + (bounds[1] - py) * s, px + (bounds[2] - px) * s, py + (bounds[3] - py) * s];
+    if scaled.iter().all(|v| v.is_finite()) { scaled } else { bounds }
+}
+
 /// The `/Rect` that [`zoomed_rect`] draws in the user-space box `shown`: its inverse, for a box
 /// resized as drawn. The upper-left corner stays, and the sides grow by `magnification`.
 pub(crate) fn rect_for_zoomed(a: &Annotation, shown: [f64; 4], magnification: f32) -> [f64; 4] {
