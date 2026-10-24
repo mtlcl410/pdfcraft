@@ -2699,7 +2699,11 @@ fn form_fields_lists_a_check_box_by_on_state_and_reports_the_kid_that_is_on() {
     // Two on states with one export: the states name the options.
     let same = listed("check-box-same-export", "<< /FT /Btn /T (pair) /V /B /Opt [(x) (x)] /Kids [6 0 R 7 0 R] >>", ("A", "Off"), ("B", "B"));
     assert_eq!(same, (json!(["A", "B"]), json!("B")));
+    // B's export is A's on state, so naming it would tick A: the states name the options.
+    let crossed = listed("check-box-crossed-export", "<< /FT /Btn /T (pair) /V /B /Opt [(x) (A)] /Kids [6 0 R 7 0 R] >>", ("A", "Off"), ("B", "B"));
+    assert_eq!(crossed, (json!(["A", "B"]), json!("B")));
 }
+
 /// A form whose fields are only page widgets (the `/Fields` list is empty) still lists, fills and
 /// resets through the tools, and the leniency shows up as a repair note.
 #[test]
