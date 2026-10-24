@@ -1458,7 +1458,11 @@ fn eval_notation(src: &str, value_of: &dyn Fn(&str) -> f64) -> Option<f64> {
 }
 
 /// The Calculate event: the new value, given the current values of the other fields
-/// (`values(name)` returns every field named `name` or below it, for groups).
+/// (`values(name)` returns the value of every field named `name` or below it, for groups).
+///
+/// A value that isn't a number, a blank one included, counts as 0 in every operation: a blank
+/// field is part of a sum, product, average, minimum and maximum, as other readers count it,
+/// so the product of blank fields is 0. A name no field has adds nothing.
 pub fn calculate(c: &Calculate, values: &dyn Fn(&str) -> Vec<String>) -> Option<String> {
     let num = |s: &String| make_number(s).unwrap_or(0.0);
     match c {
@@ -1789,6 +1793,7 @@ mod tests {
                 "b" => vec!["$3.50".into()],
                 "row" => vec!["1".into(), "2".into(), "3".into()],
                 "Unit Price" => vec!["4".into()],
+                "blank" => vec![String::new()],
                 _ => vec![],
             }
         };
@@ -1798,6 +1803,12 @@ mod tests {
         assert_eq!(simple(CalcOp::Average, &["row"]), Some("2".into()), "groups count every child");
         assert_eq!(simple(CalcOp::Maximum, &["a", "row"]), Some("3".into()));
         assert_eq!(simple(CalcOp::Sum, &["missing"]), Some("0".into()));
+        // A blank field counts as 0 in every operation; a missing one adds nothing.
+        let ops = [CalcOp::Sum, CalcOp::Product, CalcOp::Average, CalcOp::Minimum, CalcOp::Maximum];
+        let all = |f: &[&str]| ops.map(|op| simple(op, f).unwrap_or_default());
+        assert_eq!(all(&["blank", "blank"]), ["0", "0", "0", "0", "0"]);
+        assert_eq!(all(&["a", "blank"]), ["2", "0", "1", "0", "2"]);
+        assert_eq!(all(&["a", "missing"]), ["2", "2", "2", "2", "2"]);
         assert_eq!(calculate(&Calculate::Notation("(a + b) * 2 - Unit\\ Price / 4".into()), &vals), Some("10".into()));
         assert_eq!(calculate(&Calculate::Notation("a +".into()), &vals), None);
     }

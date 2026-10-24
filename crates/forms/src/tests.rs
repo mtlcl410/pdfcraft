@@ -4300,3 +4300,47 @@ fn comb_fields_show_their_cells() {
     let plain = saved_look(&doc, "d");
     assert!(!plain.contains(" m ") && plain.contains("(A) Tj"), "{plain}");
 }
+
+/// A blank field counts as 0 in every simple calculation, as other readers count it: the product
+/// of two blank fields is 0, not 1 (the empty product). Sum, product, average, minimum and
+/// maximum are pinned with both fields blank, one blank and none blank.
+#[test]
+fn a_blank_field_counts_as_zero_in_every_simple_calculation() {
+    use crate::af::{CalcOp, Calculate};
+    let mut doc = one_page();
+    let text = NewField::Text { multiline: false };
+    let ops = [("SUM", CalcOp::Sum), ("PRD", CalcOp::Product), ("AVG", CalcOp::Average), ("MIN", CalcOp::Minimum), ("MAX", CalcOp::Maximum)];
+    for (i, name) in ["J1", "J2"].into_iter().chain(ops.iter().map(|(n, _)| *n)).enumerate() {
+        let y = 700.0 - 40.0 * i as f64;
+        add_field(&mut doc, 0, [50.0, y, 250.0, y + 20.0], &text, Some(name)).unwrap();
+    }
+    for (name, op) in ops {
+        let c = Calculate::Simple { op, fields: vec!["J1".into(), "J2".into()] };
+        set_props(&mut doc, name, &FieldProps { calculate: Some(c), ..FieldProps::default() }).unwrap();
+    }
+    let results = |doc: &mut Document| {
+        recalculate(doc).unwrap();
+        let all = fields(doc);
+        ops.map(|(name, _)| field(&all, name).value.first().cloned().unwrap_or_default())
+    };
+    assert_eq!(results(&mut doc), ["0", "0", "0", "0", "0"], "both blank");
+    set_value(&mut doc, "J1", &FieldValue::Text("3".into())).unwrap();
+    assert_eq!(results(&mut doc), ["3", "0", "1.5", "0", "3"], "J2 blank counts as 0");
+    set_value(&mut doc, "J1", &FieldValue::Text("-4".into())).unwrap();
+    assert_eq!(results(&mut doc), ["-4", "0", "-2", "-4", "0"], "the blank is the maximum of -4 and blank");
+    set_value(&mut doc, "J1", &FieldValue::Text("3".into())).unwrap();
+    set_value(&mut doc, "J2", &FieldValue::Text("2.5".into())).unwrap();
+    assert_eq!(results(&mut doc), ["5.5", "7.5", "2.75", "2.5", "3"], "none blank");
+    // Cleared again, a field is blank once more.
+    set_value(&mut doc, "J2", &FieldValue::Text(String::new())).unwrap();
+    assert_eq!(results(&mut doc), ["3", "0", "1.5", "0", "3"]);
+    // A push button in a group holds no value: it is not a blank that turns a product into 0.
+    add_field(&mut doc, 0, [300.0, 700.0, 400.0, 720.0], &text, Some("row.a")).unwrap();
+    add_field(&mut doc, 0, [300.0, 650.0, 400.0, 670.0], &NewField::Button { caption: "Go".into() }, Some("row.go")).unwrap();
+    add_field(&mut doc, 0, [300.0, 600.0, 400.0, 620.0], &text, Some("row_product")).unwrap();
+    let c = Calculate::Simple { op: CalcOp::Product, fields: vec!["row".into()] };
+    set_props(&mut doc, "row_product", &FieldProps { calculate: Some(c), ..FieldProps::default() }).unwrap();
+    set_value(&mut doc, "row.a", &FieldValue::Text("2".into())).unwrap();
+    recalculate(&mut doc).unwrap();
+    assert_eq!(field(&fields(&doc), "row_product").value, ["2"]);
+}

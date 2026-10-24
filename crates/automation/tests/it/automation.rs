@@ -4703,6 +4703,34 @@ fn form_formats_and_calculations_through_tools() {
     ));
 }
 
+/// A blank field counts as 0 in a simple calculation: the product of two blank fields shows
+/// 0.00, not 1.00, and stays 0.00 until both are filled in.
+#[test]
+fn a_product_of_blank_fields_is_zero_through_tools() {
+    let dir = workdir("formproduct");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    for (name, y) in [("J1", 20), ("J2", 60), ("J_out", 100)] {
+        ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "text", "rect": [20, y, 180, y + 22], "name": name }));
+    }
+    ok(
+        &mut a,
+        "form_set_props",
+        json!({ "doc": doc, "field": "J_out", "format": { "type": "number", "decimals": 2 }, "calculate": { "op": "product", "fields": ["J1", "J2"] } }),
+    );
+    let shown = |a: &mut Automation| {
+        let f = ok(a, "form_fields", json!({ "doc": doc }));
+        let out = f["fields"].as_array().unwrap().iter().find(|x| x["name"] == "J_out").unwrap().clone();
+        (out["value"].as_str().map(str::to_owned), out["display"].as_str().map(str::to_owned))
+    };
+    assert_eq!(shown(&mut a), (Some("0".into()), Some("0.00".into())), "both blank");
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "J1": "3" } }));
+    assert_eq!(shown(&mut a), (Some("0".into()), Some("0.00".into())), "J2 still blank");
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "J2": "2.5" } }));
+    assert_eq!(shown(&mut a), (Some("7.5".into()), Some("7.50".into())));
+    assert!(page_text(&mut a, doc)[0].contains("7.50"));
+}
+
 /// Renaming a field renames it in the formulas that read it: a sum dropped the field, notation
 /// read it as 0 and a script kept a stale value.
 #[test]

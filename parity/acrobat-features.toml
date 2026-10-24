@@ -4631,8 +4631,8 @@ milestone = "M6"
 status = "shipped"
 commands = ["form.field.properties"]
 tools = ["form_set_props", "form_fill"]
-evidence = ["crates/forms/src/af.rs::validation_and_calculation", "crates/forms/src/tests.rs::formats_validation_and_calculations_run_like_acrobat"]
-notes = "SUM, PRD, AVG, MIN, MAX over fields and groups"
+evidence = ["crates/forms/src/af.rs::validation_and_calculation", "crates/forms/src/tests.rs::formats_validation_and_calculations_run_like_acrobat", "crates/forms/src/tests.rs::a_blank_field_counts_as_zero_in_every_simple_calculation", "crates/automation/tests/it/automation.rs::a_product_of_blank_fields_is_zero_through_tools"]
+notes = "SUM, PRD, AVG, MIN, MAX over fields and groups. A blank field counts as 0 in every operation, as other readers count it: a product with a blank field is 0, and an average counts the blank. A name no field has adds nothing; push buttons and signatures in a group are not counted."
 
 [[feature]]
 id = "form.simplified-notation"

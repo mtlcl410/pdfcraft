@@ -999,9 +999,14 @@ pub fn recalculate_with(doc: &mut Document, scripts: &mut dyn Scripts) -> Result
     let mut changed = 0;
     for obj in order {
         let Some(f) = all.iter().find(|f| f.obj == obj).cloned() else { continue };
+        // One value per field that holds one: a blank field gives an empty value, which counts
+        // as 0 (a product of blank fields is 0, not 1). Buttons and signatures hold none.
         let lookup = |n: &str| -> Vec<String> {
             let prefix = format!("{n}.");
-            all.iter().filter(|x| x.name == n || x.name.starts_with(&prefix)).flat_map(|x| x.value.first().cloned()).collect()
+            all.iter()
+                .filter(|x| (x.name == n || x.name.starts_with(&prefix)) && !matches!(x.kind, FieldKind::PushButton | FieldKind::Signature))
+                .map(|x| x.value.first().cloned().unwrap_or_default())
+                .collect()
         };
         let current = f.value.first().cloned().unwrap_or_default();
         let v = if let Some(js) = &f.actions.scripts.calculate {
