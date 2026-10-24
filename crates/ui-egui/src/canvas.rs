@@ -342,6 +342,9 @@ pub struct DocView {
     stale_tiles: HashSet<(usize, u64, u32, u32)>,
     /// Scale tag of the current zoom level, as last drawn.
     current_scale_tag: u64,
+    /// Display pixels per point the cached page rasters and tiles were asked for at (0 before
+    /// the first frame). See [`DocView::note_pixel_density`].
+    raster_ppp: f32,
     /// Print dialog: the current sheet's pages at the preview pane's device resolution.
     print_pages: HashMap<usize, (u64, TextureHandle)>,
     /// Print dialog: preview rasters become luminance when Print ▸ Print in grayscale is on.
@@ -647,6 +650,7 @@ impl DocView {
             stale_thumbs: HashSet::new(),
             stale_tiles: HashSet::new(),
             current_scale_tag: 0,
+            raster_ppp: 0.0,
             print_pages: HashMap::new(),
             grayscale: false,
             tiles: HashMap::new(),
@@ -3121,6 +3125,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let ppp = ui.ctx().pixels_per_point();
     let scale = view.render_scale(ppp);
     let tag = scale_tag(scale);
+    view.note_pixel_density(ppp, tag);
     // Hold sharp re-renders while the zoom is still moving: a new scale every frame would
     // cancel the in-flight full-page interpret and restart it, so on a heavy page (a CAD
     // plot with ~1000 images renders for seconds) the sharp raster never arrives and the

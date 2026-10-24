@@ -1526,6 +1526,29 @@ fn edit_text_boxes_stay_drawn_while_page_input_is_blocked() {
     assert_eq!(app.views[0].edit_lines.get(&0).map(|(g, _)| *g), Some(generation), "the boxes follow the edit while input is blocked");
 }
 
+/// Equal scales mean equal zooms only at one pixel density: 100% at 2 px/pt and 200% at 1 px/pt
+/// share a scale tag, but NoZoom comments are drawn for the zoom (ISO 32000-2 Table 167). A
+/// density change makes the cached rasters out of date, so they are asked for again.
+#[test]
+fn a_pixel_density_change_redraws_the_cached_rasters() {
+    let ctx = egui::Context::default();
+    let mut view = view(2, PageLayout::Single, true);
+    let texture = |name| ctx.load_texture(name, egui::ColorImage::filled([1, 1], Color32::WHITE), TextureOptions::LINEAR);
+    let tag = scale_tag(2.0);
+    view.note_pixel_density(2.0, tag);
+    view.pages.insert(0, PageTex { tag, tex: texture("page") });
+    view.tiles.insert((0, tag, 0, 0), texture("tile"));
+    view.tiles.insert((0, scale_tag(4.0), 0, 0), texture("older-tile"));
+    // The same density keeps them.
+    view.note_pixel_density(2.0, tag);
+    assert!(!view.page_out_of_date(0));
+    assert_eq!(view.tiles.len(), 2);
+    // Another density, the same scale (the zoom doubled): redrawn, still shown meanwhile.
+    view.note_pixel_density(1.0, tag);
+    assert!(view.page_raster_out_of_date(0), "the page raster is redrawn");
+    assert!(view.stale_tiles.contains(&(0, tag, 0, 0)), "the current tile is redrawn");
+    assert_eq!(view.tiles.len(), 1, "tiles of other scales are dropped");
+}
 /// The page view asks for its pages at the view's zoom as the magnification, so NoZoom
 /// comments and notes keep their size on screen (ISO 32000-2 §12.5.3); thumbnails, text
 /// layers and the rest have no on-screen magnification.
