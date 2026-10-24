@@ -479,29 +479,31 @@ pub fn group_primaries(all: &[Annotation]) -> Vec<Option<usize>> {
     all.iter().enumerate().map(|(i, a)| if a.group { primary(i) } else { None }).collect()
 }
 
-/// Give a group's primary with no text of its own (`/Contents` missing or empty) the text of
-/// its first Caret subordinate that has some. A reader ignores a subordinate's `/Contents` (ISO
-/// 32000-2 §12.5.6.2), but Replace Text groups written by earlier PdfCraft builds made the
-/// strikeout the primary, with no text, and kept the replacement only on the caret: without this
-/// they would list as a comment with no text. A primary's own text always wins, and no other
-/// subordinate lends its text. Only the listing changes, not the file.
+/// Give a group's StrikeOut primary with no text of its own (`/Contents` missing or empty) the
+/// text of its first Caret subordinate that has some. A reader ignores a subordinate's
+/// `/Contents` (ISO 32000-2 §12.5.6.2), but Replace Text groups written by earlier PdfCraft builds
+/// made the strikeout the primary, with no text, and kept the replacement only on the caret:
+/// without this they would list as a comment with no text. A primary's own text always wins, no
+/// other subordinate lends its text, and no other kind of primary borrows one. Only the listing
+/// changes, not the file.
 pub fn fill_group_text(all: &mut [Annotation]) {
     if !all.iter().any(|a| a.group) {
         return;
     }
     let primaries = group_primaries(all);
-    let mut texts: Vec<(usize, String)> = Vec::new();
+    let lacks_text = |p: usize| all.get(p).is_some_and(|a| a.subtype == "StrikeOut" && a.contents.as_deref().is_none_or(str::is_empty));
+    // Keyed by the primary's position: the first caret per primary wins, and each primary is
+    // written once, so the order of the map does not matter.
+    let mut texts: HashMap<usize, String> = HashMap::new();
     for (a, p) in all.iter().zip(&primaries) {
         if let (Some(p), Some(text), "Caret") = (*p, a.contents.as_ref(), a.subtype.as_str())
-            && !texts.iter().any(|(q, _)| *q == p)
+            && lacks_text(p)
         {
-            texts.push((p, text.clone()));
+            texts.entry(p).or_insert_with(|| text.clone());
         }
     }
     for (p, text) in texts {
-        if let Some(primary) = all.get_mut(p)
-            && primary.contents.as_deref().is_none_or(str::is_empty)
-        {
+        if let Some(primary) = all.get_mut(p) {
             primary.contents = Some(text);
         }
     }
@@ -4120,27 +4122,65 @@ mod group_tests {
         }
     }
 
-    /// A primary with no text lists its Caret subordinate's (earlier Replace Text groups kept
-    /// the replacement on the caret only); a primary's own text always wins, and a subordinate
-    /// of another type lends nothing.
+    fn with(mut a: Annotation, subtype: &str, t: Option<&str>) -> Annotation {
+        a.subtype = subtype.into();
+        a.contents = t.map(Into::into);
+        a
+    }
+
+    /// A StrikeOut primary with no text lists its first Caret subordinate's (earlier Replace
+    /// Text groups kept the replacement on the caret only); a primary's own text always wins, a
+    /// subordinate of another type lends nothing, and a primary of another type borrows nothing
+    /// (ISO 32000-2 §12.5.6.2: the group's text is the primary's).
     #[test]
     fn a_primary_without_text_lists_its_carets() {
-        let with = |mut a: super::Annotation, subtype: &str, t: &str| {
-            a.subtype = subtype.into();
-            a.contents = Some(t.into());
-            a
-        };
         let mut all = [
-            annot("strike", None, false),
-            with(annot("caret", Some("strike"), true), "Caret", "red"),
-            with(annot("own", None, false), "Caret", "kept"),
-            with(annot("member", Some("own"), true), "Caret", "ignored"),
-            with(annot("reply", Some("strike"), false), "Text", "a reply"),
-            annot("bare", None, false),
-            with(annot("oval", Some("bare"), true), "Circle", "not lent"),
+            with(annot("strike", None, false), "StrikeOut", None),
+            with(annot("caret", Some("strike"), true), "Caret", Some("red")),
+            with(annot("caret2", Some("strike"), true), "Caret", Some("second")),
+            with(annot("own", None, false), "Caret", Some("kept")),
+            with(annot("member", Some("own"), true), "Caret", Some("ignored")),
+            with(annot("reply", Some("strike"), false), "Text", Some("a reply")),
+            with(annot("bare", None, false), "StrikeOut", None),
+            with(annot("oval", Some("bare"), true), "Circle", Some("not lent")),
+            with(annot("box", None, false), "Square", None),
+            with(annot("boxcaret", Some("box"), true), "Caret", Some("not borrowed")),
         ];
         super::fill_group_text(&mut all);
         let shown: Vec<Option<&str>> = all.iter().map(|a| a.contents.as_deref()).collect();
-        assert_eq!(shown, [Some("red"), Some("red"), Some("kept"), Some("ignored"), Some("a reply"), None, Some("not lent")]);
+        assert_eq!(
+            shown,
+            [
+                Some("red"),
+                Some("red"),
+                Some("second"),
+                Some("kept"),
+                Some("ignored"),
+                Some("a reply"),
+                None,
+                Some("not lent"),
+                None,
+                Some("not borrowed"),
+            ]
+        );
+    }
+
+    /// Many groups each get their own caret's text (one map lookup per caret, not a scan of the
+    /// groups seen so far).
+    #[test]
+    fn many_groups_each_list_their_own_caret() {
+        const N: usize = 20_000;
+        let mut all = Vec::with_capacity(2 * N);
+        for i in 0..N {
+            all.push(with(annot(&format!("s{i}"), None, false), "StrikeOut", None));
+        }
+        // Carets in reverse order, so a primary's caret is far from it in the list.
+        for i in (0..N).rev() {
+            all.push(with(annot(&format!("c{i}"), Some(&format!("s{i}")), true), "Caret", Some(&format!("t{i}"))));
+        }
+        super::fill_group_text(&mut all);
+        for (i, a) in all.iter().take(N).enumerate() {
+            assert_eq!(a.contents.as_deref(), Some(format!("t{i}").as_str()), "{i}");
+        }
     }
 }
