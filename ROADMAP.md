@@ -199,6 +199,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- **2026-10-24 (M10, #4158 partial):** Word, HTML, RTF and PowerPoint export keep a block that continues another on its line (an italic case name, a link, a superscript) as a run in its own style inside that paragraph, with the source's word space, instead of a paragraph of its own. Style changes that wrap onto the next line still split paragraphs (the reading blocks keep style boundaries). Estimates unchanged.
 - **2026-10-24 (M14, #4253):** The annotation quick bar remembers Keep tool selected across restarts, including unpinning. Old and malformed settings keep safe defaults; the opt-in UI control channel reads and changes the same preference. Estimates unchanged.
 
 - **2026-10-23 (M7, #4280):** Edit text names each standard stand-in font after its face (`PCEdTimesBold`, ...) instead of one shared `PCEdHelv`. Rewriting a bold paragraph whose subset lacks an accent no longer repoints the paragraphs set earlier in a regular stand-in at Times-Bold, and the editor's frame stays on the paragraph being edited. Pages saved by older builds keep their shared name and are not repaired. Estimates unchanged.
