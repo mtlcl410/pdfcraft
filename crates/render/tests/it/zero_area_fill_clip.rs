@@ -198,3 +198,37 @@ fn the_clip_is_restored_after_q() {
     let rgba = render(&format!("q 10 50 100 0 re W n Q {FLOOD}"));
     assert_eq!(red_pixels(&rgba).len(), (SIZE * SIZE) as usize);
 }
+
+#[test]
+fn a_thin_rectangle_scaled_up_to_whole_pixels_keeps_its_area() {
+    // 1/1024 pt high is under the rasteriser's "nearly zero" threshold, but the rectangle has
+    // area: scaled 4096 times vertically it covers device y 164..168, four whole rows, and is
+    // painted as the rectangle it is, not as a line across its bounding box.
+    let fill = render("q 1 0 0 4096 0 0 cm 1 0 0 rg 10 0.0078125 100 0.0009765625 re f Q");
+    assert_only_red_run(&fill, (10, 110), (164, 168), "scaled-up thin fill");
+    let clip = render(&format!("q 1 0 0 4096 0 0 cm 10 0.0078125 100 0.0009765625 re W n {FLOOD} Q"));
+    assert_only_red_run(&clip, (10, 110), (164, 168), "scaled-up thin clip");
+}
+
+#[test]
+fn a_slanted_zero_height_line_crossing_a_row_marks_each_row_only_where_it_runs() {
+    // A slight skew lifts the line from device y 149.52 at x = 10 to 148.74 at x = 110: under a
+    // pixel high in all, but crossing the boundary between rows 148 and 149 near x = 75. Each
+    // row is marked where the line runs through it, not along the whole length.
+    let skew = "1 0.008 0 1 0 0 cm";
+    let fill = render(&format!("q {skew} 1 0 0 rg 10 50.4 100 0 re f Q"));
+    let clip = render(&format!("q {skew} 10 50.4 100 0 re W n {FLOOD} Q"));
+    for (rgba, what) in [(&fill, "fill"), (&clip, "clip")] {
+        for x in [12, 15, 20] {
+            assert!(px(rgba, x, 149)[1] < 128, "{what}: ({x}, 149) on the line is {:?}", px(rgba, x, 149));
+            assert!(px(rgba, x, 148)[1] > 128, "{what}: ({x}, 148) off the line is {:?}", px(rgba, x, 148));
+        }
+        for x in [100, 105, 108] {
+            assert!(px(rgba, x, 148)[1] < 128, "{what}: ({x}, 148) on the line is {:?}", px(rgba, x, 148));
+            assert!(px(rgba, x, 149)[1] > 128, "{what}: ({x}, 149) off the line is {:?}", px(rgba, x, 149));
+        }
+        // One pixel wide: its ink adds up to its length, about 100 pixels, not two rows' worth.
+        let ink: f64 = rgba.as_chunks::<4>().0.iter().map(|p| 1.0 - f64::from(p[1]) / 255.0).sum();
+        assert!((90.0..=110.0).contains(&ink), "{what}: ink {ink}");
+    }
+}
