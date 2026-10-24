@@ -213,8 +213,8 @@ fn value_for(f: &FormField, v: &Value) -> Result<FieldValue> {
     let wrong = |what: &str| ToolError::InvalidArgs(format!("{}: {what}", f.name));
     Ok(match (f.kind, v) {
         (FormFieldKind::CheckBox, Value::Bool(b)) => FieldValue::Check(*b),
-        // {"widget": n} turns on button n (1-based, as form_fields numbers them), as clicking it
-        // does: radio buttons that share an on state then stay exclusive (ISO 32000-2 Table 229).
+        // {"widget": n} turns on button n (1-based, as form_fields numbers them) and never turns it
+        // off: radio buttons that share an on state stay exclusive (ISO 32000-2 Table 229).
         (FormFieldKind::CheckBox | FormFieldKind::Radio, Value::Object(o)) => {
             let n = o.get("widget").and_then(Value::as_u64).filter(|&n| n >= 1).ok_or_else(|| wrong("use {\"widget\": n} with n from 1"))?;
             let i = usize::try_from(n - 1).map_err(|_| wrong("there is no such widget"))?;

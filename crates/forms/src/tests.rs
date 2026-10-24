@@ -5560,3 +5560,45 @@ fn radio_buttons_sharing_an_on_state_are_exclusive_unless_in_unison() {
     assert!(matches!(set_value(&mut doc, "free", &FieldValue::Widget(9)), Err(FormError::Invalid(_))));
     assert!(matches!(set_value(&mut doc, "free", &FieldValue::Widget(usize::MAX)), Err(FormError::Invalid(_))));
 }
+
+/// A radio group whose buttons share the on state `Yes`, have no `/AS` and whose `/V` is `Yes`:
+/// field flags `ff` on the field, entries `own` on the second button's own dictionary.
+fn radio_without_as(ff: u32, own: &str) -> Document {
+    document(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R 8 0 R] >>".into(),
+        "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>".into(),
+        format!("<< /FT /Btn /T (r) /Ff {ff} /V /Yes /Kids [6 0 R 7 0 R 8 0 R] >>"),
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [100 700 115 715] /P 3 0 R /AP << /N << /Yes 9 0 R /Off 10 0 R >> >> >>".into(),
+        format!("<< /Type /Annot /Subtype /Widget /Parent 5 0 R {own} /Rect [200 700 215 715] /P 3 0 R /AP << /N << /Yes 9 0 R /Off 10 0 R >> >> >>"),
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [300 700 315 715] /P 3 0 R /AP << /N << /No 9 0 R /Off 10 0 R >> >> >>".into(),
+        "<< /Length 0 >>\nstream\n\nendstream".into(),
+        "<< /Length 0 >>\nstream\n\nendstream".into(),
+    ])
+}
+
+/// Table 229: without RadiosInUnison the buttons are mutually exclusive. Buttons sharing the
+/// state `/V` names and lacking `/AS` can't all be on: the first is, as a set by name picks it.
+#[test]
+fn radio_buttons_without_as_sharing_the_value_show_one_on() {
+    let doc = radio_without_as(49152, "");
+    assert_eq!(on_widgets(&doc, "r").0, [true, false, false]);
+    // RadiosInUnison: they are on together.
+    let doc = radio_without_as(33603584, "");
+    assert_eq!(on_widgets(&doc, "r").0, [true, true, false]);
+    // One that has `/AS` naming the state is the one on.
+    let doc = radio_without_as(49152, "/AS /Yes");
+    assert_eq!(on_widgets(&doc, "r").0, [false, true, false]);
+}
+
+/// Table 227, ReadOnly: a processor "shall not allow a user to change the value". A button whose own
+/// dictionary sets it can't be turned on by number.
+#[test]
+fn a_read_only_button_is_not_turned_on_by_number() {
+    let mut doc = radio_without_as(49152, "/Ff 1");
+    assert!(matches!(set_value(&mut doc, "r", &FieldValue::Widget(1)), Err(FormError::ReadOnly(_))));
+    assert_eq!(on_widgets(&doc, "r").0, [true, false, false]);
+    set_value(&mut doc, "r", &FieldValue::Widget(2)).unwrap();
+    assert_eq!(on_widgets(&doc, "r").0, [false, false, true]);
+}

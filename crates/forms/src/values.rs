@@ -222,6 +222,10 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
             redraw(doc, f, std::slice::from_ref(t), scripts)
         }
         (FieldKind::CheckBox | FieldKind::Radio, FieldValue::Widget(i)) => {
+            // A button can be read-only on its own (its own `/Ff`), though the field isn't.
+            if f.widgets.get(*i).is_some_and(|w| w.read_only) {
+                return Err(FormError::ReadOnly(f.name.clone()));
+            }
             let Some(state) = f.widgets.get(*i).and_then(|w| w.on_state.clone()) else {
                 return invalid(format!("{:?} has no button {} with an on state", f.name, i.saturating_add(1)));
             };
