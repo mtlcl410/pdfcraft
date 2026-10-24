@@ -229,6 +229,19 @@ impl Field {
         }
     }
 
+    /// Whether widget `i` of a check box or radio group is on: its `/AS` is its on state. Widgets
+    /// sharing an on state tell themselves apart only by `/AS`, which ISO 32000-2 §12.7.5.2.3 and
+    /// §12.7.5.2.4 make the deciding entry where it and `/V` differ. A widget without `/AS`
+    /// follows the field's value.
+    pub fn widget_on(&self, i: usize) -> bool {
+        let Some(w) = self.widgets.get(i) else { return false };
+        let Some(on) = w.on_state.as_deref() else { return false };
+        match w.state.as_deref() {
+            Some(s) => s == on,
+            None => self.value.first().map(String::as_str) == Some(on),
+        }
+    }
+
     /// The value as one string: text, the state name, or the selected display texts.
     pub fn display_value(&self) -> String {
         match self.kind {
@@ -249,8 +262,13 @@ pub enum FieldValue {
     Text(String),
     /// Check box: checked or not.
     Check(bool),
-    /// Radio group: the on-state to select (`None`: none selected).
+    /// Radio group: the on-state to select (`None`: none selected). Of radio buttons sharing that
+    /// state, the one already on stays on, else the first, unless the group has RadiosInUnison.
     Radio(Option<String>),
+    /// Check box or radio group: turn on widget `i` (an index into [`Field::widgets`]), as a click
+    /// on it does. A radio button sharing its on state with others is the only one turned on
+    /// unless the group has RadiosInUnison (ISO 32000-2 Table 229).
+    Widget(usize),
     /// Combo box or list box: export values (several only for multi-select lists).
     Choice(Vec<String>),
 }
