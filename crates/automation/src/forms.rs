@@ -296,13 +296,22 @@ impl Automation {
                         o.insert("options".into(), json!((0..f.widgets.len()).filter_map(|i| f.export_of(i)).collect::<Vec<_>>()));
                     }
                     // A check box whose kids have different on states (ISO 32000-2 §12.7.5.2.3):
-                    // which one is ticked, and the names form_fill takes to tick each.
+                    // which one is ticked, and the names form_fill takes to tick each. One option
+                    // per distinct on state: kids sharing a state tick together (EXAMPLE 2), so
+                    // their `/Opt` exports are not separate choices. Exports name the options
+                    // unless two states share one (Table 230 allows it); then the states do.
                     FormFieldKind::CheckBox => {
                         let mut seen = std::collections::HashSet::new();
-                        let options: Vec<&str> = (0..f.widgets.len()).filter_map(|i| f.export_of(i)).filter(|e| seen.insert(*e)).collect();
-                        if options.len() > 1 {
-                            o.insert("options".into(), json!(options));
-                            o.insert("checked".into(), json!(f.value.first().map(|v| f.export_for_state(v))));
+                        let states: Vec<&str> = f.widgets.iter().filter_map(|w| w.on_state.as_deref()).filter(|s| seen.insert(*s)).collect();
+                        if states.len() > 1 {
+                            let mut exports = std::collections::HashSet::new();
+                            let by_export = states.iter().all(|s| exports.insert(f.export_for_state(s)));
+                            let name = |s: &str| if by_export { f.export_for_state(s).to_owned() } else { s.to_owned() };
+                            // The ticked kid is the one whose `/AS` is its on state: §12.7.5.2.3
+                            // makes `/AS` decide where it and `/V` differ.
+                            let on = (0..f.widgets.len()).find(|&i| f.widget_on(i)).and_then(|i| f.widgets.get(i)?.on_state.as_deref());
+                            o.insert("options".into(), json!(states.iter().map(|s| name(s)).collect::<Vec<_>>()));
+                            o.insert("checked".into(), json!(on.map(name)));
                         }
                     }
                     FormFieldKind::Combo | FormFieldKind::List => {
