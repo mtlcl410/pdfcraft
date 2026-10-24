@@ -143,6 +143,26 @@ impl Session {
         out
     }
 
+    /// The addresses written as plain text on each page that the viewer makes clickable
+    /// ([`crate::text_links::find_text_links`]): (0-based page, address), leaving out any a link
+    /// annotation lies over.
+    pub fn text_links(&self, id: DocId) -> Vec<(usize, crate::text_links::TextLink)> {
+        let Some(doc) = self.get(id) else { return Vec::new() };
+        let config = RenderConfig { password: doc.password.as_deref().map(Arc::from), ..Default::default() };
+        let mut r = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), config);
+        let mut out = Vec::new();
+        for (page, info) in doc.info.pages.iter().enumerate() {
+            let res = r.render(pdfcraft_render::RenderRequest { page, kind: pdfcraft_render::RequestKind::Text, scale: 1.0, ..Default::default() });
+            let Some(text) = res.text else { continue };
+            for link in crate::text_links::find_text_links(&text) {
+                if !doc.info.links.iter().any(|l| l.page == page && link.covered_by(info, l.rect)) {
+                    out.push((page, link));
+                }
+            }
+        }
+        out
+    }
+
     /// A page of the bookmark list in outline order: up to `limit` bookmarks from position `offset`.
     /// The document's own structure is read for it, so every bookmark can be reached by paging.
     pub fn bookmark_page(&self, id: DocId, offset: usize, limit: usize) -> Option<BookmarkPage> {
