@@ -769,6 +769,60 @@ trailer << /Root 1 0 R >>
     assert_eq!(layers, [("Red", true), ("Green", false), ("Blue", false)]);
 }
 
+/// ISO 32000-2 Table 99 `/Order`: the Layers panel presents the groups it lists, as a tree,
+/// with nested arrays one level deeper and a leading text string as a label. Groups it
+/// doesn't list are not presented (they stay in `layers` and keep their state), and without
+/// `/Order` none are. Malformed entries are skipped; cycles and depth are bounded.
+#[test]
+fn the_layers_panel_presents_the_order_tree() {
+    let rows = |order: &str, extra: &str| {
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R 7 0 R 8 0 R] /D << /OFF [8 0 R] {order} >> >> >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj
+5 0 obj << /Type /OCG /Name (A) >> endobj
+6 0 obj << /Type /OCG /Name (B) >> endobj
+7 0 obj << /Type /OCG /Name (C) >> endobj
+8 0 obj << /Type /OCG /Name (D) >> endobj
+9 0 obj << /Type /OCG /Name (Unlisted) >> endobj
+{extra}
+trailer << /Root 1 0 R >>
+%%EOF"
+        );
+        let info = inspect(Arc::new(pdf.into_bytes()), None).expect("opens");
+        assert_eq!(info.layers.len(), 4, "every group in /OCGs keeps its state: {order}");
+        info.layer_order
+            .iter()
+            .map(|r| match &r.item {
+                LayerItem::Layer(i) => format!("{}{}", " ".repeat(r.depth), info.layers.get(*i).map_or("?", |l| l.name.as_str())),
+                LayerItem::Label(s) => format!("{}[{s}]", " ".repeat(r.depth)),
+            })
+            .collect::<Vec<_>>()
+    };
+    // A layer with sublayers, and a group not listed (D) that isn't presented.
+    assert_eq!(rows("/Order [5 0 R 6 0 R [7 0 R]]", ""), ["A", "B", " C"]);
+    // A labelled collection heads its own level, with a nested array under B.
+    assert_eq!(rows("/Order [5 0 R [(Set) 6 0 R [7 0 R]] 8 0 R]", ""), ["A", "[Set]", " B", "  C", "D"]);
+    // Without /Order, or with an empty one, nothing is presented.
+    assert!(rows("", "").is_empty());
+    assert!(rows("/Order []", "").is_empty());
+    // An indirect /Order and nested array; a group outside /OCGs, a missing object and junk
+    // are skipped.
+    assert_eq!(rows("/Order 10 0 R", "10 0 obj [5 0 R 11 0 R 9 0 R 12 0 R 1 (x) /N] endobj\n11 0 obj [6 0 R] endobj"), ["A", " B"]);
+    // Cycles: an array holding itself, and an /Order holding itself.
+    assert_eq!(rows("/Order 10 0 R", "10 0 obj [5 0 R 10 0 R 11 0 R] endobj\n11 0 obj [6 0 R 11 0 R 10 0 R] endobj"), ["A", " B"]);
+    // Nesting past the limit is cut off; a long label is cut short.
+    let deep = format!("/Order [5 0 R {}6 0 R{}]", "[".repeat(40), "]".repeat(40));
+    assert_eq!(rows(&deep, ""), ["A"]);
+    let long = format!("/Order [[({}) 5 0 R]]", "x".repeat(1000));
+    let got = rows(&long, "");
+    assert_eq!(got.first().map(|s| s.len()), Some(MAX_LAYER_LABEL_CHARS + 2));
+    // Many rows stop at the cap.
+    let many = format!("/Order [{}]", "5 0 R ".repeat(MAX_LAYER_ORDER_ROWS + 10));
+    assert_eq!(rows(&many, "").len(), MAX_LAYER_ORDER_ROWS);
+}
+
 /// ISO 32000-2 §8.11.4.4: the View auto state (`/AS`) decides the initial state of the groups
 /// it manages, over `/ON` and `/OFF`; the others keep the configuration's. Malformed entries
 /// are ignored.

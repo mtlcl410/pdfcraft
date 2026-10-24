@@ -1,8 +1,8 @@
 #[cfg(test)]
 use super::core::inspect;
 use super::core::{Inspector, load_options};
-use super::model::{Attachment, AttachmentSource, FontInfo, Layer, PageTransition, TransitionStyle};
-use super::navigation::NameTreeSeen;
+use super::model::{Attachment, AttachmentSource, FontInfo, Layer, LayerItem, LayerRow, PageTransition, TransitionStyle};
+use super::navigation::{NameTreeSeen, text_string};
 use super::{AssertUnwindSafe, Dictionary, DocInfo, Document, HashMap, HashSet, Object, ObjectId, catch_unwind};
 
 /// Decoded bytes read from an XFA form's configuration packet (or a whole-XDP `/XFA` stream) to
@@ -18,6 +18,12 @@ const MAX_LAYER_GROUP_ENTRIES: usize = 4096;
 const MAX_AUTO_STATE_APPLICATIONS: usize = 256;
 const MAX_AUTO_STATE_GROUPS: usize = 4096;
 const MAX_AUTO_STATE_CATEGORIES: usize = 16;
+
+/// The Layers panel's rows from `/Order`: at most this many rows, nested at most this deep, and
+/// a label keeps at most this many characters.
+pub(super) const MAX_LAYER_ORDER_ROWS: usize = 4096;
+const MAX_LAYER_ORDER_DEPTH: usize = 32;
+pub(super) const MAX_LAYER_LABEL_CHARS: usize = 256;
 
 impl<'a> Inspector<'a> {
     // ── object helpers ──────────────────────────────────────────────────────────────────────
@@ -170,6 +176,69 @@ impl<'a> Inspector<'a> {
             }
         }
         out
+    }
+
+    /// The Layers panel's rows: the default configuration's `/Order` (ISO 32000-2 Table 99). Its
+    /// entries are groups, shown by name, and nested arrays, shown as a tree one level deeper;
+    /// a nested array may start with a text string, a label that is not a group. Groups not
+    /// listed aren't presented, and `/Order` defaults to the empty array in the default
+    /// configuration, so a document without one presents no layers. An entry that is neither a
+    /// group in `/OCGs` nor an array is skipped. Bounded by `MAX_LAYER_ORDER_*`, and an indirect
+    /// array is read once, so a cycle ends.
+    pub(super) fn layer_order(&self, catalog: &Dictionary, layers: &[Layer]) -> Vec<LayerRow> {
+        let mut out = Vec::new();
+        let Some(config) = catalog.get(b"OCProperties").ok().and_then(|o| self.dict(o)).and_then(|p| p.get(b"D").ok()).and_then(|o| self.dict(o))
+        else {
+            return out;
+        };
+        let Some(order) = config.get(b"Order").ok() else { return out };
+        let index: HashMap<ObjectId, usize> = layers.iter().enumerate().map(|(i, l)| ((l.id.0, l.id.1), i)).collect();
+        let mut seen = HashSet::new();
+        if let Object::Reference(id) = order {
+            seen.insert(*id);
+        }
+        if let Ok(items) = self.resolve(order).as_array() {
+            self.layer_order_rows(items, 0, &index, &mut seen, &mut out);
+        }
+        out
+    }
+
+    fn layer_order_rows(
+        &self,
+        items: &'a [Object],
+        depth: usize,
+        index: &HashMap<ObjectId, usize>,
+        seen: &mut HashSet<ObjectId>,
+        out: &mut Vec<LayerRow>,
+    ) {
+        if depth > MAX_LAYER_ORDER_DEPTH {
+            return;
+        }
+        for item in items {
+            if out.len() >= MAX_LAYER_ORDER_ROWS {
+                return;
+            }
+            if let Object::Reference(id) = item {
+                if let Some(&layer) = index.get(id) {
+                    out.push(LayerRow { depth, item: LayerItem::Layer(layer) });
+                    continue;
+                }
+                // An indirect nested array, read once.
+                if !seen.insert(*id) {
+                    continue;
+                }
+            }
+            let Ok(nested) = self.resolve(item).as_array() else { continue };
+            let rest = match nested.split_first() {
+                Some((first, rest)) if let Object::String(bytes, _) = self.resolve(first) => {
+                    let label: String = text_string(bytes).chars().take(MAX_LAYER_LABEL_CHARS).collect();
+                    out.push(LayerRow { depth, item: LayerItem::Label(label) });
+                    rest
+                }
+                _ => nested.as_slice(),
+            };
+            self.layer_order_rows(rest, depth.saturating_add(1), index, seen, out);
+        }
     }
 
     /// The default configuration's radio-button groups (`/RBGroups`) of two or more layers.
