@@ -328,14 +328,16 @@ fn xml_entities_are_found_near_their_ampersand_only() {
 /// metadata check fails closed.
 #[test]
 fn a_form_removed_unread_clears_the_metadata() {
-    // Forms 5..=20 each draw the next; the last one shows text. The page draws form 5.
+    // Forms 5, 6, ... each draw the next, one more than the depth limit deep, and the last one
+    // paints. The page draws form 5.
+    let last = 5 + crate::interp::MAX_DEPTH;
     let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /XObject << /Fm 5 0 R >> >> >>".to_vec(),
         stream("", b"q /Fm Do Q"),
     ];
-    for n in 5..=20 {
+    for n in 5..=last {
         objs.push(stream(
             &format!("/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Fm {} 0 R >> >>", n + 1),
             b"q /Fm Do Q",
