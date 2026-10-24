@@ -2630,6 +2630,33 @@ fn form_fill_warns_when_a_value_does_not_fit() {
     assert!(r.get("warnings").is_none(), "{r}");
 }
 
+/// `form_fill` ticks one kid of a check box whose kids have different on states by naming it
+/// (ISO 32000-2 §12.7.5.2.3, Table 230), and `form_fields` lists the names and the ticked one.
+#[test]
+fn form_fill_ticks_one_kid_of_a_check_box_by_its_on_state() {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 400 300] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R] >>",
+        "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>",
+        "<< /FT /Btn /T (pair) /V /Off /Kids [6 0 R 7 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /AS /Off /Rect [10 250 26 266] /P 3 0 R /AP << /N << /A 8 0 R /Off 8 0 R >> >> >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /AS /Off /Rect [40 250 56 266] /P 3 0 R /AP << /N << /B 8 0 R /Off 8 0 R >> >> >>",
+        "<< /Length 0 >>\nstream\n\nendstream",
+    ];
+    let dir = workdir("check-box-kids");
+    std::fs::write(dir.join("form.pdf"), pdf_of(&objs)).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "form.pdf" }))["doc"].as_u64().unwrap();
+    let before = ok(&mut a, "form_fields", json!({ "doc": doc }));
+    assert_eq!((&before["fields"][0]["options"], &before["fields"][0]["checked"]), (&json!(["A", "B"]), &Value::Null), "{before}");
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "pair": "A" } }));
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "pair": "B" } }));
+    let after = ok(&mut a, "form_fields", json!({ "doc": doc }));
+    assert_eq!((&after["fields"][0]["value"], &after["fields"][0]["checked"]), (&json!(true), &json!("B")), "{after}");
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "pair": false } }));
+    assert_eq!(ok(&mut a, "form_fields", json!({ "doc": doc }))["fields"][0]["checked"], Value::Null);
+}
 /// A form whose fields are only page widgets (the `/Fields` list is empty) still lists, fills and
 /// resets through the tools, and the leniency shows up as a repair note.
 #[test]

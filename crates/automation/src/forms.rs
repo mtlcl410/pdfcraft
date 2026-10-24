@@ -295,6 +295,16 @@ impl Automation {
                     FormFieldKind::Radio => {
                         o.insert("options".into(), json!((0..f.widgets.len()).filter_map(|i| f.export_of(i)).collect::<Vec<_>>()));
                     }
+                    // A check box whose kids have different on states (ISO 32000-2 §12.7.5.2.3):
+                    // which one is ticked, and the names form_fill takes to tick each.
+                    FormFieldKind::CheckBox => {
+                        let mut seen = std::collections::HashSet::new();
+                        let options: Vec<&str> = (0..f.widgets.len()).filter_map(|i| f.export_of(i)).filter(|e| seen.insert(*e)).collect();
+                        if options.len() > 1 {
+                            o.insert("options".into(), json!(options));
+                            o.insert("checked".into(), json!(f.value.first().map(|v| f.export_for_state(v))));
+                        }
+                    }
                     FormFieldKind::Combo | FormFieldKind::List => {
                         o.insert("options".into(), f.options.iter().map(|(e, d)| json!({ "value": e, "label": d })).collect());
                         o.insert("multi_select".into(), json!(f.has(field_flags::MULTI_SELECT)));
