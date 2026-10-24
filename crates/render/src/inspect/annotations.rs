@@ -214,6 +214,7 @@ impl<'a> Inspector<'a> {
                 Some("SetOCGState") => self.layer_state(a),
                 Some("GoToR") => self.remote_go_to(a).unwrap_or_else(|| LinkTarget::Other("GoToR".into())),
                 Some("Launch") => self.launch_pdf(a).unwrap_or_else(|| LinkTarget::Other("Launch".into())),
+                Some("GoToE") => self.embedded_go_to(a, text_budget).unwrap_or_else(|| LinkTarget::Other("GoToE".into())),
                 Some(other) => LinkTarget::Other(other.to_string()),
                 None => return None,
             }
@@ -223,7 +224,15 @@ impl<'a> Inspector<'a> {
 
     fn remote_go_to(&self, action: &Dictionary) -> Option<LinkTarget> {
         let file = self.action_file(action)?;
-        let destination = match action.get(b"D") {
+        let destination = self.remote_destination(action)?;
+        Some(LinkTarget::RemoteGoTo { launch: false, file, destination, new_window: self.new_window(action) })
+    }
+
+    /// The `/D` of a remote or embedded Go-To: a destination in another document, so an
+    /// explicit one names its page by number (§12.3.2.2). No `/D` is that document's default
+    /// view; an unusable one is `None`.
+    fn remote_destination(&self, action: &Dictionary) -> Option<RemoteDestination> {
+        Some(match action.get(b"D") {
             Err(_) => RemoteDestination::Default,
             Ok(o) => match self.resolve(o) {
                 Object::Array(items) => {
@@ -248,8 +257,54 @@ impl<'a> Inspector<'a> {
                 }
                 _ => return None,
             },
+        })
+    }
+
+    /// An embedded Go-To action (§12.6.4.4). Only a child of this document is opened: a target
+    /// dictionary with `/R /C` and no further `/T`, naming the file by its `/N` key in the
+    /// EmbeddedFiles name tree, or, for a file attachment annotation, by `/P` (a page number, or
+    /// a named destination giving it) and `/A` (the annotation's index in `/Annots`, or its
+    /// `/NM`) (Table 205). The parent (`/R /P`), a nested path, or a target under another root
+    /// document (`/F`) is `None`: not followed.
+    fn embedded_go_to(&self, action: &Dictionary, text_budget: &mut usize) -> Option<LinkTarget> {
+        if action.has(b"F") {
+            return None;
+        }
+        let t = self.dict(action.get(b"T").ok()?)?;
+        if self.name(t, b"R").as_deref() != Some("C") || t.has(b"T") {
+            return None;
+        }
+        let source = match t.get(b"N") {
+            Ok(n) => {
+                let Object::String(bytes, _) = self.resolve(n) else { return None };
+                // Converted as the EmbeddedFiles keys `DocInfo::attachments` lists are.
+                AttachmentSource::Document { key: spend(bytes, text_budget, text_string)? }
+            }
+            Err(_) => {
+                let page = match self.resolve(t.get(b"P").ok()?) {
+                    Object::Integer(p) => usize::try_from(*p).ok()?,
+                    named @ Object::String(..) => self.dest(named, 0)?.0,
+                    _ => return None,
+                };
+                let index = match self.resolve(t.get(b"A").ok()?) {
+                    Object::Integer(i) => usize::try_from(*i).ok()?,
+                    Object::String(nm, _) => self.annotation_named(page, nm)?,
+                    _ => return None,
+                };
+                AttachmentSource::Annotation { page, index }
+            }
         };
-        Some(LinkTarget::RemoteGoTo { launch: false, file, destination, new_window: self.new_window(action) })
+        Some(LinkTarget::EmbeddedGoTo { source, destination: self.remote_destination(action)?, new_window: self.new_window(action) })
+    }
+
+    /// The position in page `page`'s `/Annots` of the first annotation whose `/NM` is `nm`.
+    fn annotation_named(&self, page: usize, nm: &[u8]) -> Option<usize> {
+        let id = *self.page_ids.get(page)?;
+        let page = self.doc.get_dictionary(id).ok()?;
+        let Object::Array(annots) = self.resolve(page.get(b"Annots").ok()?) else { return None };
+        annots.iter().position(|a| {
+            self.dict(a).and_then(|d| d.get(b"NM").ok()).is_some_and(|n| matches!(self.resolve(n), Object::String(b, _) if b.as_slice() == nm))
+        })
     }
 
     /// The non-empty local file an action's `/F` names (a string or a file specification), shared

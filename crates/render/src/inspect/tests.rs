@@ -1245,6 +1245,71 @@ fn launch_actions_that_name_a_pdf_open_it_like_a_remote_link() {
     );
 }
 
+/// Embedded Go-To actions (§12.6.4.4, Tables 204–205) to a child of this document are read
+/// with the attachment they name; the parent, a nested path, another root document or a
+/// malformed target stays an action that isn't followed.
+#[test]
+fn links_read_embedded_go_to_actions_to_attached_pdfs() {
+    let actions = [
+        "<< /S /GoToE /T << /R /C /N (inner.pdf) >> /D [2 /FitH 100] /NewWindow true >>",
+        "<< /S /GoToE /T << /R /C /P 0 /A 1 >> >>",
+        "<< /S /GoToE /T << /R /C /P 0 /A (att-1) >> /D (chapter) >>",
+        "<< /S /GoToE /T << /R /C /P (here) /A 1 >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /P >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /P /N (inner.pdf) >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /C /N (inner.pdf) /T << /R /C /N (deeper.pdf) >> >> /D [0 /Fit] >>",
+        "<< /S /GoToE /F (other.pdf) /T << /R /C /N (inner.pdf) >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /C /N /inner.pdf >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /C /P 0 /A (no-such-name) >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /C /P -1 /A 1 >> /D [0 /Fit] >>",
+        "<< /S /GoToE /T << /R /C /N (inner.pdf) >> /D [/Fit] >>",
+        "<< /S /GoToE >>",
+    ];
+    let mut pdf = String::from(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R /Names << /Dests << /Names [(here) [3 0 R /Fit]] >> >> >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj\n",
+    );
+    let annots: Vec<String> = (0..=actions.len()).map(|k| format!("{} 0 R", 30 + k)).collect();
+    pdf.push_str(&format!("3 0 obj << /Type /Page /Parent 2 0 R /Annots [{}] >> endobj\n", annots.join(" ")));
+    // Index 0 is a link; index 1 the file attachment annotation, named att-1.
+    pdf.push_str(&format!("30 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A {} >> endobj\n", actions[0]));
+    pdf.push_str("31 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /NM (att-1) >> endobj\n");
+    for (k, a) in actions.iter().enumerate().skip(1) {
+        pdf.push_str(&format!("{} 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A {a} >> endobj\n", 31 + k));
+    }
+    pdf.push_str("trailer << /Root 1 0 R >>\n%%EOF");
+    let info = inspect(Arc::new(pdf.into_bytes()), None).expect("opens");
+    let targets: Vec<_> = info.links.iter().map(|l| l.target.clone()).collect();
+    let annotation = AttachmentSource::Annotation { page: 0, index: 1 };
+    let embedded = |source: &AttachmentSource, destination, new_window| LinkTarget::EmbeddedGoTo { source: source.clone(), destination, new_window };
+    let other = || LinkTarget::Other("GoToE".into());
+    assert_eq!(
+        targets,
+        [
+            embedded(
+                &AttachmentSource::Document { key: "inner.pdf".into() },
+                RemoteDestination::Page { page: 2, view: DestView::FitH { top: Some(100.0) } },
+                Some(true)
+            ),
+            // No /D: the document's default view.
+            embedded(&annotation, RemoteDestination::Default, None),
+            // /A by the annotation's /NM; a named destination in the target.
+            embedded(&annotation, RemoteDestination::Named("chapter".into()), None),
+            // /P by a named destination of this document.
+            embedded(&annotation, RemoteDestination::Page { page: 0, view: DestView::Fit }, None),
+            other(),
+            other(),
+            other(),
+            other(),
+            other(),
+            other(),
+            other(),
+            other(),
+            other(),
+        ]
+    );
+}
+
 #[test]
 fn links_read_bounded_local_remote_go_to_actions() {
     use DestView::{Fit, Xyz};
