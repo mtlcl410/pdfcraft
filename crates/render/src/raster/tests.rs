@@ -1630,7 +1630,7 @@ fn rounded_pixel_budget_invalid_requests_never_reach_allocator() {
 /// order, 29 below ASCII; the font's own `cmap` maps them to the right glyphs. Read as WinAnsi
 /// the text came out shifted (`Solid` as `6ROLG`), in the editor and in Word export alike. The
 /// `post` table names the glyph each code selects, which gives the text (vendored
-/// hayro-interpret patch 51). A font with an `/Encoding` still reads its codes through it.
+/// hayro-interpret patch 53). A font with an `/Encoding` still reads its codes through it.
 #[test]
 fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     use skrifa::MetadataProvider;

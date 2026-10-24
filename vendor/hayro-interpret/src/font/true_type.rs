@@ -191,7 +191,7 @@ impl TrueTypeFont {
 
         match &self.kind {
             Kind::Embedded(e) => {
-                // PdfCraft patch (51): see `EmbeddedKind::symbolic_text`.
+                // PdfCraft patch (53): see `EmbeddedKind::symbolic_text`.
                 if let Some(text) = e.symbolic_text(code as u8) {
                     let mut chars = text.chars();
                     return Some(match (chars.next(), chars.next()) {
@@ -230,7 +230,7 @@ struct EmbeddedKind {
     cached_mappings: RefCell<HashMap<u8, GlyphId>>,
     /// PostScript name from the PDF.
     postscript_name: Option<String>,
-    /// PdfCraft patch: (see vendor/README.md hayro-interpret (51)) the text each glyph's `post`
+    /// PdfCraft patch: (see vendor/README.md hayro-interpret (53)) the text each glyph's `post`
     /// table name stands for, for the names that stand for any (`glyph_name_text`).
     text_names: HashMap<GlyphId, String>,
 }
@@ -315,7 +315,7 @@ impl EmbeddedKind {
             .or_else(|| win_ansi::get(code))
     }
 
-    /// PdfCraft patch (51): a symbolic font without an encoding selects its glyphs through its
+    /// PdfCraft patch (53): a symbolic font without an encoding selects its glyphs through its
     /// own `cmap`, so its codes need not mean anything in WinAnsi. FrameMaker files distilled
     /// with Distiller 3 number them in the Macintosh glyph order, 29 below ASCII, and read as
     /// WinAnsi `Solid` came out as `6ROLG` (#3962). The name the `post` table gives the glyph the
@@ -461,7 +461,7 @@ pub(crate) enum Width {
     Missing,
 }
 
-/// PdfCraft patch (51): the text a glyph name stands for, by the rules of the Adobe Glyph List
+/// PdfCraft patch (53): the text a glyph name stands for, by the rules of the Adobe Glyph List
 /// specification, as pdfcraft-fonts' `glyph_text` reads them for the editor: drop any suffix
 /// from the first `.` (`a.ss01` is `a`), then each `_`-separated component is a list name,
 /// `uni` and groups of four hex digits, or `u` and four to six. `None` when any component is
@@ -587,7 +587,7 @@ pub(crate) fn read_encoding(dict: &Dict<'_>) -> (Encoding, HashMap<u8, String>) 
 mod tests {
     use super::glyph_name_text;
 
-    /// PdfCraft patch (51): glyph names read as pdfcraft-fonts' `glyph_text` reads them.
+    /// PdfCraft patch (53): glyph names read as pdfcraft-fonts' `glyph_text` reads them.
     #[test]
     fn glyph_names_read_by_the_adobe_glyph_list_rules() {
         for (name, expected) in [
