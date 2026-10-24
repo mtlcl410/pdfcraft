@@ -1494,8 +1494,9 @@ fn the_panel_filters_by_colour_and_checkmark() {
     assert_eq!(cards(&h), before);
 }
 
-/// Checked in Acrobat Pro: a comment shows each reviewer's latest status, with their name, and
-/// a status set back to None stays shown; a checkmark shows only for the reviewer who set it.
+/// ISO 32000-2 §12.5.6.3 and Table 174: a comment shows each reviewer's latest status, with
+/// their name, and a status set back to None stays shown; a checkmark shows only for the
+/// reviewer who set it.
 #[test]
 fn the_panel_shows_each_reviewers_status_and_only_my_checkmark() {
     let mut h = harness(|app| {
