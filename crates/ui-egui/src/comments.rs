@@ -2499,6 +2499,7 @@ mod tests {
                 intent: None,
                 fill_sign: false,
                 points: Vec::new(),
+                text_box: None,
             }],
             ..Default::default()
         };
