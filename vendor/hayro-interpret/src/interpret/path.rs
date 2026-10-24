@@ -58,22 +58,25 @@ pub(crate) fn apply_pending_clip<'a>(context: &mut Context<'a>, device: &mut imp
 }
 
 /// PdfCraft patch (65): the device-space area a fill marks for a path whose bounding box `bbox`
-/// (user space) has no width or no height, but not both, under `ctm`. ISO 32000-2 §10.7.4 paints
-/// "any pixel whose half-open square region intersects the shape, no matter how small the
-/// intersection is", and its example says "A zero-width or zero-height rectangle paints a line
-/// 1 pixel wide". Such a path encloses no area, so the rasteriser marks nothing: the fill used
-/// to fall back to a thinnest-line stroke along the box (half-covering two rows when the line
-/// fell on a pixel boundary), and a clip of it hid everything painted after it.
+/// (user space) has exactly no width or exactly no height, but not both, under `ctm`.
+/// ISO 32000-2 §10.7.4 paints "any pixel whose half-open square region intersects the shape, no
+/// matter how small the intersection is", and its example says "A zero-width or zero-height
+/// rectangle paints a line 1 pixel wide". Such a path encloses no area, so the rasteriser marks
+/// nothing: the fill used to fall back to a thinnest-line stroke along the box (half-covering two
+/// rows when the line fell on a pixel boundary), and a clip of it hid everything painted after it.
+/// A box with area, however thin, is not one of these: scaled up it can cover many pixels.
 ///
-/// When the line lies along a device axis (less than a pixel across the other way), the area is
-/// the run of whole pixels it touches, by the half-open rule: from the floor of its low ends to
-/// the ceiling of its high ends, at least one pixel either way. Otherwise (a rotated or skewed
-/// `ctm`) it is a band one device pixel wide centred on the line, like the thinnest line of
-/// §8.4.3.2. `None` for a box with area, a point (both sides zero), a non-finite box, or a `ctm`
-/// that collapses the line to a point: those paint as before.
+/// When the line stays within one device row or column (counting a line less than 1/256 of a
+/// pixel across as lying exactly along the axis, at its middle), the area is the run of whole
+/// pixels it touches, by the half-open rule: from the floor of its low end to the ceiling of its
+/// high end, at least one pixel. Otherwise (a rotated or skewed `ctm` that carries it across
+/// rows and columns) it is a band one device pixel wide centred on the line, like the thinnest
+/// line of §8.4.3.2, so each row or column is marked only where the line runs through it. `None`
+/// for a box with area, a point (both sides zero), a non-finite box, or a `ctm` that collapses
+/// the line to a point: those paint as before.
 pub(crate) fn degenerate_fill_area(bbox: Rect, ctm: Affine) -> Option<BezPath> {
-    let flat_x = (bbox.width() as f32).is_nearly_zero();
-    let flat_y = (bbox.height() as f32).is_nearly_zero();
+    let flat_x = bbox.width() == 0.0;
+    let flat_y = bbox.height() == 0.0;
     if flat_x == flat_y {
         return None;
     }
@@ -88,11 +91,9 @@ pub(crate) fn degenerate_fill_area(bbox: Rect, ctm: Affine) -> Option<BezPath> {
         return None;
     }
     let device = Rect::from_points(a, b);
-    if device.width() < 1.0 || device.height() < 1.0 {
-        let x0 = device.x0.floor();
-        let y0 = device.y0.floor();
-        let x1 = device.x1.ceil().max(x0 + 1.0);
-        let y1 = device.y1.ceil().max(y0 + 1.0);
+    let (x0, x1) = touched_pixels(device.x0, device.x1);
+    let (y0, y1) = touched_pixels(device.y0, device.y1);
+    if x1 - x0 <= 1.0 || y1 - y0 <= 1.0 {
         return Some(Rect::new(x0, y0, x1, y1).to_path(0.1));
     }
     let half = Vec2::new(-along.y, along.x) * (0.5 / length);
@@ -103,6 +104,21 @@ pub(crate) fn degenerate_fill_area(bbox: Rect, ctm: Affine) -> Option<BezPath> {
     band.line_to(a - half);
     band.close_path();
     Some(band)
+}
+
+/// PdfCraft patch (65): the device pixel boundaries `(first, end)` of the pixels a span `lo..=hi`
+/// (`lo <= hi`, finite) touches along one axis by the half-open rule, at least one pixel. A span
+/// under 1/256 of a pixel is taken at its middle, so a line along a device axis that a CTM's
+/// rounding tilts slightly still marks one row or column.
+fn touched_pixels(lo: f64, hi: f64) -> (f64, f64) {
+    let (lo, hi) = if ((hi - lo) as f32).is_nearly_zero() {
+        let mid = lo + (hi - lo) / 2.0;
+        (mid, mid)
+    } else {
+        (lo, hi)
+    };
+    let first = lo.floor();
+    (first, hi.ceil().max(first + 1.0))
 }
 
 pub(crate) fn close_path(context: &mut Context<'_>) {
@@ -148,10 +164,10 @@ pub(crate) fn fill_path_impl<'a>(
             return;
         }
 
-        match (
-            (bbox.width() as f32).is_nearly_zero(),
-            (bbox.height() as f32).is_nearly_zero(),
-        ) {
+        // PdfCraft patch (65): only a box with exactly no width or height (by now a point) is
+        // stroked. A box with area, however thin, is filled as the shape it is: a "nearly zero"
+        // side scaled up by the CTM can cover many device pixels.
+        match (bbox.width() == 0.0, bbox.height() == 0.0) {
             (false, false) => {
                 let draw_mode = PathDrawMode::Fill(fill_rule);
                 if let Some(rect) = path_as_rect(path) {
