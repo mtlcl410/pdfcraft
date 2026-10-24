@@ -400,10 +400,11 @@ impl PdfCraftApp {
         let Some(i) = self.active else { return true };
         let applied = self.apply_queued_edit(i);
         if !applied {
-            // Nor may a shortcut pressed with it (⌘S right after Enter) run behind the refusal.
+            // Nor may a shortcut pressed with it (⌘S right after Enter) run behind the refusal,
+            // nor a toolbar action queued in the same frame (Organize ▸ Save pages).
             self.deferred_commands.clear();
         }
-        match self.views.get_mut(i).and_then(|v| v.pending_action.take()) {
+        match self.views.get_mut(i).and_then(|v| v.pending_action.take()).filter(|_| applied) {
             Some(crate::canvas::ViewAction::InsertFromFile) => self.insert_from_file_dialog(),
             Some(crate::canvas::ViewAction::InsertFromFileAt(at)) => self.insert_from_file_at(Some(at)),
             Some(crate::canvas::ViewAction::ReplacePages) => self.replace_pages_dialog(),
@@ -1227,5 +1228,72 @@ mod attention_tests {
         app.close_and_continue(&ctx, 0, CloseRequest::Quit);
         assert_eq!(app.close_request, Some(CloseRequest::Tab(c)), "the newer question stands");
         assert!(attend(&mut app, &ctx, false).is_empty(), "the user has seen it");
+    }
+}
+
+#[cfg(test)]
+mod rejected_value_tests {
+    use crate::PdfCraftApp;
+    use crate::canvas::ViewAction;
+    use crate::forms_ui::Focus;
+    use pdfcraft_engine::Edit;
+
+    /// One page with a text field `qty` (value 4) whose validate action (ISO 32000-2 Table 199
+    /// `/V`) rejects anything over 100.
+    fn validated_form() -> Vec<u8> {
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >>",
+            "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Tx /T (qty) /V (4) /Rect [20 350 280 372] /P 3 0 R /F 4 /AA << /V << /S /JavaScript /JS (if (event.value > 100) { app.alert('At most 100'); event.rc = false; }) >> >> >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        out
+    }
+
+    /// A toolbar Save (Organize ▸ Save pages) queued in the frame whose typed value the validate
+    /// action rejects does not run behind the refusal, just as a ⌘S pressed with it does not.
+    #[test]
+    fn a_save_action_queued_with_a_rejected_value_does_not_run() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ui-rejected-action-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("saved.pdf");
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("order.pdf", None, validated_form()).unwrap();
+        app.active = Some(0);
+        app.save_override = Some(out.to_string_lossy().into_owned());
+        let view = &mut app.views[0];
+        view.forms.committed = Some(Focus {
+            name: "qty".into(),
+            widget: 0,
+            text: "4500".into(),
+            picked: Vec::new(),
+            request_focus: false,
+            select_all: false,
+            press: None,
+            calendar: None,
+            calendar_rect: None,
+            calendar_text: None,
+            had_focus: false,
+        });
+        view.pending_edit = Some(Edit::SetFieldValue { name: "qty".into(), value: pdfcraft_engine::FieldValue::Text("4500".into()) });
+        view.pending_action = Some(ViewAction::Save);
+        assert!(!app.process_pending_edits(), "the validate action rejects 4500");
+        assert!(!out.exists(), "the queued Save does not run behind the refusal");
+        assert!(app.views[0].pending_action.is_none(), "nor is it left to run later");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
