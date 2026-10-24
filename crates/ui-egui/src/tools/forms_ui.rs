@@ -135,6 +135,96 @@ impl TextFrame {
     fn paint_galley(self, painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>, color: Color32) {
         painter.add(egui::epaint::TextShape::new(self.on_screen(pos), galley, color).with_angle(self.angle()));
     }
+
+    /// Where a field editor's upright text starts: inside its margins.
+    fn text_origin(self) -> egui::Pos2 {
+        self.upright.min + vec2(3.0, 1.0)
+    }
+
+    /// A screen point `p` as a position in `galley`, which the editor drew at `pos`; a turned
+    /// field's text is laid out upright in the frame's box.
+    fn in_galley(self, galley: &egui::Galley, pos: egui::Pos2, p: egui::Pos2) -> egui::Vec2 {
+        if self.turn != 0 { self.in_box(p) - self.text_origin() + vec2(galley.rect.left(), 0.0) } else { p - pos + vec2(galley.rect.left(), 0.0) }
+    }
+}
+
+/// A field editor's laid-out text and where the editor drew it.
+type Laid = (std::sync::Arc<egui::Galley>, egui::Pos2);
+
+/// How a turned field's editor lays its text out: at the upright box's width (`wrap`, for a
+/// multi-line field), not the field's on screen.
+fn turned_layouter(
+    font: f32,
+    wrap: Option<f32>,
+    password: bool,
+) -> impl FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> std::sync::Arc<egui::Galley> {
+    move |ui, text, _| {
+        let shown = if password { "•".repeat(text.as_str().chars().count()) } else { text.as_str().to_owned() };
+        let font = egui::FontId::proportional(font);
+        let mut job = match wrap {
+            Some(wrap) => egui::text::LayoutJob::simple(shown, font, Color32::BLACK, wrap),
+            None => egui::text::LayoutJob::simple_singleline(shown, font, Color32::BLACK),
+        };
+        job.keep_trailing_whitespace = true;
+        ui.fonts_mut(|f| f.layout_job(job))
+    }
+}
+
+/// Show a field's editor over `rect`. A turned field's editor takes the keys and the pointer
+/// over the field but draws nothing: [`turned_caret_and_paint`] paints its text turned (#4296).
+fn show_field_editor(ui: &mut egui::Ui, te: egui::TextEdit<'_>, rect: Rect, turned: bool) -> (egui::Response, Option<Laid>) {
+    let mut laid_out = None;
+    let r = ui.add_sized(rect.size(), |ui: &mut egui::Ui| {
+        if turned {
+            ui.set_opacity(0.0);
+        }
+        let out = te.show(ui);
+        laid_out = Some((out.galley, out.galley_pos));
+        out.response.response
+    });
+    (r, laid_out)
+}
+
+/// Unless the caret was just placed under the press that opened the editor (`caret_placed`, by
+/// [`settle_text_editor`]), place it under the pointer in a turned field's text, and paint a
+/// turned field's text, selection and caret as the page will show them.
+fn turned_caret_and_paint(ui: &egui::Ui, r: &egui::Response, rect: Rect, frame: TextFrame, laid_out: Option<&Laid>, caret_placed: bool, font: f32) {
+    let turned = frame.turn != 0;
+    if !caret_placed
+        && turned
+        && r.is_pointer_button_down_on()
+        && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+        && let Some((galley, pos)) = laid_out
+        && let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), r.id)
+    {
+        // The editor placed the caret as if its text were upright: place it under the pointer
+        // in the turned text instead, a press at the point and a drag from where the press
+        // left it.
+        let at = galley.cursor_from_pos(frame.in_galley(galley, *pos, p));
+        let range = match st.cursor.char_range() {
+            Some(was) if !ui.input(|i| i.pointer.primary_pressed()) => egui::text::CCursorRange::two(was.secondary, at),
+            _ => egui::text::CCursorRange::one(at),
+        };
+        st.cursor.set_char_range(Some(range));
+        st.store(ui.ctx(), r.id);
+    }
+    if turned && let Some((galley, _)) = laid_out {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, CornerRadius::ZERO, FIELD_FILL);
+        let range = r.has_focus().then(|| egui::TextEdit::load_state(ui.ctx(), r.id).and_then(|st| st.cursor.char_range())).flatten();
+        let mut shown = galley.clone();
+        if let Some(range) = &range {
+            egui::text_selection::visuals::paint_text_selection(&mut shown, ui.visuals(), range, None);
+        }
+        let start = frame.text_origin() - vec2(galley.rect.left(), 0.0);
+        frame.paint_galley(&painter, start, shown, Color32::BLACK);
+        if let Some(range) = range {
+            let mut caret = galley.pos_from_cursor(range.primary);
+            caret.max.y = caret.max.y.max(caret.min.y + font);
+            let (top, bottom) = (start + caret.center_top().to_vec2(), start + caret.center_bottom().to_vec2());
+            painter.line_segment([frame.on_screen(top), frame.on_screen(bottom)], ui.visuals().text_cursor.stroke);
+        }
+    }
 }
 
 fn fillable(f: &FormField) -> bool {
@@ -363,18 +453,20 @@ pub(crate) fn commit(view: &mut DocView, form: &[FormField]) {
 }
 
 /// The text box of an editable combo box, over the field. What is typed becomes the value when
-/// Enter, Tab or a click away commits it; a pick from the list still sets an option.
+/// Enter, Tab or a click away commits it; a pick from the list still sets an option. A turned
+/// field is typed into as a turned text field is: its text runs along the turn (#4296).
 struct ComboEditor<'a> {
     form: &'a [FormField],
     field: &'a FormField,
     widget: &'a FormWidget,
     rect: Rect,
+    frame: TextFrame,
     zoom: f32,
     index: usize,
 }
 
 fn combo_editor(ctx: &egui::Context, view: &mut DocView, editor: ComboEditor<'_>) {
-    let ComboEditor { form, field: f, widget: w, rect, zoom, index: widget } = editor;
+    let ComboEditor { form, field: f, widget: w, rect, frame, zoom, index: widget } = editor;
     let mut enter = false;
     egui::Area::new(egui::Id::unique(("form-editor", view.id.0)))
         .fade_in(false)
@@ -388,15 +480,22 @@ fn combo_editor(ctx: &egui::Context, view: &mut DocView, editor: ComboEditor<'_>
             let font = field_screen_font(ui.painter(), f, w, &fx.text, zoom);
             // The box is pale yellow in every theme, as a text field's is (#655).
             ui.visuals_mut().text_cursor.stroke.color = crate::edit_text_ui::caret_color_on(FIELD_FILL);
-            let te = egui::TextEdit::singleline(&mut fx.text)
-                .desired_width((rect.width() - 6.0 * zoom + 6.0).max(1.0))
+            let turned = frame.turn != 0;
+            let mut layouter = turned_layouter(font, None, false);
+            let mut te = egui::TextEdit::singleline(&mut fx.text)
+                .desired_width((frame.upright.width() - 6.0 * zoom + 6.0).max(1.0))
                 .font(egui::FontId::proportional(font))
                 .background_color(FIELD_FILL)
                 .text_color(Color32::BLACK)
                 .margin(egui::Margin::symmetric(3, 1))
                 .id(egui::Id::unique(("form-field", view.id.0, &f.name, widget)));
+            if turned {
+                te = te.layouter(&mut layouter);
+            }
+            let (r, laid_out) = show_field_editor(ui, te, rect, turned);
             // The form field's own logical name; not a visual/preordered label.
-            let r = ui.add_sized(rect.size(), te).accessible_name(f.name.clone());
+            let r = r.accessible_name(f.name.clone());
+            turned_caret_and_paint(ui, &r, rect, frame, laid_out.as_ref(), false, font);
             if std::mem::take(&mut fx.request_focus) {
                 r.request_focus();
                 // Entered with Tab: typing replaces the value.
@@ -705,9 +804,8 @@ pub(crate) fn text_box(doc: &pdfcraft_engine::Document, view: &DocView, form: &[
 }
 
 /// After the text editor is drawn: keeps a field that doesn't scroll within what fits, puts the
-/// caret where the press that opened the editor landed, and takes focus when asked. `in_galley`
-/// turns a screen point into a position in the laid-out text, which a turned field's editor
-/// lays out upright (#4296). Returns whether it placed the caret for such a press.
+/// caret where the press that opened the editor landed (in the upright text of a turned field,
+/// through `frame`, #4296), and takes focus when asked. Returns whether it placed the caret.
 fn settle_text_editor(
     ui: &mut egui::Ui,
     fx: &mut Focus,
@@ -715,7 +813,7 @@ fn settle_text_editor(
     primary_down: bool,
     laid_out: Option<(std::sync::Arc<egui::Galley>, Pos2)>,
     fitted: Option<(&form_appearance::TextBox, String)>,
-    in_galley: impl Fn(&egui::Galley, Pos2, Pos2) -> egui::Vec2,
+    frame: TextFrame,
 ) -> bool {
     let mut pressed = false;
     if let Some((tb, before)) = fitted
@@ -736,7 +834,7 @@ fn settle_text_editor(
         && let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), r.id)
     {
         // The press went to the page, not to this editor, which did not exist yet.
-        let at = galley.cursor_from_pos(in_galley(&galley, pos, press));
+        let at = galley.cursor_from_pos(frame.in_galley(&galley, pos, press));
         st.cursor.set_char_range(Some(egui::text::CCursorRange::one(at)));
         st.store(ui.ctx(), r.id);
         if primary_down {
@@ -881,17 +979,7 @@ pub(crate) fn overlay(
                     // Wraps (inside the 3 px side margins) at the width the size was fitted to:
                     // the box less 3 pt each side, scaled.
                     let wrap = (upright.width() - 6.0 * zoom).max(1.0);
-                    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
-                        let shown = if password { "•".repeat(text.as_str().chars().count()) } else { text.as_str().to_owned() };
-                        let font = egui::FontId::proportional(font);
-                        let mut job = if multiline {
-                            egui::text::LayoutJob::simple(shown, font, Color32::BLACK, wrap)
-                        } else {
-                            egui::text::LayoutJob::simple_singleline(shown, font, Color32::BLACK)
-                        };
-                        job.keep_trailing_whitespace = true;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
+                    let mut layouter = turned_layouter(font, multiline.then_some(wrap), password);
                     let mut te = if multiline { egui::TextEdit::multiline(&mut fx.text) } else { egui::TextEdit::singleline(&mut fx.text) };
                     te = te
                         .desired_width((upright.width() - 6.0 * zoom + 6.0).max(1.0))
@@ -911,60 +999,11 @@ pub(crate) fn overlay(
                         // Laid out at the upright box's width, not the field's on screen.
                         te = te.layouter(&mut layouter);
                     }
-                    let mut laid_out = None;
-                    let r = ui
-                        .add_sized(rect.size(), |ui: &mut egui::Ui| {
-                            if turned {
-                                ui.set_opacity(0.0);
-                            }
-                            let out = te.show(ui);
-                            laid_out = Some((out.galley, out.galley_pos));
-                            out.response.response
-                        })
-                        // The form field's own logical name; not a visual/preordered label.
-                        .accessible_name(f.name.clone());
-                    // Where the upright text starts: inside the editor's margins.
-                    let origin = upright.min + vec2(3.0, 1.0);
-                    // A screen point as a position in the laid-out text.
-                    let in_galley = |galley: &egui::Galley, pos: Pos2, p: Pos2| {
-                        if turned { frame.in_box(p) - origin + vec2(galley.rect.left(), 0.0) } else { p - pos + vec2(galley.rect.left(), 0.0) }
-                    };
-                    let caret_placed = settle_text_editor(ui, fx, &r, primary_down, laid_out.clone(), text_box.zip(before), in_galley);
-                    if !caret_placed
-                        && turned
-                        && r.is_pointer_button_down_on()
-                        && let Some(p) = ui.input(|i| i.pointer.interact_pos())
-                        && let Some((galley, pos)) = &laid_out
-                        && let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), r.id)
-                    {
-                        // The editor placed the caret as if its text were upright: place it under
-                        // the pointer in the turned text instead, a press at the point and a drag
-                        // from where the press left it.
-                        let at = galley.cursor_from_pos(in_galley(galley, *pos, p));
-                        let range = match st.cursor.char_range() {
-                            Some(was) if !ui.input(|i| i.pointer.primary_pressed()) => egui::text::CCursorRange::two(was.secondary, at),
-                            _ => egui::text::CCursorRange::one(at),
-                        };
-                        st.cursor.set_char_range(Some(range));
-                        st.store(ui.ctx(), r.id);
-                    }
-                    if turned && let Some((galley, _)) = &laid_out {
-                        let painter = ui.painter_at(rect);
-                        painter.rect_filled(rect, CornerRadius::ZERO, FIELD_FILL);
-                        let range = r.has_focus().then(|| egui::TextEdit::load_state(ui.ctx(), r.id).and_then(|st| st.cursor.char_range())).flatten();
-                        let mut shown = galley.clone();
-                        if let Some(range) = &range {
-                            egui::text_selection::visuals::paint_text_selection(&mut shown, ui.visuals(), range, None);
-                        }
-                        let start = origin - vec2(galley.rect.left(), 0.0);
-                        frame.paint_galley(&painter, start, shown, Color32::BLACK);
-                        if let Some(range) = range {
-                            let mut caret = galley.pos_from_cursor(range.primary);
-                            caret.max.y = caret.max.y.max(caret.min.y + font);
-                            let (top, bottom) = (start + caret.center_top().to_vec2(), start + caret.center_bottom().to_vec2());
-                            painter.line_segment([frame.on_screen(top), frame.on_screen(bottom)], ui.visuals().text_cursor.stroke);
-                        }
-                    }
+                    let (r, laid_out) = show_field_editor(ui, te, rect, turned);
+                    // The form field's own logical name; not a visual/preordered label.
+                    let r = r.accessible_name(f.name.clone());
+                    let caret_placed = settle_text_editor(ui, fx, &r, primary_down, laid_out.clone(), text_box.zip(before), frame);
+                    turned_caret_and_paint(ui, &r, rect, frame, laid_out.as_ref(), caret_placed, font);
                     let lost = crate::edit_text_ui::lost_focus_once(&r, &mut fx.had_focus);
                     let (enter, esc, tab, shift) = ui.input(|i| {
                         (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Tab), i.modifiers.shift)
@@ -1001,7 +1040,11 @@ pub(crate) fn overlay(
             // An editable combo box has a text box over the field as well as its list (ISO
             // 32000-2 Table 233, Edit).
             if editable_combo(f) {
-                combo_editor(ctx, view, ComboEditor { form, field: f, widget: w, rect, zoom, index: focus.widget });
+                combo_editor(
+                    ctx,
+                    view,
+                    ComboEditor { form, field: f, widget: w, rect, frame: TextFrame::of(&xf, info, page, w, rect), zoom, index: focus.widget },
+                );
             }
             let resp = egui::Area::new(egui::Id::unique(("form-choices", view.id.0)))
                 .order(egui::Order::Foreground)
