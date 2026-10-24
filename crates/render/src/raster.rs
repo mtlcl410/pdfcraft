@@ -83,6 +83,9 @@ pub struct RenderConfig {
     /// viewer and preview rasters: exports, printing and OCR render without it, so nothing drawn with an
     /// installed font is saved or printed (AGENTS.md §1.2, §1.4).
     pub system_fonts: bool,
+    /// The render is output for printing (print as image): the configuration's auto state for
+    /// the View event (ISO 32000-2 §8.11.4.4) is not applied, since printing is not viewing.
+    pub for_print: bool,
 }
 
 impl RenderConfig {
@@ -104,6 +107,7 @@ impl RenderConfig {
         let system_fonts = self.system_fonts;
         InterpreterSettings {
             ocg_overrides: self.layers.clone(),
+            view_auto_state: !self.for_print,
             hide_comments: self.hide_comments,
             font_resolver: Arc::new(move |query| {
                 japanese_fallback(query).or_else(|| system_fonts.then(|| system_fallback(query)).flatten()).or_else(|| standard(query))

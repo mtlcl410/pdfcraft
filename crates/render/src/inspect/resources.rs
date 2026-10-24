@@ -3,7 +3,7 @@ use super::core::inspect;
 use super::core::{Inspector, load_options};
 use super::model::{Attachment, AttachmentSource, FontInfo, Layer, PageTransition, TransitionStyle};
 use super::navigation::NameTreeSeen;
-use super::{AssertUnwindSafe, Dictionary, DocInfo, Document, HashSet, Object, ObjectId, catch_unwind};
+use super::{AssertUnwindSafe, Dictionary, DocInfo, Document, HashMap, HashSet, Object, ObjectId, catch_unwind};
 
 /// Decoded bytes read from an XFA form's configuration packet (or a whole-XDP `/XFA` stream) to
 /// find `dynamicRender`. Designer's packets are a few kilobytes; a whole XDP can hold the template.
@@ -11,6 +11,13 @@ const MAX_XFA_CONFIG_BYTES: usize = 16 << 20;
 
 /// At most this many layers are read from all of `/RBGroups` together.
 const MAX_LAYER_GROUP_ENTRIES: usize = 4096;
+
+/// The configuration's auto state (`/AS`): at most this many usage application dictionaries,
+/// `/OCGs` entries across them, and `/Category` names in each are read. The renderer's
+/// (vendored hayro-interpret patch (67)) have the same values.
+const MAX_AUTO_STATE_APPLICATIONS: usize = 256;
+const MAX_AUTO_STATE_GROUPS: usize = 4096;
+const MAX_AUTO_STATE_CATEGORIES: usize = 16;
 
 impl<'a> Inspector<'a> {
     // ── object helpers ──────────────────────────────────────────────────────────────────────
@@ -100,11 +107,14 @@ impl<'a> Inspector<'a> {
             .and_then(|o| self.resolve(o).as_array().ok())
             .map(|a| a.iter().filter_map(|x| x.as_reference().ok()).collect())
             .unwrap_or_default();
+        let auto = config.map(|c| self.view_auto_state(c)).unwrap_or_default();
         let Ok(Object::Array(ocgs)) = props.get(b"OCGs").map(|o| self.resolve(o)) else { return };
         for g in ocgs {
             let Some(d) = self.dict(g) else { continue };
             let id = g.as_reference().ok();
+            // The View auto state, when it manages the group, then the configuration.
             let visible = match id {
+                Some(id) if let Some(&state) = auto.get(&id) => state,
                 Some(id) if off.contains(&id) => false,
                 Some(id) if on.contains(&id) => true,
                 _ => !base_off,
@@ -112,6 +122,54 @@ impl<'a> Inspector<'a> {
             let Some(id) = id else { continue };
             out.push(Layer { id, name: self.text(d, b"Name").unwrap_or_else(|| "Layer".into()), visible, initial: visible });
         }
+    }
+
+    /// The state the configuration's auto state (`/AS`) gives each group it manages for the View
+    /// event (ISO 32000-2 §8.11.4.4, Table 101), which overrides `/BaseState`, `/ON` and `/OFF`
+    /// as the document opens. Keep in step with the renderer's (vendored hayro-interpret patch
+    /// (67), `apply_view_auto_state`): each usage application with `/Event /View` and `/View` in
+    /// its `/Category` recommends the `/ViewState` of each group in its `/OCGs` whose `/Usage`
+    /// gives one; a group is on only if all its recommendations are. Groups with none are absent.
+    /// Other categories (`/Zoom`, `/User`, `/Language`) give no recommendation here.
+    fn view_auto_state(&self, config: &Dictionary) -> HashMap<ObjectId, bool> {
+        let mut out: HashMap<ObjectId, bool> = HashMap::new();
+        let Some(applications) = config.get(b"AS").ok().and_then(|o| self.resolve(o).as_array().ok()) else { return out };
+        let mut groups_left = MAX_AUTO_STATE_GROUPS;
+        for application in applications.iter().take(MAX_AUTO_STATE_APPLICATIONS) {
+            let Some(application) = self.dict(application) else { continue };
+            if self.name(application, b"Event").as_deref() != Some("View") {
+                continue;
+            }
+            let views = application.get(b"Category").ok().and_then(|o| self.resolve(o).as_array().ok()).is_some_and(|categories| {
+                categories.iter().take(MAX_AUTO_STATE_CATEGORIES).any(|c| matches!(c, Object::Name(n) if n.as_slice() == b"View"))
+            });
+            if !views {
+                continue;
+            }
+            let Some(groups) = application.get(b"OCGs").ok().and_then(|o| self.resolve(o).as_array().ok()) else { continue };
+            for g in groups {
+                if groups_left == 0 {
+                    return out;
+                }
+                groups_left -= 1;
+                let Ok(id) = g.as_reference() else { continue };
+                let state = self
+                    .dict(g)
+                    .and_then(|d| d.get(b"Usage").ok())
+                    .and_then(|o| self.dict(o))
+                    .and_then(|u| u.get(b"View").ok())
+                    .and_then(|o| self.dict(o))
+                    .and_then(|v| self.name(v, b"ViewState"));
+                let on = match state.as_deref() {
+                    Some("ON") => true,
+                    Some("OFF") => false,
+                    _ => continue,
+                };
+                let entry = out.entry(id).or_insert(true);
+                *entry &= on;
+            }
+        }
+        out
     }
 
     /// The default configuration's radio-button groups (`/RBGroups`) of two or more layers.

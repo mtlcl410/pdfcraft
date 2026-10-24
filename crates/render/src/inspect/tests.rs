@@ -769,6 +769,40 @@ trailer << /Root 1 0 R >>
     assert_eq!(layers, [("Red", true), ("Green", false), ("Blue", false)]);
 }
 
+/// ISO 32000-2 §8.11.4.4: the View auto state (`/AS`) decides the initial state of the groups
+/// it manages, over `/ON` and `/OFF`; the others keep the configuration's. Malformed entries
+/// are ignored.
+#[test]
+fn initial_layer_visibility_applies_the_view_auto_state() {
+    let initial = |config: &str| {
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R 7 0 R] /D {config} >> >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj
+5 0 obj << /Type /OCG /Name (ViewOff) /Usage << /View << /ViewState /OFF >> >> >> endobj
+6 0 obj << /Type /OCG /Name (ViewOn) /Usage 8 0 R >> endobj
+7 0 obj << /Type /OCG /Name (Plain) >> endobj
+8 0 obj << /View << /ViewState /ON >> >> endobj
+9 0 obj 9 0 R endobj
+trailer << /Root 1 0 R >>
+%%EOF"
+        );
+        let info = inspect(Arc::new(pdf.into_bytes()), None).expect("opens");
+        // Opened, so each is shown as it starts.
+        info.layers.iter().inspect(|l| assert_eq!(l.initial, l.visible, "{}", l.name)).map(|l| l.initial).collect::<Vec<_>>()
+    };
+    let managed = "/AS [<< /Event /View /Category [/View] /OCGs [5 0 R 6 0 R 7 0 R] >>]";
+    assert_eq!(initial(&format!("<< /OFF [6 0 R 7 0 R] {managed} >>")), [false, true, false]);
+    assert_eq!(initial("<< /OFF [6 0 R 7 0 R] >>"), [true, false, false], "without /AS");
+    assert_eq!(initial("<< /OFF [6 0 R] /AS [<< /Event /Print /Category [/View] /OCGs [5 0 R 6 0 R] >>] >>"), [true, false, true], "Print event");
+    assert_eq!(initial("<< /AS [<< /Event /View /Category [/Zoom] /OCGs [5 0 R] >>] >>"), [true, true, true], "Zoom only");
+    for bad in ["/AS 9 0 R", "/AS [9 0 R 1 null]", "/AS [<< /Event /View /OCGs [5 0 R] >>]", "/AS [<< /Event /View /Category [/View] /OCGs 9 0 R >>]"]
+    {
+        assert_eq!(initial(&format!("<< {bad} >>")), [true, true, true], "{bad}");
+    }
+}
+
 const ORPHAN_FIELDS: &[u8] = b"%PDF-1.7
 1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
