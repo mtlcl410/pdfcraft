@@ -2370,6 +2370,20 @@ fn layer_toggles_and_print_renders_are_not_the_view_auto_state() {
     assert!(!auto_state_red(pdf, RenderConfig::default()), "on screen: hidden");
 }
 
+/// A print preview ([`PRINT_TAG`], with or without the canvas's scale and grayscale bits)
+/// shows what prints, so the View auto state is not applied to it either.
+#[test]
+fn print_previews_are_not_the_view_auto_state() {
+    let pdf = Arc::new(auto_state_pdf(VIEW_OFF, &format!("<< {AS_VIEW} >>"), ""));
+    let mut r = PageRenderer::new(pdf, RenderConfig::default());
+    for tag in [PRINT_TAG, PRINT_TAG | 1 << 59 | 7] {
+        let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 0.5, tag, ..Default::default() });
+        assert_eq!(p.rgba.get(..4), Some(&[255, 0, 0, 255][..]), "tag {tag:#x}: printed state");
+    }
+    let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 0.5, tag: 7, ..Default::default() });
+    assert_ne!(p.rgba.get(..4), Some(&[255, 0, 0, 255][..]), "on screen: hidden");
+}
+
 /// Malformed auto state is ignored without a panic, and the walk is bounded.
 #[test]
 fn malformed_view_auto_state_is_ignored() {
