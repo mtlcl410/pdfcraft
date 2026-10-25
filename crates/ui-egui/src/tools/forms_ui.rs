@@ -15,6 +15,7 @@ use pdfcraft_render::DocInfo;
 
 use crate::canvas::{DocView, PageToolContext, PageXform};
 use crate::page_cursor::Layer;
+use crate::page_pointer::PagePointer;
 use crate::page_router::{Hit, Owner};
 use crate::theme::Tokens;
 
@@ -190,10 +191,15 @@ fn show_field_editor(ui: &mut egui::Ui, te: egui::TextEdit<'_>, rect: Rect, turn
 /// turned field's text, selection and caret as the page will show them.
 fn turned_caret_and_paint(ui: &egui::Ui, r: &egui::Response, rect: Rect, frame: TextFrame, laid_out: Option<&Laid>, caret_placed: bool, font: f32) {
     let turned = frame.turn != 0;
+    // The pointer as the editor sees it. The editor is an Area over the page, so a press on it
+    // is its own and the pages' pointer does not reach it: read for the editor's response, it
+    // holds the pointer from a press on the editor until the frame of its release, a touch's
+    // lift included. A dialog over the editor takes the presses before they reach it.
+    let ptr = PagePointer::read(ui, r, false);
     if !caret_placed
         && turned
         && r.is_pointer_button_down_on()
-        && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+        && let Some(p) = ptr.pos
         && let Some((galley, pos)) = laid_out
         && let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), r.id)
     {
@@ -202,7 +208,7 @@ fn turned_caret_and_paint(ui: &egui::Ui, r: &egui::Response, rect: Rect, frame: 
         // left it.
         let at = galley.cursor_from_pos(frame.in_galley(galley, *pos, p));
         let range = match st.cursor.char_range() {
-            Some(was) if !ui.input(|i| i.pointer.primary_pressed()) => egui::text::CCursorRange::two(was.secondary, at),
+            Some(was) if ptr.pressed().is_none() => egui::text::CCursorRange::two(was.secondary, at),
             _ => egui::text::CCursorRange::one(at),
         };
         st.cursor.set_char_range(Some(range));
