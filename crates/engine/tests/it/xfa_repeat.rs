@@ -52,3 +52,32 @@ fn a_button_adding_rows_past_fifty_lays_them_all_out() {
     let out = s.take_js_output(id);
     assert!(!out.console.iter().any(|l| l.contains("only the first")), "no row is cut: {:?}", out.console);
 }
+
+/// A table (`layout="table"`) placed at its own position in a positioned subform, its `item` row
+/// repeating with `occur max` `max`, and five rows in its data (XFA 3.3, "Tables", p. 327).
+fn positioned_table(max: &str) -> Vec<u8> {
+    let data: String = (1..=5).map(|i| format!("<item><qty>row {i}</qty></item>")).collect();
+    let xdp = format!(
+        r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><contentArea x="36pt" y="36pt" w="540pt" h="720pt"/><medium short="612pt" long="792pt"/></pageArea></pageSet>
+ <subform name="page" w="540pt" h="700pt">
+  <subform name="table" layout="table" columnWidths="200pt" x="36pt" y="72pt">
+   <subform name="item" layout="row"><occur min="1" max="{max}"/><field name="qty" w="200pt" h="20pt"><ui><textEdit/></ui></field></subform>
+  </subform>
+ </subform>
+</subform></template>
+<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><page><table>{data}</table></page></form></xfa:data></xfa:datasets>
+</xdp:xdp>"#
+    );
+    pdfcraft_xfa::fixtures::shell(&xdp)
+}
+
+#[test]
+fn a_table_in_a_positioned_subform_gets_a_row_per_data_row_up_to_its_max() {
+    let mut s = Session::new();
+    for (max, want) in [("-1", 5), ("3", 3)] {
+        let id = s.open("table.pdf", None, Arc::new(positioned_table(max)), None).expect("opens");
+        assert_eq!(rows(&s, id), want, "occur max {max}");
+    }
+}

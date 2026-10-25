@@ -158,8 +158,7 @@ impl Layouter<'_> {
             self.break_frames(0.0, true)?;
         }
         // Data adds instances of a repeating subform (rows added in another viewer).
-        let instances = self.instances(node, &ctx.som);
-        self.warn_truncated(node, &ctx.som, instances);
+        let instances = self.laid_out_instances(node, &ctx.som);
         let ctx_parent = ctx;
         for i in 0..instances {
             // Every instance spends budget, so nested repeats that place nothing still stop.
@@ -246,8 +245,7 @@ impl Layouter<'_> {
                 && row.layout == Layout::Row
             {
                 // Rows added as data (in another viewer) repeat the row.
-                let instances = self.instances(child, &ctx.som);
-                self.warn_truncated(child, &ctx.som, instances);
+                let instances = self.laid_out_instances(child, &ctx.som);
                 for inst in 0..instances {
                     let h = self.row_height(row, &cols, inner_w, ctx, depth + 1);
                     let led = lead.filter(|(li, _)| *li != ci);
@@ -290,6 +288,15 @@ impl Layouter<'_> {
             _ => 0,
         };
         instance_count(&sf.occur, from_data)
+    }
+
+    /// [`Self::instances`] for laying `node` out: the count every layout that repeats a subform
+    /// draws (flowed or positioned, top to bottom, wrapped or a table's rows), with the data rows
+    /// past it reported ([`Self::warn_truncated`]).
+    pub(super) fn laid_out_instances(&mut self, node: &Node, parent_som: &str) -> usize {
+        let instances = self.instances(node, parent_som);
+        self.warn_truncated(node, parent_som, instances);
+        instances
     }
 
     /// The data holds more instances of `node` than `laid_out`: say so, since calculations

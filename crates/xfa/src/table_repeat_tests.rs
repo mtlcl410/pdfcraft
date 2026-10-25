@@ -1,0 +1,188 @@
+//! A table (`layout="table"`, its rows `layout="row"`) placed in positioned content repeats a
+//! row subform once per instance, as a table in flowed content does: the template's `occur`
+//! and the data's rows decide how many (XFA 3.3, "Tables", p. 327; "Repeating Elements using
+//! Occurrence Limits", p. 263; Chapter 9, p. 336), and the data rows past `occur max` or the
+//! layout's own limit are reported, not dropped silently.
+
+use super::*;
+use crate::layout::Item;
+use crate::model::Rect;
+
+/// Where the table sits.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    /// At its own `x`/`y` in a positioned subform.
+    Positioned,
+    /// In a top-to-bottom subform at a position in a positioned subform, with a field after it.
+    PositionedFlow,
+    /// In the flowed body, with a field after it.
+    Flowed,
+}
+
+/// A form with a table whose header row (`head`, shown once) and footer row (`foot`) frame a
+/// repeating `item` row with `occur` attributes `occur`, and data holding `rows` items (and two
+/// header rows, which the template shows once). Each row is 20pt tall.
+fn table_form(place: Place, occur: &str, rows: usize) -> String {
+    let items: String = (1..=rows).map(|i| format!("<item><qty>row {i}</qty></item>")).collect();
+    let table = r#"<subform name="table" layout="table" columnWidths="200pt" POS><border><edge/></border>
+     <subform name="head" layout="row"><field name="label" w="200pt" h="20pt"><ui><textEdit/></ui></field></subform>
+     <subform name="item" layout="row"><occur OCCUR/><field name="qty" w="200pt" h="20pt"><ui><textEdit/></ui></field></subform>
+     <subform name="foot" layout="row"><field name="total" w="200pt" h="20pt"><ui><textEdit/></ui></field></subform>
+    </subform>"#
+        .replace("OCCUR", occur);
+    let after = r#"<field name="after" w="200pt" h="20pt"><ui><textEdit/></ui></field>"#;
+    let (page, data) = match place {
+        Place::Positioned => {
+            (format!(r#"<subform name="page1" w="540pt" h="700pt">{}</subform>"#, table.replace("POS", r#"x="36pt" y="72pt""#)), "page1")
+        }
+        Place::PositionedFlow => (
+            format!(
+                r#"<subform name="page1" w="540pt" h="700pt"><subform name="wrap" layout="tb" w="200pt" x="36pt" y="72pt">{}{after}</subform></subform>"#,
+                table.replace("POS", "")
+            ),
+            "page1><wrap",
+        ),
+        Place::Flowed => (format!(r#"<subform name="page1" layout="tb" w="540pt">{}{after}</subform>"#, table.replace("POS", "")), "page1"),
+    };
+    let close: String = data.split("><").collect::<Vec<_>>().iter().rev().map(|n| format!("</{n}>")).collect();
+    format!(
+        r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><occur max="-1"/><contentArea x="36pt" y="36pt" w="540pt" h="720pt"/><medium short="612pt" long="792pt"/></pageArea></pageSet>
+ {page}
+</subform></template>
+<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><{data}><table><head><label>H</label></head><head><label>H2</label></head>{items}<foot><total>T</total></foot></table>{close}</form></xfa:data></xfa:datasets>
+</xdp:xdp>"#
+    )
+}
+
+/// A laid-out widget: (field name, SOM, value, rect).
+type Laid = (String, String, Option<String>, Rect);
+
+/// The laid-out widgets, in order.
+fn laid_out(form: &Form) -> Vec<Laid> {
+    form.pages
+        .iter()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|it| if let Item::Widget(w) = it { Some((w.name.clone(), w.som.clone(), w.value.clone(), w.rect)) } else { None })
+        .collect()
+}
+
+fn named<'a>(all: &'a [Laid], field: &str) -> Vec<&'a Laid> {
+    all.iter().filter(|w| w.1.ends_with(&format!(".{field}[0]"))).collect()
+}
+
+fn qty_values(all: &[Laid]) -> Vec<String> {
+    named(all, "qty").iter().map(|w| w.2.clone().unwrap_or_default()).collect()
+}
+
+fn expected(n: usize) -> Vec<String> {
+    (1..=n).map(|i| format!("row {i}")).collect()
+}
+
+fn cut_warning(form: &Form) -> Option<&String> {
+    form.warnings.iter().find(|w| w.contains("rows; only the first"))
+}
+
+/// Header, the rows and footer one under another, 20pt apart, from the header's top.
+fn assert_stacked(all: &[Laid], rows: usize, what: &str) {
+    let head = named(all, "label");
+    assert_eq!(head.len(), 1, "{what}: the header row is shown once: {head:?}");
+    let top = head[0].3.y;
+    let qty = named(all, "qty");
+    assert_eq!(qty.len(), rows, "{what}");
+    for (i, w) in qty.iter().enumerate() {
+        assert!((w.3.y - (top + 20.0 * (i as f64 + 1.0))).abs() < 0.01, "{what}: row {i} at {:?}, header at {top}", w.3);
+    }
+    let foot = named(all, "total");
+    assert_eq!(foot.len(), 1, "{what}: the footer row is shown once");
+    assert!((foot[0].3.y - (top + 20.0 * (rows as f64 + 1.0))).abs() < 0.01, "{what}: footer at {:?} after {rows} rows", foot[0].3);
+}
+
+#[test]
+fn a_table_in_positioned_content_gets_a_row_per_data_row() {
+    for place in [Place::Positioned, Place::PositionedFlow] {
+        let form = layout_xml(&table_form(place, r#"min="1" max="-1""#, 5)).unwrap();
+        let all = laid_out(&form);
+        assert_eq!(qty_values(&all), expected(5), "{place:?}");
+        let soms: Vec<&str> = named(&all, "qty").iter().map(|w| w.1.as_str()).collect();
+        let prefix = if matches!(place, Place::Positioned) { "form[0].page1[0].table[0]" } else { "form[0].page1[0].wrap[0].table[0]" };
+        let want: Vec<String> = (0..5).map(|i| format!("{prefix}.item[{i}].qty[0]")).collect();
+        assert_eq!(soms, want, "{place:?}: each row with its own SOM index");
+        assert_stacked(&all, 5, &format!("{place:?}"));
+        assert_eq!(named(&all, "label")[0].2.as_deref(), Some("H"), "{place:?}: the header takes the first header data row");
+        assert!(cut_warning(&form).is_none(), "{place:?}: {:?}", form.warnings);
+    }
+}
+
+#[test]
+fn a_table_in_positioned_content_is_measured_with_its_rows() {
+    // What follows the table in a top-to-bottom container comes after the footer, not after one
+    // row: the table is measured with every instance.
+    let form = layout_xml(&table_form(Place::PositionedFlow, r#"min="1" max="-1""#, 5)).unwrap();
+    let all = laid_out(&form);
+    let foot = named(&all, "total")[0].3;
+    let after = named(&all, "after")[0].3;
+    assert!((after.y - foot.bottom()).abs() < 0.01, "after {after:?}, footer {foot:?}");
+}
+
+#[test]
+fn occur_max_bounds_a_positioned_table_and_the_rows_cut_are_reported() {
+    for place in [Place::Positioned, Place::PositionedFlow, Place::Flowed] {
+        let form = layout_xml(&table_form(place, r#"min="1" max="3""#, 5)).unwrap();
+        let all = laid_out(&form);
+        assert_eq!(qty_values(&all), expected(3), "{place:?}");
+        assert_stacked(&all, 3, &format!("{place:?}"));
+        let warning = cut_warning(&form).unwrap_or_else(|| panic!("{place:?}: {:?}", form.warnings));
+        assert!(warning.contains("item") && warning.contains("5 rows") && warning.contains("first 3"), "{place:?}: {warning}");
+    }
+}
+
+#[test]
+fn without_data_rows_a_positioned_table_takes_its_initial_count() {
+    let form = layout_xml(&table_form(Place::Positioned, r#"min="1" max="-1" initial="2""#, 0)).unwrap();
+    let all = laid_out(&form);
+    assert_stacked(&all, 2, "initial 2");
+    assert!(cut_warning(&form).is_none(), "{:?}", form.warnings);
+}
+
+#[test]
+fn a_positioned_table_lays_out_the_rows_a_flowed_one_does() {
+    // One rule for both: the same rows, values, spacing and warnings, wherever the table sits.
+    for (occur, rows) in [(r#"min="1" max="-1""#, 5), (r#"min="2" max="4""#, 7), (r#"min="1" max="-1""#, 0), (r#"min="3""#, 1)] {
+        let flowed = layout_xml(&table_form(Place::Flowed, occur, rows)).unwrap();
+        let positioned = layout_xml(&table_form(Place::Positioned, occur, rows)).unwrap();
+        let (f, p) = (laid_out(&flowed), laid_out(&positioned));
+        assert_eq!(qty_values(&p), qty_values(&f), "{occur} with {rows} rows");
+        let offsets = |all: &[Laid]| -> Vec<f64> {
+            let top = named(all, "label").first().map_or(0.0, |w| w.3.y);
+            all.iter().filter(|w| w.0 != "after").map(|w| w.3.y - top).collect()
+        };
+        assert_eq!(offsets(&p), offsets(&f), "{occur} with {rows} rows");
+        assert_eq!(cut_warning(&positioned).is_some(), cut_warning(&flowed).is_some(), "{occur} with {rows} rows");
+    }
+}
+
+#[test]
+fn hostile_occur_values_and_data_floods_lay_a_positioned_table_out_within_bounds() {
+    for occur in [
+        r#"min="-3" max="-7" initial="99999999999999999999""#,
+        r#"min="abc" max="1e9" initial="-1""#,
+        r#"min="999999" max="999999" initial="999999""#,
+        r#"max="0""#,
+        r#"min="0" max="0" initial="0""#,
+    ] {
+        for rows in [0, 4] {
+            let form = layout_xml(&table_form(Place::Positioned, occur, rows)).unwrap();
+            let flowed = layout_xml(&table_form(Place::Flowed, occur, rows)).unwrap();
+            assert_eq!(qty_values(&laid_out(&form)).len(), qty_values(&laid_out(&flowed)).len(), "{occur} with {rows} rows");
+        }
+    }
+    // More data rows than the layout lays out: bounded, and said.
+    let rows = 1_200;
+    let form = layout_xml(&table_form(Place::Positioned, r#"min="1" max="-1""#, rows)).unwrap();
+    let n = qty_values(&laid_out(&form)).len();
+    assert!((1..rows).contains(&n), "{n} of {rows} rows");
+    let warning = cut_warning(&form).unwrap_or_else(|| panic!("{:?}", form.warnings));
+    assert!(warning.contains(&format!("{rows} rows")) && warning.contains(&format!("first {n}")), "{warning}");
+}

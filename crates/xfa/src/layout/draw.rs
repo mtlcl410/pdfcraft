@@ -99,8 +99,7 @@ impl Layouter<'_> {
                             // A repeating subform here (a table in an area of a positioned page,
                             // say) gets its instances, as in a flowed one, one under another,
                             // and the rows past them are reported as there.
-                            let instances = self.instances(k, &ctx.som);
-                            self.warn_truncated(k, &ctx.som, instances);
+                            let instances = self.laid_out_instances(k, &ctx.som);
                             for instance in 0..instances {
                                 self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sibs.at(i) + instance)?;
                                 y += h;
@@ -111,8 +110,7 @@ impl Layouter<'_> {
                         // A repeating subform here (rows of fields under a heading) gets its
                         // instances, as in the other layouts, and the rows past them are reported.
                         for k in s.children.iter().filter(|k| k.common().presence.occupies()) {
-                            let instances = self.instances(k, &ctx.som);
-                            self.warn_truncated(k, &ctx.som, instances);
+                            self.laid_out_instances(k, &ctx.som);
                         }
                         let (placed, _) = self.pack_instances(&s.children, inner.w, &ctx, depth, &ctx.som);
                         for (i, instance, r) in placed {
@@ -133,9 +131,14 @@ impl Layouter<'_> {
                             if let Node::Subform(r) = k
                                 && r.layout == Layout::Row
                             {
+                                // A repeating row (a table in a positioned subform, say) gets its
+                                // instances one under another, as in a flowed table (XFA 3.3,
+                                // "Tables", p. 327), and the rows past them are reported.
                                 let h = self.row_height(r, &cols, inner.w, &ctx, depth + 1);
-                                self.draw_row(r, &cols, Rect::new(inner.x, y, inner.w, h), &ctx, depth + 1, csib)?;
-                                y += h;
+                                for instance in 0..self.laid_out_instances(k, &ctx.som) {
+                                    self.draw_row(r, &cols, Rect::new(inner.x, y, inner.w, h), &ctx, depth + 1, csib + instance)?;
+                                    y += h;
+                                }
                             } else {
                                 let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
                                 self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, csib)?;

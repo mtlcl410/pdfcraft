@@ -94,7 +94,10 @@ impl Layouter<'_> {
                                 .iter()
                                 .filter(|k| k.common().presence.occupies())
                                 .map(|k| match k {
-                                    Node::Subform(r) if r.layout == Layout::Row => self.row_height(r, &cols, inner_w, &ctx, depth + 1),
+                                    // A repeating row takes its height once per instance, as drawn.
+                                    Node::Subform(r) if r.layout == Layout::Row => {
+                                        self.row_height(r, &cols, inner_w, &ctx, depth + 1) * self.instances(k, &som) as f64
+                                    }
                                     _ => self.size_of(k, inner_w, &ctx, depth + 1).1,
                                 })
                                 .sum()
