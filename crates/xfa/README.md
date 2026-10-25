@@ -36,9 +36,11 @@ that warning and keeps the existing layout and accepted widget values.
   a `ui` widget or `value` kind and rich text are taken from the nearest layer that has one.
   References are `#id`, `#som(…)` (or `.#…`) and, for `use`, a SOM expression. Loops are cut
   where they close, chains merge at most 32 layers, nesting stops at 256 elements, SOM look-ups
-  share a budget of 2 million elements, and the written template may grow to 4 times its size
-  (at least 1 MB, at most 64 MB); past a budget the template is read unresolved. Each case is a
-  warning.
+  share a budget of 2 million elements, merging looks at no more than 64 million children,
+  attributes and namespaces in all (prototype children that write nothing, such as `proto`,
+  count too), and the written template may grow to 4 times its size (at least 1 MB, at most
+  64 MB). Past the nesting, look-up, merge or growth budget the whole template is read
+  unresolved, with one warning saying which; a cut loop or chain is a warning too.
 - **Layout** (`layout`): positioned, `tb`, `lr-tb`/`rl-tb`, `table` and `row` layouts; a
   container without a width is as wide as its content; flow across content areas and pages with
   page masters chosen by occurrence; a table's header row repeats after a break; presence

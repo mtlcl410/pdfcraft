@@ -227,3 +227,31 @@ fn hostile_references_neither_panic_nor_run_away() {
     assert!(started.elapsed().as_secs() < 10);
     assert!(warnings.iter().any(|w| w.contains("larger than")), "{warnings:?}");
 }
+
+#[test]
+fn a_som_search_past_its_budget_leaves_the_template_unresolved_with_one_warning() {
+    // 300 references, each to a style 10,000 elements into the sheet: 3 million elements looked
+    // at, past the 2 million the look-ups share. The first ones resolve before the budget runs
+    // out, so the template is either resolved in full or not at all.
+    let styles: String = (0..10_000).map(|i| format!(r#"<field name="s{i}" w="1mm"/>"#)).collect();
+    let body: String =
+        (0..300).map(|i| format!(r##"<field name="f{i}" usehref="#som($template.#subform.designer__stylesheet.s{})"/>"##, 9_999 - i)).collect();
+    let (t, warnings) = parse(&form(&styles, &body)).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("SOM references") && w.contains("read without resolving")), "{warnings:?}");
+    assert!(!warnings.iter().any(|w| w.contains("names nothing")), "an interrupted search is not a missing target: {warnings:?}");
+    assert_eq!(field(&t, "f0").common.w, None, "read as written");
+}
+
+#[test]
+fn prototype_children_that_write_nothing_still_count_against_a_budget() {
+    // A prototype with 20,000 `proto` children, used by 20,000 fields: the children write
+    // nothing, but merging would look at 400 million of them.
+    let protos = "<proto/>".repeat(20_000);
+    let styles = format!(r#"<field id="P" w="1mm">{protos}</field>"#);
+    let body = r##"<field use="#P"/>"##.repeat(20_000).replacen("<field ", r#"<field name="first" "#, 1);
+    let started = std::time::Instant::now();
+    let (t, warnings) = parse(&form(&styles, &body)).unwrap();
+    assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+    assert!(warnings.iter().any(|w| w.contains("children, attributes and namespaces") && w.contains("read without resolving")), "{warnings:?}");
+    assert_eq!(field(&t, "first").common.w, None, "read as written");
+}

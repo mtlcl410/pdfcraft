@@ -39,6 +39,14 @@ const MIN_OUTPUT: usize = 1 << 20;
 const GROWTH: usize = 4;
 /// Most elements looked at to resolve all SOM references together.
 const MAX_SEARCH: usize = 2_000_000;
+/// Most children, attributes and namespaces looked at to merge all the layers together. Each
+/// reference looks through its prototype's children again, also those that write nothing
+/// (`proto`, and the `ui` and `value` alternatives not chosen), so the output budget alone does
+/// not bound this. Real forms cost one unit for every 5.5 to 36 bytes written (the largest
+/// measured, a 14 MB template, costs 2.5 million), so writing as much as the 64 MB output
+/// budget allows costs some 12 million: this keeps a margin of five over that, and stops a
+/// hostile template after about a second.
+const MAX_WORK: usize = 64_000_000;
 
 /// The template written again with its prototype references resolved (`None` when it has
 /// none, or when resolving them would pass a budget: the template is then read as it is), and
@@ -59,6 +67,7 @@ pub(crate) fn expand(template: Node) -> (Option<String>, Vec<String>) {
         ids: None,
         soms: HashMap::new(),
         search: MAX_SEARCH,
+        work: MAX_WORK,
         active: HashMap::new(),
         missing: false,
         external: false,
@@ -100,6 +109,8 @@ struct Writer<'a, 'd> {
     soms: HashMap<&'a str, Option<Node<'a, 'd>>>,
     /// Elements left to look at for SOM references.
     search: usize,
+    /// Children, attributes and namespaces left to look at while merging layers.
+    work: usize,
     /// The elements being written around the current one: inheriting from one is a loop.
     active: HashMap<NodeId, u32>,
     missing: bool,
@@ -165,6 +176,8 @@ impl<'a, 'd> Writer<'a, 'd> {
             }
         };
         match found {
+            // A budget ran out while looking: the template is read unresolved, with that warning.
+            _ if self.failed.is_some() => None,
             Some(t) if t == n => {
                 self.looped = true;
                 None
@@ -197,7 +210,11 @@ impl<'a, 'd> Writer<'a, 'd> {
             return *found;
         }
         let found = self.resolve(expr);
-        self.soms.insert(expr, found);
+        // A look-up the budget cut short has not found nothing: it is not cached, and the
+        // template is read unresolved (`step` set `failed`).
+        if self.failed.is_none() {
+            self.soms.insert(expr, found);
+        }
         found
     }
 
@@ -229,7 +246,11 @@ impl<'a, 'd> Writer<'a, 'd> {
             return;
         }
         for c in at.children().filter(Node::is_element) {
-            if self.search == 0 || out.len() > index {
+            if out.len() > index || self.failed.is_some() {
+                return;
+            }
+            if self.search == 0 {
+                self.failed = Some(format!("need more than {MAX_SEARCH} elements looked at to resolve their SOM references"));
                 return;
             }
             self.search -= 1;
@@ -264,6 +285,21 @@ impl<'a, 'd> Writer<'a, 'd> {
         }
     }
 
+    /// Take `n` from the work budget; past it, expanding stops.
+    fn charge(&mut self, n: usize) -> bool {
+        match self.work.checked_sub(n) {
+            Some(left) => {
+                self.work = left;
+                true
+            }
+            None => {
+                self.work = 0;
+                self.failed = Some(format!("need more than {MAX_WORK} children, attributes and namespaces looked at to merge them"));
+                false
+            }
+        }
+    }
+
     /// Write the element that `stack` makes together: `stack[0]` over `stack[1]` over …, each
     /// an element of the same class. `scope` holds the namespaces already declared around it.
     fn element(&mut self, stack: &[Node<'a, 'd>], scope: &[(Option<&'a str>, &'a str)], depth: usize) {
@@ -286,6 +322,16 @@ impl<'a, 'd> Writer<'a, 'd> {
                 break;
             }
         }
+        // Charge what merging looks at before looking: each layer's children (counted no
+        // further than the budget left), attributes and namespaces, and the scope around it.
+        let mut cost = scope.len().saturating_add(layers.len());
+        for l in &layers {
+            let children = l.children().take(self.work.saturating_add(1)).count();
+            cost = cost.saturating_add(children).saturating_add(l.attributes().len()).saturating_add(l.namespaces().len());
+        }
+        if self.failed.is_some() || !self.charge(cost) {
+            return;
+        }
         let Some(&top) = layers.first() else { return };
         for l in &layers {
             *self.active.entry(l.id()).or_insert(0) += 1;
@@ -298,10 +344,11 @@ impl<'a, 'd> Writer<'a, 'd> {
         self.out.push_str(&qname);
         // Namespaces in scope in any layer that the elements written around this one lack.
         let mut inner: Vec<(Option<&'a str>, &'a str)> = scope.to_vec();
+        let mut declared: HashSet<Option<&'a str>> = scope.iter().map(|(n, _)| *n).collect();
         for layer in &layers {
             for ns in layer.namespaces() {
                 let (name, uri) = (ns.name(), ns.uri());
-                if name == Some("xml") || inner.iter().any(|(n, _)| *n == name) {
+                if name == Some("xml") || !declared.insert(name) {
                     continue;
                 }
                 match name {
@@ -345,11 +392,14 @@ impl<'a, 'd> Writer<'a, 'd> {
         } else {
             None
         };
+        // Prototypes take no part in the form; of the alternatives one is kept. A class left
+        // out is left out whole, so it need not be counted either.
+        let left_out = |c: &Node| c.tag_name().name() == "proto" || alternative(tag, c) && chosen != Some(c.tag_name().name());
         // The deeper layers' children by (class, position among that class).
         let index = |l: &Node<'a, 'd>| {
             let mut counts: HashMap<&str, usize> = HashMap::new();
             let mut by: HashMap<(&'a str, usize), Node<'a, 'd>> = HashMap::new();
-            for c in l.children().filter(Node::is_element) {
+            for c in l.children().filter(|c| c.is_element() && !left_out(c)) {
                 let k = counts.entry(c.tag_name().name()).or_insert(0);
                 by.insert((c.tag_name().name(), *k), c);
                 *k += 1;
@@ -364,7 +414,7 @@ impl<'a, 'd> Writer<'a, 'd> {
                 if c.is_text() && i == text_layer {
                     escape(c.text().unwrap_or_default(), false, &mut self.out);
                 }
-                if !c.is_element() {
+                if !c.is_element() || left_out(&c) {
                     continue;
                 }
                 let ctag = c.tag_name().name();
@@ -373,8 +423,7 @@ impl<'a, 'd> Writer<'a, 'd> {
                     *k += 1;
                     *k - 1
                 };
-                // Prototypes take no part in the form; of the alternatives one is kept.
-                if ctag == "proto" || alternative(tag, &c) && chosen != Some(ctag) || !done.insert((ctag, n)) {
+                if !done.insert((ctag, n)) {
                     continue;
                 }
                 let stack: Vec<Node<'a, 'd>> = std::iter::once(c).chain(below.iter().skip(i).filter_map(|b| b.get(&(ctag, n)).copied())).collect();
