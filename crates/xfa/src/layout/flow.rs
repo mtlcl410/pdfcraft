@@ -1,6 +1,6 @@
 use super::common::{clamp_opt, divide, is_row, moved, solid_extent, splittable};
 use super::items::Item;
-use super::{Ctx, Frame, Layout, Layouter, MAX_DEPTH, Node, Rect, SomIndices, Subform, XfaError, data_path, instance_count};
+use super::{Ctx, Frame, Layout, Layouter, MAX_DEPTH, MAX_INSTANCES, Node, Rect, SomIndices, Subform, XfaError, data_path, instance_count};
 
 impl Layouter<'_> {
     /// Place `node` as one block of size (`w`, `h`) at the cursor: in this content area when it fits,
@@ -293,18 +293,25 @@ impl Layouter<'_> {
     }
 
     /// The data holds more instances of `node` than `laid_out`: say so, since calculations
-    /// then see only those.
+    /// then see only those, and say why. (The template's own counts can't ask for more: the
+    /// parser reads `initial` and `max` up to [`MAX_INSTANCES`].)
     fn warn_truncated(&mut self, node: &Node, parent_som: &str, laid_out: usize) {
         let Node::Subform(sf) = node else { return };
         let from_data = match (&sf.common.name, self.data) {
             (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(self.tpl, parent_som), name),
             _ => 0,
         };
-        if from_data > laid_out {
-            self.warn_once(format!(
-                "{}: the data holds {from_data} rows; only the first {laid_out} are laid out (calculations see those)",
-                sf.common.name.as_deref().unwrap_or("a subform")
-            ));
+        if from_data <= laid_out {
+            return;
         }
+        let name = sf.common.name.as_deref().unwrap_or("a subform");
+        // The template's own `occur max` is the form's rule: past it, the extra data is ignored
+        // (XFA 3.3, p. 336). Only the layout's own limit needs naming as a limit.
+        let why = if sf.occur.max.is_some_and(|m| m <= laid_out) {
+            String::new()
+        } else {
+            format!("; {MAX_INSTANCES} is the most one repeating subform lays out")
+        };
+        self.warn_once(format!("{name}: the data holds {from_data} rows; only the first {laid_out} are laid out (calculations see those){why}"));
     }
 }
