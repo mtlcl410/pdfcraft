@@ -273,6 +273,8 @@ impl Layouter<'_> {
         let inner = rect.inset(&g.common.margin);
         let group = self.unique_name(g.common.name.as_deref().unwrap_or("group"));
         let nodes: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
+        // Each field is measured under the SOM index it is drawn at.
+        let sibs = SomIndices::of(&nodes);
         let placed: Vec<(usize, Rect)> = match g.layout {
             Layout::Tb => {
                 let mut y = 0.0;
@@ -281,7 +283,7 @@ impl Layouter<'_> {
                     if !k.common().presence.occupies() {
                         continue;
                     }
-                    let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
+                    let (w, h) = self.size_at(k, inner.w, &ctx, depth + 1, sibs.at(i));
                     out.push((i, Rect::new(0.0, y, w, h)));
                     y += h;
                 }
@@ -293,14 +295,13 @@ impl Layouter<'_> {
                 .filter(|(_, k)| k.common().presence.occupies())
                 .map(|(i, k)| {
                     let c = k.common();
-                    let (w, h) = self.size_of(k, (inner.w - c.x.unwrap_or(0.0)).max(1.0), &ctx, depth + 1);
+                    let (w, h) = self.size_at(k, (inner.w - c.x.unwrap_or(0.0)).max(1.0), &ctx, depth + 1, sibs.at(i));
                     let (x, y) = c.top_left(w, h);
                     (i, Rect::new(x, y, w, h))
                 })
                 .collect(),
             _ => self.pack(&nodes, inner.w, &ctx, depth).0,
         };
-        let sibs = SomIndices::of(&nodes);
         for (i, r) in placed {
             if let Some(f) = g.fields.get(i) {
                 let on = f.items.first().cloned().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| (i + 1).to_string());

@@ -6,11 +6,6 @@ use super::{
 };
 
 impl Layouter<'_> {
-    /// [`Self::size_at`] for the first instance of `node` (one that doesn't repeat).
-    pub(super) fn size_of(&self, node: &Node, avail_w: f64, ctx: &Ctx, depth: usize) -> (f64, f64) {
-        self.size_at(node, avail_w, ctx, depth, 0)
-    }
-
     /// The width and height instance `index` of `node` under `ctx` takes in `avail_w`: its own
     /// size, else what its content needs (containers are measured once per width, depth and
     /// instance, and measuring stops at its caps). Instances differ when the data gives each its
@@ -156,20 +151,24 @@ impl Layouter<'_> {
             Node::Area(a) => (&a.children, Layout::Positioned),
             _ => return avail_w,
         };
-        let visible = children.iter().filter(|k| k.common().presence.occupies());
+        // Each child under the SOM index it is drawn at.
+        let sibs = SomIndices::of(children);
+        let visible = children.iter().enumerate().filter(|(_, k)| k.common().presence.occupies());
         match layout {
             Layout::LrTb | Layout::RlTb | Layout::Row => {
-                let sum: f64 = visible.map(|k| self.size_of(k, avail_w, ctx, depth + 1).0).sum();
+                let sum: f64 = visible.map(|(i, k)| self.size_at(k, avail_w, ctx, depth + 1, sibs.at(i)).0).sum();
                 if sum <= avail_w + 0.05 { sum } else { avail_w }
             }
             Layout::Positioned => visible
-                .map(|k| {
-                    let (w, h) = self.size_of(k, avail_w, ctx, depth + 1);
+                .map(|(i, k)| {
+                    let (w, h) = self.size_at(k, avail_w, ctx, depth + 1, sibs.at(i));
                     k.common().top_left(w, h).0 + w
                 })
                 .fold(0.0, f64::max)
                 .min(avail_w),
-            Layout::Tb | Layout::Table => visible.map(|k| self.size_of(k, avail_w, ctx, depth + 1).0).fold(0.0, f64::max).min(avail_w),
+            Layout::Tb | Layout::Table => {
+                visible.map(|(i, k)| self.size_at(k, avail_w, ctx, depth + 1, sibs.at(i)).0).fold(0.0, f64::max).min(avail_w)
+            }
         }
     }
 
@@ -308,7 +307,15 @@ impl Layouter<'_> {
     fn group_height(&self, g: &ExclGroup, inner_w: f64, ctx: &Ctx, depth: usize) -> f64 {
         let nodes: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
         match g.layout {
-            Layout::Tb => nodes.iter().filter(|k| k.common().presence.occupies()).map(|k| self.size_of(k, inner_w, ctx, depth + 1).1).sum(),
+            Layout::Tb => {
+                let sibs = SomIndices::of(&nodes);
+                nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, k)| k.common().presence.occupies())
+                    .map(|(i, k)| self.size_at(k, inner_w, ctx, depth + 1, sibs.at(i)).1)
+                    .sum()
+            }
             Layout::Positioned => self.positioned_height(&nodes, inner_w, ctx, depth),
             _ => self.packed_height(&nodes, inner_w, ctx, depth),
         }
@@ -364,20 +371,24 @@ impl Layouter<'_> {
         self.pack(children, inner_w, ctx, depth).1
     }
 
-    /// Cell rectangles of a row (relative to the row's inner box) and the row height.
+    /// Cell rectangles of a row (relative to the row's inner box) and the row height. Each cell
+    /// is measured under its own SOM index among its same-named siblings (`qty[1]`, not
+    /// `qty[0]`), the index [`Self::draw_row`] draws it at, so a cell that grows with its value
+    /// takes its own value's height.
     pub(super) fn cells(&self, row: &Subform, cols: &[f64], inner_w: f64, ctx: &Ctx, depth: usize) -> (Vec<(usize, Rect)>, f64) {
         let ctx = ctx.child(&row.common);
         let mut out = Vec::new();
         let mut col = 0usize;
         let mut x = 0.0;
         let mut h: f64 = 0.0;
+        let sibs = SomIndices::of(&row.children);
         for (i, k) in row.children.iter().enumerate() {
             if !k.common().presence.occupies() {
                 continue;
             }
             let span = k.common().col_span.max(1);
             let w = if col < cols.len() { cols.iter().skip(col).take(span).sum::<f64>() } else { k.common().w.unwrap_or((inner_w - x).max(1.0)) };
-            let (_, ch) = self.size_of(k, w, &ctx, depth + 1);
+            let (_, ch) = self.size_at(k, w, &ctx, depth + 1, sibs.at(i));
             out.push((i, Rect::new(x, 0.0, w, ch)));
             h = h.max(ch);
             x += w;

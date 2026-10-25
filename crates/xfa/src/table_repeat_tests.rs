@@ -279,3 +279,87 @@ fn each_row_instance_takes_the_height_of_its_own_growing_text() {
         }
     }
 }
+
+/// A multi-line `qty` text field 100pt wide that grows with its text, with `access` and
+/// template value `value`.
+fn qty_cell(access: &str, value: &str) -> String {
+    format!(
+        r#"<field name="qty" w="100pt" minH="20pt" access="{access}"><ui><textEdit multiLine="1"/></ui><value><text>{value}</text></value></field>"#
+    )
+}
+
+/// [`table_form`] with two same-named cells per `item` row, `qty[0]` and `qty[1]` (`first` and
+/// `second`), in two 100pt columns, and the data of row `i` holding `data[i]`.
+fn same_name_cells_form(place: Place, first: &str, second: &str, data: [&str; 3]) -> String {
+    let mut xml = table_form(place, r#"min="1" max="-1""#, 3)
+        .replace(r#"columnWidths="200pt""#, r#"columnWidths="100pt 100pt""#)
+        .replace(r#"<field name="qty" w="200pt" h="20pt"><ui><textEdit/></ui></field>"#, &format!("{first}{second}"));
+    for (i, d) in data.iter().enumerate() {
+        xml = xml.replace(&format!("<item><qty>row {}</qty></item>", i + 1), &format!("<item>{d}</item>"));
+    }
+    xml
+}
+
+#[test]
+fn a_row_is_as_tall_as_its_tallest_same_named_cell() {
+    // Each cell of a row is measured under its own SOM index among its same-named siblings,
+    // the index it is drawn and bound at (XFA 3.3, "Tables", p. 327; "Growable Containers",
+    // p. 271; Chapter 9, p. 336): a short `qty[0]` beside a long `qty[1]` makes the row as tall
+    // as the long one, and the rows and content after it start below it.
+    let long = "a long value that wraps over several lines of the cell".repeat(6);
+    let cell = qty_cell("open", "");
+    for place in [Place::Positioned, Place::PositionedFlow, Place::Flowed] {
+        let data = ["<qty>s1</qty><qty>t1</qty>", &format!("<qty>s2</qty><qty>{long}</qty>"), "<qty>s3</qty><qty>t3</qty>"];
+        let form = layout_xml(&same_name_cells_form(place, &cell, &cell, data)).unwrap();
+        let all = laid_out(&form);
+        let first = named(&all, "qty");
+        let second: Vec<&Laid> = all.iter().filter(|w| w.1.ends_with(".qty[1]")).collect();
+        assert_eq!(first.iter().map(|w| w.2.clone().unwrap_or_default()).collect::<Vec<_>>(), ["s1", "s2", "s3"], "{place:?}");
+        assert_eq!(second.len(), 3, "{place:?}");
+        assert_eq!(second[1].2.as_deref().map(str::trim), Some(long.trim()), "{place:?}");
+        let tall = second[1].3;
+        assert!(tall.h > 60.0, "{place:?}: the long cell {tall:?} did not grow");
+        // Both cells of the row take its height, and the next row starts below it.
+        assert!((first[1].3.h - tall.h).abs() < 0.01, "{place:?}: qty[0] {:?} beside qty[1] {tall:?}", first[1].3);
+        for cells in [&first, &second] {
+            for pair in cells.windows(2) {
+                let (a, b) = (pair[0].3, pair[1].3);
+                assert!((b.y - a.bottom()).abs() < 0.01, "{place:?}: row at {b:?} after {a:?}");
+            }
+        }
+        let foot = named(&all, "total")[0].3;
+        assert!((foot.y - second[2].3.bottom()).abs() < 0.01, "{place:?}: footer {foot:?} after {:?}", second[2].3);
+        if let Some(after) = named(&all, "after").first() {
+            assert!((after.3.y - foot.bottom()).abs() < 0.01, "{place:?}: after {:?}, footer {foot:?}", after.3);
+        }
+    }
+}
+
+#[test]
+fn a_long_non_interactive_same_named_cell_stays_in_its_row() {
+    // A non-interactive `qty[1]` is drawn as text, not as a widget; measured under its own SOM
+    // index (where the data holds nothing, so its long template value is what shows), each row
+    // holds its lines, and none run into the row after it or the footer.
+    let long = "longword ".repeat(12);
+    for place in [Place::Positioned, Place::PositionedFlow, Place::Flowed] {
+        let data = ["<qty>s1</qty>", "<qty>s2</qty>", "<qty>s3</qty>"];
+        let form = layout_xml(&same_name_cells_form(place, &qty_cell("open", ""), &qty_cell("nonInteractive", &long), data)).unwrap();
+        let all = laid_out(&form);
+        let rows: Vec<Rect> = named(&all, "qty").iter().map(|w| w.3).collect();
+        assert_eq!(rows.len(), 3, "{place:?}");
+        let lines: Vec<f64> = form
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .filter_map(|it| if let Item::Text(s) = it { Some(s) } else { None })
+            .filter(|s| s.text.contains("longword"))
+            .map(|s| s.baseline)
+            .collect();
+        assert!(lines.len() >= 6, "{place:?}: {lines:?}");
+        let per_row: Vec<usize> = rows.iter().map(|r| lines.iter().filter(|&&b| b > r.y && b <= r.bottom()).count()).collect();
+        assert_eq!(per_row.iter().sum::<usize>(), lines.len(), "{place:?}: lines {lines:?} outside rows {rows:?}");
+        assert!(per_row.iter().all(|&n| n == per_row[0] && n > 1), "{place:?}: lines per row {per_row:?}");
+        let foot = named(&all, "total")[0].3;
+        assert!((foot.y - rows[2].bottom()).abs() < 0.01, "{place:?}: footer {foot:?} after {:?}", rows[2]);
+    }
+}
