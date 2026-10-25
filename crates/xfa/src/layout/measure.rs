@@ -108,15 +108,16 @@ impl Layouter<'_> {
                                 .enumerate()
                                 .filter(|(_, k)| k.common().presence.occupies())
                                 .map(|(i, k)| match k {
-                                    // A repeating row takes its height once per instance, as drawn.
-                                    Node::Subform(r) if r.layout == Layout::Row => {
-                                        self.row_height(r, &cols, inner_w, ctx, depth + 1) * self.instances(k, &som) as f64
-                                    }
+                                    // Each instance of a repeating row takes its own height, as drawn.
+                                    Node::Subform(r) if r.layout == Layout::Row => (0..self.instances(k, &som))
+                                        .map(|n| self.row_height(r, &cols, inner_w, ctx, depth + 1, sibs.at(i).saturating_add(n)))
+                                        .sum(),
                                     _ => self.size_at(k, inner_w, ctx, depth + 1, sibs.at(i)).1,
                                 })
                                 .sum()
                         }
-                        Layout::Row => self.row_height(s, &self.columns(s, inner_w), inner_w, ctx, depth + 1),
+                        // `ctx` is already this row instance's own.
+                        Layout::Row => self.cells(s, &self.columns(s, inner_w), inner_w, ctx, depth + 1).1,
                     },
                 };
                 content + c.margin.vertical()
@@ -389,7 +390,10 @@ impl Layouter<'_> {
         (out, clamp_opt(h, row.common.min_h, row.common.max_h))
     }
 
-    pub(super) fn row_height(&self, row: &Subform, cols: &[f64], inner_w: f64, ctx: &Ctx, depth: usize) -> f64 {
-        self.cells(row, cols, inner_w, ctx, depth).1
+    /// The height of instance `sib` of `row` in the table at `ctx`, measured as [`Self::draw_row`]
+    /// draws it: under the instance's own SOM path, so a cell that grows with its text takes
+    /// that instance's value (XFA 3.3, "Tables", p. 327; "Growable Containers", p. 275).
+    pub(super) fn row_height(&self, row: &Subform, cols: &[f64], inner_w: f64, ctx: &Ctx, depth: usize, sib: usize) -> f64 {
+        self.cells(row, cols, inner_w, &ctx.with_som(&row.common, sib), depth).1
     }
 }

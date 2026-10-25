@@ -247,3 +247,35 @@ fn each_instance_of_a_repeating_container_is_measured_with_its_own_rows() {
         }
     }
 }
+
+#[test]
+fn each_row_instance_takes_the_height_of_its_own_growing_text() {
+    // A repeating row whose cell grows with its text (a multi-line field without a height) is
+    // as tall as its own instance's value (XFA 3.3, "Tables", p. 327; "Growable Containers",
+    // p. 271): a long value makes its row taller and pushes the rows after it down, wherever
+    // the table sits.
+    let long = "a long value that wraps over several lines of the cell ".repeat(6);
+    for place in [Place::Positioned, Place::PositionedFlow, Place::Flowed] {
+        let xml = table_form(place, r#"min="1" max="-1""#, 3)
+            .replace(
+                r#"<field name="qty" w="200pt" h="20pt"><ui><textEdit/></ui></field>"#,
+                r#"<field name="qty" w="200pt" minH="20pt"><ui><textEdit multiLine="1"/></ui></field>"#,
+            )
+            .replace("<qty>row 2</qty>", &format!("<qty>{long}</qty>"));
+        let form = layout_xml(&xml).unwrap();
+        let all = laid_out(&form);
+        let qty = named(&all, "qty");
+        assert_eq!(qty.len(), 3, "{place:?}");
+        let (short, tall) = (qty[0].3, qty[1].3);
+        assert!(tall.h > short.h + 20.0, "{place:?}: the long row {tall:?} is no taller than a short one {short:?}");
+        for pair in qty.windows(2) {
+            let (a, b) = (pair[0].3, pair[1].3);
+            assert!((b.y - a.bottom()).abs() < 0.01, "{place:?}: row at {b:?} after {a:?}");
+        }
+        let foot = named(&all, "total")[0].3;
+        assert!((foot.y - qty[2].3.bottom()).abs() < 0.01, "{place:?}: footer {foot:?} after {:?}", qty[2].3);
+        if let Some(after) = named(&all, "after").first() {
+            assert!((after.3.y - foot.bottom()).abs() < 0.01, "{place:?}: after {:?}, footer {foot:?}", after.3);
+        }
+    }
+}

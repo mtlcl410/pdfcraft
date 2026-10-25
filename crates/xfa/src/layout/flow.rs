@@ -233,8 +233,8 @@ impl Layouter<'_> {
             Some(Node::Subform(l)) => Some((li, l.as_ref())),
             _ => None,
         });
-        let lead_h = lead.map_or(0.0, |(_, l)| self.row_height(l, &cols, inner_w, ctx, depth + 1));
         let sibs = SomIndices::of(&sf.children);
+        let lead_h = lead.map_or(0.0, |(li, l)| self.row_height(l, &cols, inner_w, ctx, depth + 1, sibs.at(li)));
         for (ci, child) in sf.children.iter().enumerate() {
             if !child.common().presence.occupies() {
                 continue;
@@ -246,7 +246,7 @@ impl Layouter<'_> {
                 // Rows added as data (in another viewer) repeat the row.
                 let instances = self.laid_out_instances(child, &ctx.som);
                 for inst in 0..instances {
-                    let h = self.row_height(row, &cols, inner_w, ctx, depth + 1);
+                    let h = self.row_height(row, &cols, inner_w, ctx, depth + 1, csib.saturating_add(inst));
                     let led = lead.filter(|(li, _)| *li != ci);
                     if self.make_room(h, led.map_or(0.0, |_| lead_h))?
                         && let Some((li, l)) = led

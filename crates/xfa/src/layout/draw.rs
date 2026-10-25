@@ -136,8 +136,8 @@ impl Layouter<'_> {
                                 // A repeating row (a table in a positioned subform, say) gets its
                                 // instances one under another, as in a flowed table (XFA 3.3,
                                 // "Tables", p. 327), and the rows past them are reported.
-                                let h = self.row_height(r, &cols, inner.w, &ctx, depth + 1);
                                 for instance in 0..self.laid_out_instances(k, &ctx.som) {
+                                    let h = self.row_height(r, &cols, inner.w, &ctx, depth + 1, csib.saturating_add(instance));
                                     self.draw_row(r, &cols, Rect::new(inner.x, y, inner.w, h), &ctx, depth + 1, csib + instance)?;
                                     y += h;
                                 }
