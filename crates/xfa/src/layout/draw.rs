@@ -97,8 +97,11 @@ impl Layouter<'_> {
                             }
                             let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
                             // A repeating subform here (a table in an area of a positioned page,
-                            // say) gets its instances, as in a flowed one, one under another.
-                            for instance in 0..self.instances(k, &ctx.som) {
+                            // say) gets its instances, as in a flowed one, one under another,
+                            // and the rows past them are reported as there.
+                            let instances = self.instances(k, &ctx.som);
+                            self.warn_truncated(k, &ctx.som, instances);
+                            for instance in 0..instances {
                                 self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sibs.at(i) + instance)?;
                                 y += h;
                             }
@@ -106,7 +109,11 @@ impl Layouter<'_> {
                     }
                     Layout::LrTb | Layout::RlTb => {
                         // A repeating subform here (rows of fields under a heading) gets its
-                        // instances, as in the other layouts.
+                        // instances, as in the other layouts, and the rows past them are reported.
+                        for k in s.children.iter().filter(|k| k.common().presence.occupies()) {
+                            let instances = self.instances(k, &ctx.som);
+                            self.warn_truncated(k, &ctx.som, instances);
+                        }
                         let (placed, _) = self.pack_instances(&s.children, inner.w, &ctx, depth, &ctx.som);
                         for (i, instance, r) in placed {
                             if let Some(k) = s.children.get(i) {

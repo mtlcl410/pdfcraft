@@ -295,7 +295,7 @@ impl Layouter<'_> {
     /// The data holds more instances of `node` than `laid_out`: say so, since calculations
     /// then see only those, and say why. (The template's own counts can't ask for more: the
     /// parser reads `initial` and `max` up to [`MAX_INSTANCES`].)
-    fn warn_truncated(&mut self, node: &Node, parent_som: &str, laid_out: usize) {
+    pub(super) fn warn_truncated(&mut self, node: &Node, parent_som: &str, laid_out: usize) {
         let Node::Subform(sf) = node else { return };
         let from_data = match (&sf.common.name, self.data) {
             (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(self.tpl, parent_som), name),

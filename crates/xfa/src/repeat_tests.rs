@@ -100,3 +100,21 @@ fn an_initial_count_lays_out_whole_up_to_the_limit() {
     assert_eq!(crate::layout::instance_count(&unbounded, 0), MAX_INSTANCES);
     assert_eq!(crate::layout::instance_count(&unbounded, usize::MAX), MAX_INSTANCES);
 }
+
+#[test]
+fn rows_cut_in_a_positioned_container_are_reported_too() {
+    // The list sits in a positioned subform, so it is drawn rather than flowed: its `tb`,
+    // `lr-tb` and `rl-tb` repeats are cut at the same bounds and must say so as a flowed one does.
+    for layout in ["tb", "lr-tb", "rl-tb"] {
+        let xml = rows_form("5", 60, false)
+            .replace(r#"<subform name="form" layout="tb">"#, r#"<subform name="form" layout="tb"><subform name="page" w="540pt" h="720pt">"#)
+            .replace("</subform></template>", "</subform></subform></template>")
+            .replace(r#"<subform name="list" layout="tb">"#, &format!(r#"<subform name="list" x="0pt" y="0pt" w="540pt" layout="{layout}">"#))
+            .replace("<xfa:data><form><list>", "<xfa:data><form><page><list>")
+            .replace("</list></form></xfa:data>", "</list></page></form></xfa:data>");
+        let form = layout_xml(&xml).unwrap();
+        assert_eq!(values(&form), expected(5), "{layout}");
+        let w = cut_warning(&form).unwrap_or_else(|| panic!("{layout}: the rows past occur max are reported: {:?}", form.warnings));
+        assert!(w.contains("holds 60 rows") && w.contains("first 5"), "{layout}: {w}");
+    }
+}
