@@ -298,3 +298,20 @@ fn namespaces_bound_again_inside_the_template_keep_their_own_uri() {
         "{paras:?}"
     );
 }
+
+#[test]
+fn inherited_attributes_keep_their_namespace_where_the_prefix_is_bound_again() {
+    // The element binds `q` to one URI and its prototype to another: the element's binding
+    // wins, so the prototype's `q:` attributes need another prefix to keep their own URI.
+    let styles = r#"<field id="P" xmlns:q="urn:prototype" q:kind="k" q:own="2" xml:lang="en" w="1in"/>"#;
+    let body = r##"<field name="f" xmlns:q="urn:instance" q:own="1" use="#P"/>"##;
+    let out = expanded(&form(styles, body));
+    let doc = roxmltree::Document::parse(&out).unwrap();
+    let f = doc.descendants().find(|n| n.attribute("name") == Some("f")).unwrap();
+    assert_eq!(f.attribute(("urn:instance", "own")), Some("1"), "{out}");
+    assert_eq!(f.attribute(("urn:prototype", "own")), Some("2"), "{out}");
+    assert_eq!(f.attribute(("urn:prototype", "kind")), Some("k"), "{out}");
+    assert_eq!(f.attribute(("urn:instance", "kind")), None, "{out}");
+    assert_eq!(f.attribute(("http://www.w3.org/XML/1998/namespace", "lang")), Some("en"), "{out}");
+    assert_eq!(f.attribute("w"), Some("1in"), "{out}");
+}

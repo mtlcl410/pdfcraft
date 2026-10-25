@@ -47,6 +47,8 @@ const MAX_SEARCH: usize = 2_000_000;
 /// budget allows costs some 12 million: this keeps a margin of five over that, and stops a
 /// hostile template after about a second.
 const MAX_WORK: usize = 64_000_000;
+/// The namespace the `xml` prefix is always bound to.
+const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 
 /// The template written again with its prototype references resolved (`None` when it has
 /// none, or when resolving them would pass a budget: the template is then read as it is), and
@@ -377,15 +379,50 @@ impl<'a, 'd> Writer<'a, 'd> {
             inner.insert(None, "");
         }
         // Attributes: the nearest layer that has one wins; `id` and `name` are not inherited.
-        let mut written: HashSet<String> = HashSet::new();
+        // Attributes are told apart by namespace URI and local name. One whose layer's prefix is
+        // bound here to another URI (the nearest layer's binding won) is written with a fresh
+        // prefix, declared on this element.
+        let mut written: HashSet<(Option<&str>, &str)> = HashSet::new();
+        let mut fresh: HashMap<&str, String> = HashMap::new();
+        let mut next = 0usize;
         for (i, layer) in layers.iter().enumerate() {
             for a in layer.attributes() {
                 let inherited = i > 0 && matches!(a.name(), "id" | "name");
                 let reference = a.namespace().is_none() && matches!(a.name(), "use" | "usehref");
-                let name = format!("{}{}", prefix(*layer, a.namespace()), a.name());
-                if inherited || reference || !written.insert(name.clone()) {
+                if inherited || reference || !written.insert((a.namespace(), a.name())) {
                     continue;
                 }
+                let name = match a.namespace() {
+                    None => a.name().to_string(),
+                    Some(XML_NS) => format!("xml:{}", a.name()),
+                    Some(uri) => match layer.lookup_prefix(uri).filter(|p| !p.is_empty()) {
+                        Some(p) if inner.get(&Some(p)) == Some(&uri) => format!("{p}:{}", a.name()),
+                        _ => {
+                            let p = match fresh.get(uri) {
+                                Some(p) => p.clone(),
+                                None => {
+                                    // `next` only grows, and skips the prefixes in scope here,
+                                    // so it passes at most `inner.len()` of them.
+                                    let p = loop {
+                                        let p = format!("ns{next}");
+                                        next = next.saturating_add(1);
+                                        if !inner.contains_key(&Some(p.as_str())) {
+                                            break p;
+                                        }
+                                    };
+                                    self.out.push_str(" xmlns:");
+                                    self.out.push_str(&p);
+                                    self.out.push_str("=\"");
+                                    escape(uri, true, &mut self.out);
+                                    self.out.push('"');
+                                    fresh.insert(uri, p.clone());
+                                    p
+                                }
+                            };
+                            format!("{p}:{}", a.name())
+                        }
+                    },
+                };
                 self.out.push(' ');
                 self.out.push_str(&name);
                 self.out.push_str("=\"");
