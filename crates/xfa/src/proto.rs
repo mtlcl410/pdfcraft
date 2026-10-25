@@ -74,7 +74,7 @@ pub(crate) fn expand(template: Node) -> (Option<String>, Vec<String>) {
         looped: false,
         layers_cut: false,
     };
-    w.element(&[template], &[], 0);
+    w.element(&[template], &Scope::new(), 0);
     let mut warnings = Vec::new();
     if w.external {
         warnings.push("a prototype reference (usehref) points to another document; it is not followed".into());
@@ -96,6 +96,10 @@ pub(crate) fn expand(template: Node) -> (Option<String>, Vec<String>) {
         None => (Some(w.out), warnings),
     }
 }
+
+/// Namespace bindings in scope where an element is written: URI by prefix (`None` for the
+/// default namespace).
+type Scope<'a> = HashMap<Option<&'a str>, &'a str>;
 
 struct Writer<'a, 'd> {
     template: Node<'a, 'd>,
@@ -302,7 +306,7 @@ impl<'a, 'd> Writer<'a, 'd> {
 
     /// Write the element that `stack` makes together: `stack[0]` over `stack[1]` over …, each
     /// an element of the same class. `scope` holds the namespaces already declared around it.
-    fn element(&mut self, stack: &[Node<'a, 'd>], scope: &[(Option<&'a str>, &'a str)], depth: usize) {
+    fn element(&mut self, stack: &[Node<'a, 'd>], scope: &Scope<'a>, depth: usize) {
         if self.failed.is_some() {
             return;
         }
@@ -342,13 +346,16 @@ impl<'a, 'd> Writer<'a, 'd> {
         let qname = format!("{}{tag}", prefix(top, top.tag_name().namespace()));
         self.out.push('<');
         self.out.push_str(&qname);
-        // Namespaces in scope in any layer that the elements written around this one lack.
-        let mut inner: Vec<(Option<&'a str>, &'a str)> = scope.to_vec();
-        let mut declared: HashSet<Option<&'a str>> = scope.iter().map(|(n, _)| *n).collect();
+        // Namespace bindings the layers have that differ from those in scope around this
+        // element, by prefix: the nearest layer's binding of a prefix wins, and a prefix bound
+        // around this element to another URI is bound again here (an XHTML `body` inside a
+        // template whose default namespace is XFA's).
+        let mut inner: Scope<'a> = scope.clone();
+        let mut decided: HashSet<Option<&'a str>> = HashSet::new();
         for layer in &layers {
             for ns in layer.namespaces() {
                 let (name, uri) = (ns.name(), ns.uri());
-                if name == Some("xml") || !declared.insert(name) {
+                if name == Some("xml") || !decided.insert(name) || scope.get(&name) == Some(&uri) {
                     continue;
                 }
                 match name {
@@ -361,8 +368,13 @@ impl<'a, 'd> Writer<'a, 'd> {
                 self.out.push_str("=\"");
                 escape(uri, true, &mut self.out);
                 self.out.push('"');
-                inner.push((name, uri));
+                inner.insert(name, uri);
             }
+        }
+        // An element in no namespace inside a default namespace undeclares it.
+        if top.tag_name().namespace().is_none() && inner.get(&None).is_some_and(|u| !u.is_empty()) {
+            self.out.push_str(" xmlns=\"\"");
+            inner.insert(None, "");
         }
         // Attributes: the nearest layer that has one wins; `id` and `name` are not inherited.
         let mut written: HashSet<String> = HashSet::new();

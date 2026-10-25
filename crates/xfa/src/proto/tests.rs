@@ -255,3 +255,46 @@ fn prototype_children_that_write_nothing_still_count_against_a_budget() {
     assert!(warnings.iter().any(|w| w.contains("children, attributes and namespaces") && w.contains("read without resolving")), "{warnings:?}");
     assert_eq!(field(&t, "first").common.w, None, "read as written");
 }
+
+/// The template of `xml` written again by `expand`, parsed.
+fn expanded(xml: &str) -> String {
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let template = doc.descendants().find(|n| n.tag_name().name() == "template").unwrap();
+    let (out, warnings) = crate::proto::expand(template);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    out.unwrap()
+}
+
+#[test]
+fn namespaces_bound_again_inside_the_template_keep_their_own_uri() {
+    const XHTML: &str = "http://www.w3.org/1999/xhtml";
+    // Rich text in a prototype and in a plain element: XHTML's default namespace inside the
+    // template's (XFA's), and a prefix bound to one URI around an element and another inside.
+    let styles = r#"<draw id="Note" w="40mm"><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p>See <a href="https://example.com/">the guide</a></p></body></exData></value></draw>"#;
+    let body = r##"<draw name="note" x="0mm" y="0mm" use="#Note"/>
+  <draw name="plain" x="0mm" y="20mm" w="40mm" xmlns:q="urn:outer" q:a="1"><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml" xmlns:q="urn:inner"><p q:b="2">Plain</p></body></exData></value></draw>
+  <draw name="none" x="0mm" y="40mm" w="40mm"><extras><free xmlns=""/></extras></draw>"##;
+    let xml = form(styles, body);
+    let out = expanded(&xml);
+    let doc = roxmltree::Document::parse(&out).unwrap();
+    let bodies: Vec<_> = doc.descendants().filter(|n| n.tag_name().name() == "body").collect();
+    assert_eq!(bodies.len(), 2, "{out}");
+    for b in &bodies {
+        assert_eq!(b.tag_name().namespace(), Some(XHTML), "{out}");
+        assert!(b.descendants().filter(|n| n.is_element()).all(|n| n.tag_name().namespace() == Some(XHTML)), "{out}");
+    }
+    let p = doc.descendants().find(|n| n.attribute(("urn:inner", "b")).is_some());
+    assert!(p.is_some(), "a prefix bound again keeps the inner URI: {out}");
+    assert!(doc.descendants().any(|n| n.attribute(("urn:outer", "a")) == Some("1")), "{out}");
+    let free = doc.descendants().find(|n| n.tag_name().name() == "free").unwrap();
+    assert_eq!(free.tag_name().namespace().unwrap_or_default(), "", "an undeclared default namespace stays undeclared: {out}");
+    // And the form still reads the rich text and its link.
+    let (t, warnings) = parse(&xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(Node::Draw(note)) = nodes(&t).first() else { panic!() };
+    let Value::Rich(paras) = &note.value else { panic!("{:?}", note.value) };
+    assert!(
+        paras.paragraphs.iter().flat_map(|p| &p.runs).any(|r| r.text.contains("the guide") && r.link.as_deref() == Some("https://example.com/")),
+        "{paras:?}"
+    );
+}
