@@ -3283,6 +3283,39 @@ fn a_signature_field_does_not_repeat_a_name_another_field_has() {
     }
 }
 
+/// A caption without a font of its own is drawn in its field's font, not the font around the
+/// field (XFA 3.3, "Formatting Text That Appears as Fixed or Variable Content", p. 43): text is
+/// formatted by its containing element's font properties, inherited from an ancestor when it
+/// has none. A caption font that names only some properties takes the rest from the field.
+#[test]
+fn a_caption_without_a_font_of_its_own_takes_its_fields() {
+    let field = |name: &str, caption_font: &str| {
+        format!(
+            r#"<field name="{name}" w="5in" h="0.4in"><ui><textEdit/></ui><font typeface="Arial" size="8pt"/><caption reserve="2in">{caption_font}<value><text>{name}:</text></value></caption></field>"#
+        )
+    };
+    let body = format!(
+        r#"<subform name="body" layout="tb" w="7.5in">{}{}{}</subform>"#,
+        field("plain", ""),
+        field("own", r#"<font typeface="Times New Roman" size="11pt"/>"#),
+        field("sized", r#"<font size="12pt"/>"#)
+    );
+    let form = layout_xml(&one_area_form(r#"layout="tb""#, &body)).unwrap();
+    let faces: Vec<(String, crate::text::Family, f64)> = form.pages[0]
+        .items
+        .iter()
+        .filter_map(|i| if let Item::Text(s) = i { Some((s.text.clone(), s.face.family, s.face.size)) } else { None })
+        .collect();
+    assert_eq!(
+        faces,
+        [
+            ("plain:".to_string(), crate::text::Family::Helvetica, 8.0),
+            ("own:".to_string(), crate::text::Family::Times, 11.0),
+            ("sized:".to_string(), crate::text::Family::Helvetica, 12.0)
+        ]
+    );
+}
+
 /// A signature box the file already holds a signature for shows that signature, the file's own
 /// objects, and is locked; the other box stays unsigned.
 #[test]
