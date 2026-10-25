@@ -3316,6 +3316,35 @@ fn a_caption_without_a_font_of_its_own_takes_its_fields() {
     );
 }
 
+/// A caption is measured as it is drawn: in its field's font (XFA 3.3, "Formatting Text That
+/// Appears as Fixed or Variable Content", p. 43) and in the paragraph around the field, not the
+/// field's own, which formats the field's value. A field paragraph's space above or line height
+/// gives its caption no extra room.
+#[test]
+fn a_caption_is_measured_in_the_font_and_paragraph_it_is_drawn_in() {
+    let field = |name: &str, para: &str, caption: &str| {
+        format!(
+            r#"<field name="{name}" w="3in"><ui><textEdit/></ui><font typeface="Arial" size="14pt"/><para {para}/><caption {caption}><value><text>Cap</text></value></caption></field><field name="{name}_next" w="3in" h="0.3in"><ui><textEdit/></ui></field>"#
+        )
+    };
+    let body = format!(
+        r#"<subform name="body" layout="tb" w="7.5in">{}{}</subform>"#,
+        field("top", r#"spaceAbove="0.5in""#, r#"placement="top""#),
+        field("left", r#"lineHeight="0.75in""#, r#"placement="left" reserve="1in""#),
+    );
+    let form = layout_xml(&one_area_form(r#"layout="tb""#, &body)).unwrap();
+    let ws = widgets(&form.pages[0]);
+    let rect = |n: &str| ws.iter().find(|w| w.name == n).map(|w| w.rect).unwrap();
+    let line = crate::text::line_height(14.0);
+    let (top, top_next) = (rect("top"), rect("top_next"));
+    // Above the box, the caption takes one line of the field's 14pt font.
+    assert!((top.y - 36.0 - line).abs() < 0.01, "the top caption's room is one 14pt line: {}", top.y - 36.0);
+    assert!((top_next.y - top.bottom()).abs() < 0.01, "and the field ends where its box does: {} {}", top_next.y, top.bottom());
+    // Beside the box, a one-line caption leaves the field the box's height.
+    let (left, left_next) = (rect("left"), rect("left_next"));
+    assert!((left_next.y - left.y - (line + 4.0)).abs() < 0.01, "a one-line caption beside the box adds no height: {}", left_next.y - left.y);
+}
+
 /// A signature box the file already holds a signature for shows that signature, the file's own
 /// objects, and is locked; the other box stays unsigned.
 #[test]

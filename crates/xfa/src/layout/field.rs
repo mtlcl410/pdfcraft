@@ -26,8 +26,9 @@ impl Layouter<'_> {
         let inner = rect.inset(&f.common.margin);
         let (mut ui, mut cap_rect) = (inner, None);
         // A caption without a font of its own is drawn in the field's (XFA 3.3, "Formatting Text
-        // That Appears as Fixed or Variable Content", p. 43), as it is measured.
-        if let Some((placement, reserve)) = self.caption_reserve(f, inner.w, &fctx) {
+        // That Appears as Fixed or Variable Content", p. 43), in the paragraph around the field,
+        // as it is measured.
+        if let Some((placement, reserve)) = self.caption_reserve(f, inner.w, &fctx, &ctx.para) {
             let reserve = auto_check_reserve(f, placement, inner.w, Some(inner.h)).unwrap_or(reserve);
             let r = reserve.max(0.0);
             match placement {
