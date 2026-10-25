@@ -186,3 +186,64 @@ fn hostile_occur_values_and_data_floods_lay_a_positioned_table_out_within_bounds
     let warning = cut_warning(&form).unwrap_or_else(|| panic!("{:?}", form.warnings));
     assert!(warning.contains(&format!("{rows} rows")) && warning.contains(&format!("first {n}")), "{warning}");
 }
+
+/// A repeating positioned `entry` subform, each instance holding a positioned table whose `item`
+/// rows repeat, with a field after the entries; the data gives entry `i` `rows[i]` rows.
+fn nested_form(place: Place, rows: &[usize]) -> String {
+    let entries: String = rows
+        .iter()
+        .enumerate()
+        .map(|(e, n)| {
+            let items: String = (1..=*n).map(|i| format!("<item><qty>{e}.{i}</qty></item>")).collect();
+            format!("<entry><table>{items}</table></entry>")
+        })
+        .collect();
+    let entry = r#"<subform name="entry" w="200pt"><occur min="1" max="-1"/>
+     <subform name="table" layout="table" columnWidths="200pt" x="0pt" y="0pt">
+      <subform name="item" layout="row"><occur min="1" max="-1"/><field name="qty" w="200pt" h="20pt"><ui><textEdit/></ui></field></subform>
+     </subform></subform>"#;
+    let after = r#"<field name="after" w="200pt" h="20pt"><ui><textEdit/></ui></field>"#;
+    let (page, open, close) = match place {
+        Place::PositionedFlow => (
+            format!(
+                r#"<subform name="page1" w="540pt" h="700pt"><subform name="wrap" layout="tb" w="200pt" x="36pt" y="72pt">{entry}{after}</subform></subform>"#
+            ),
+            "<page1><wrap>",
+            "</wrap></page1>",
+        ),
+        _ => (format!(r#"<subform name="page1" layout="tb" w="540pt">{entry}{after}</subform>"#), "<page1>", "</page1>"),
+    };
+    format!(
+        r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><occur max="-1"/><contentArea x="36pt" y="36pt" w="540pt" h="720pt"/><medium short="612pt" long="792pt"/></pageArea></pageSet>
+ {page}
+</subform></template>
+<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form>{open}{entries}{close}</form></xfa:data></xfa:datasets>
+</xdp:xdp>"#
+    )
+}
+
+#[test]
+fn each_instance_of_a_repeating_container_is_measured_with_its_own_rows() {
+    // Instances of one repeating subform hold different numbers of rows in the data (XFA 3.3,
+    // "Tables", p. 327; Chapter 9, p. 336): each takes the height of its own rows, so the rows
+    // of one never run into the next instance or what follows.
+    for place in [Place::Flowed, Place::PositionedFlow] {
+        for rows in [[1, 5], [5, 1], [2, 3]] {
+            let what = format!("{place:?} {rows:?}");
+            let form = layout_xml(&nested_form(place, &rows)).unwrap();
+            let all = laid_out(&form);
+            let qty = named(&all, "qty");
+            let want: Vec<String> = rows.iter().enumerate().flat_map(|(e, n)| (1..=*n).map(move |i| format!("{e}.{i}"))).collect();
+            assert_eq!(qty.iter().map(|w| w.2.clone().unwrap_or_default()).collect::<Vec<_>>(), want, "{what}");
+            let top = qty[0].3.y;
+            for (i, w) in qty.iter().enumerate() {
+                assert!((w.3.y - (top + 20.0 * i as f64)).abs() < 0.01, "{what}: row {i} at {:?}, first at {top}", w.3);
+            }
+            let after = named(&all, "after")[0].3;
+            let last = qty[qty.len() - 1].3;
+            assert!((after.y - last.bottom()).abs() < 0.01, "{what}: after {after:?}, last row {last:?}");
+        }
+    }
+}

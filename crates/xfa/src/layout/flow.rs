@@ -170,7 +170,7 @@ impl Layouter<'_> {
             let w = clamp_opt(sf.common.w.unwrap_or(w), sf.common.min_w, sf.common.max_w).min(w.max(1.0));
             if !matches!(sf.layout, Layout::Tb | Layout::Table) || sf.common.h.is_some() {
                 // Not splittable: one block.
-                let (_, h) = self.size_of(node, w, ctx_parent, depth);
+                let (_, h) = self.size_at(node, w, ctx_parent, depth, sib + i);
                 self.flow_block(node, x, (w, h), ctx_parent, depth, sib + i)?;
                 continue;
             }
@@ -201,8 +201,7 @@ impl Layouter<'_> {
                             self.flow_subform(child, Some((inner_x, inner_w)), &ctx, depth + 1, csib)?;
                             continue;
                         }
-                        let (cw, ch) = self.size_of(child, inner_w, &ctx, depth + 1);
-                        self.flow_block(child, inner_x, (cw, ch), &ctx, depth + 1, csib)?;
+                        self.flow_instances(child, inner_x, inner_w, &ctx, depth + 1, csib)?;
                     }
                 }
             }
@@ -268,8 +267,23 @@ impl Layouter<'_> {
                 self.flow_subform(child, Some((x, inner_w)), ctx, depth + 1, csib)?;
                 continue;
             }
-            let (cw, ch) = self.size_of(child, inner_w, ctx, depth + 1);
-            self.flow_block(child, x, (cw, ch), ctx, depth + 1, csib)?;
+            self.flow_instances(child, x, inner_w, ctx, depth + 1, csib)?;
+        }
+        Ok(())
+    }
+
+    /// Flow `node`, which isn't split across content areas, as one block per instance (a
+    /// repeating positioned subform gets one for each row the data or its `occur` gives it, XFA
+    /// 3.3, "Repeating Elements using Occurrence Limits", p. 263), each as tall as its own
+    /// content; the data rows past them are reported.
+    fn flow_instances(&mut self, node: &Node, x: f64, inner_w: f64, ctx: &Ctx, depth: usize, sib: usize) -> Result<(), XfaError> {
+        for instance in 0..self.laid_out_instances(node, &ctx.som) {
+            // Every instance spends budget, so nested repeats that place nothing still stop.
+            self.measures.set(self.measures.get().saturating_add(1));
+            self.check_measures()?;
+            let sib = sib.saturating_add(instance);
+            let size = self.size_at(node, inner_w, ctx, depth, sib);
+            self.flow_block(node, x, size, ctx, depth, sib)?;
         }
         Ok(())
     }

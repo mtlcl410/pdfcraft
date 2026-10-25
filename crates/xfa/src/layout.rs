@@ -90,8 +90,9 @@ impl Ctx {
     }
 }
 
-/// (address of a subform or area in the template, available width bits, depth).
-type MeasureKey = (usize, u64, usize);
+/// (address of a subform or area in the template, available width bits, depth, SOM path of the
+/// instance measured when data drives the layout).
+type MeasureKey = (usize, u64, usize, String);
 
 /// A cached size, with the inherited text defaults it was measured with.
 struct Measured {

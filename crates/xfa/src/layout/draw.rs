@@ -33,7 +33,7 @@ impl Layouter<'_> {
         if !c.presence.occupies() {
             return Ok(());
         }
-        let (w, h) = self.size_of(k, (inner.w - c.x.unwrap_or(0.0)).max(1.0), ctx, depth + 1);
+        let (w, h) = self.size_at(k, (inner.w - c.x.unwrap_or(0.0)).max(1.0), ctx, depth + 1, sib);
         let (x, y) = c.top_left(w, h);
         self.draw_node(k, Rect::new(inner.x + x, inner.y + y, w, h), ctx, depth + 1, sib)
     }
@@ -95,13 +95,15 @@ impl Layouter<'_> {
                             if !k.common().presence.occupies() {
                                 continue;
                             }
-                            let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
                             // A repeating subform here (a table in an area of a positioned page,
                             // say) gets its instances, as in a flowed one, one under another,
-                            // and the rows past them are reported as there.
+                            // each as tall as its own content, and the rows past them are
+                            // reported as there.
                             let instances = self.laid_out_instances(k, &ctx.som);
                             for instance in 0..instances {
-                                self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sibs.at(i) + instance)?;
+                                let sib = sibs.at(i).saturating_add(instance);
+                                let (w, h) = self.size_at(k, inner.w, &ctx, depth + 1, sib);
+                                self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, sib)?;
                                 y += h;
                             }
                         }
@@ -140,7 +142,7 @@ impl Layouter<'_> {
                                     y += h;
                                 }
                             } else {
-                                let (w, h) = self.size_of(k, inner.w, &ctx, depth + 1);
+                                let (w, h) = self.size_at(k, inner.w, &ctx, depth + 1, csib);
                                 self.draw_node(k, Rect::new(inner.x, y, w, h), &ctx, depth + 1, csib)?;
                                 y += h;
                             }
