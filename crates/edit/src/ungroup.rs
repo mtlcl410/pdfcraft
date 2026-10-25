@@ -1,8 +1,8 @@
-//! Edit a PDF â–¸ Ungroup: draw a Form XObject's content in place of its `Do` (#2964, #3005).
+//! Edit a PDF ▸ Ungroup: draw a Form XObject's content in place of its `Do` (#2964, #3005).
 //!
 //! Text inside grouped Form artwork can't be edited, because editing rewrites only the page's own
 //! content streams. Ungrouping copies the form's content into the page at the same place,
-//! wrapped as `q <Matrix> cm <BBox> re W n â€¦ Q`, with the form's resources merged into a copy of
+//! wrapped as `q <Matrix> cm <BBox> re W n … Q`, with the form's resources merged into a copy of
 //! the page's under names that don't clash. Its text then edits like any other. The form object
 //! itself is left alone, so another page or placement that draws it is unchanged.
 //!
@@ -11,10 +11,10 @@
 //! a blend mode other than Normal inside, or a group drawn translucent, blended or under a soft
 //! mask. Those are refused rather than changed, as is tagged form content (its structure link
 //! would be lost) and content whose marked content or text objects don't balance (inlined, they
-//! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC â€¦ BDC â€¦ EMC`.
+//! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC … BDC … EMC`.
 //!
 //! A pattern's matrix maps pattern space to the default space of the content stream that uses it
-//! (ISO 32000-2 Â§8.7.2): inside the form that is the form's space at the `Do`, on the page it is
+//! (ISO 32000-2 §8.7.2): inside the form that is the form's space at the `Do`, on the page it is
 //! the page's. So each pattern the form selects with `scn`/`SCN` is drawn from a copy whose
 //! `/Matrix` also carries the form's placement; one that can't be copied that way is refused.
 
@@ -29,13 +29,13 @@ use crate::EditError;
 /// any real form, and a bomb must not be copied into the page.
 const MAX_FORM_BYTES: usize = 64 << 20;
 
-/// Resource categories a content stream refers to by name (ISO 32000-2 Â§7.8.3, Table 34).
+/// Resource categories a content stream refers to by name (ISO 32000-2 §7.8.3, Table 34).
 const CATEGORIES: [&[u8]; 7] = [b"Font", b"XObject", b"ExtGState", b"ColorSpace", b"Pattern", b"Shading", b"Properties"];
 
 /// The most distinct patterns one ungrouped form may select; each becomes a new object.
 const MAX_MOVED_PATTERNS: usize = 256;
 
-/// A name map for one resource category: form name â†’ name in the page's resources.
+/// A name map for one resource category: form name → name in the page's resources.
 type Renames = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// What [`ungroup_ops`] gives back: the ops that draw the form inline, the page resources with
