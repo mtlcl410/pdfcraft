@@ -159,6 +159,23 @@ fn to_js(n: &FormNode) -> XfaNode {
     }
 }
 
+/// Add the names of a `resetData` call to the run of resets before it. No names means the
+/// whole form, which takes in every other.
+fn merge_reset(merged: &mut Vec<String>, names: &[String]) {
+    if merged.is_empty() {
+        return;
+    }
+    if names.is_empty() {
+        merged.clear();
+        return;
+    }
+    for n in names {
+        if !merged.contains(n) {
+            merged.push(n.clone());
+        }
+    }
+}
+
 fn find_container<'a>(n: &'a FormNode, som: &str, depth: usize) -> Option<&'a FormNode> {
     if depth > 64 {
         return None;
@@ -275,6 +292,9 @@ struct Runner<'a, 'b> {
     fields: Option<HashMap<String, FieldInfo>>,
     /// The live form as last built; dropped when a script changed the form.
     cached: Option<LiveForm>,
+    /// `cached` as the scripts get it, made once and sent to each script until the live form
+    /// changes in any way (a value too): the script engine reuses what it built from it.
+    js_root: Option<Arc<XfaNode>>,
     /// The script engine for this event: one thread for all its scripts, each run in a fresh
     /// context on the form as it is then (`cached`, kept up to date in place for values and
     /// rebuilt when the structure changed).
@@ -309,6 +329,7 @@ impl<'a, 'b> Runner<'a, 'b> {
             by_path: None,
             fields: None,
             cached: None,
+            js_root: None,
             session: None,
             changes: Changes::default(),
         }
@@ -318,6 +339,7 @@ impl<'a, 'b> Runner<'a, 'b> {
     /// script.
     fn invalidate(&mut self) {
         self.cached = None;
+        self.js_root = None;
     }
 
     /// The script engine for this event.
@@ -334,6 +356,8 @@ impl<'a, 'b> Runner<'a, 'b> {
         let op = pdfcraft_xfa::DataOp::Value { path, text };
         self.data.get_or_insert_with(Default::default).apply(&op);
         self.pending.push(op);
+        // The value changes in the live form below: the scripts' copy is made again.
+        self.js_root = None;
         let refreshed = match self.cached.as_mut() {
             Some(live) => pdfcraft_xfa::refresh_value(&mut live.root, self.tpl, self.data.as_ref(), som).is_some(),
             None => true,
@@ -591,7 +615,9 @@ impl<'a, 'b> Runner<'a, 'b> {
                 }
             }
         }
-        for e in effects {
+        // Resets in a row, applied together when the run of them ends.
+        let mut pending_reset: Option<Vec<String>> = None;
+        for (at, e) in effects.iter().enumerate() {
             // Only a click script may print, save, open links or move the focus (not the
             // calculations a click sets off, nor anything run on open or on a change).
             if let Some(what) = click_only(e)
@@ -640,7 +666,19 @@ impl<'a, 'b> Runner<'a, 'b> {
                     relayout = true;
                 }
                 XfaEffect::MessageBox(m) => self.alert(m.clone()),
-                XfaEffect::ResetData(names) => self.reset(names)?,
+                XfaEffect::ResetData(names) => {
+                    // A script resetting several subforms in a row (`resetData` once for each)
+                    // resets them together: the same fields end up at their defaults.
+                    if let Some(merged) = pending_reset.as_mut() {
+                        merge_reset(merged, names);
+                    } else {
+                        pending_reset = Some(names.clone());
+                    }
+                    let next_is_reset = effects.get(at.saturating_add(1)).is_some_and(|e| matches!(e, XfaEffect::ResetData(_)));
+                    if !next_is_reset && let Some(names) = pending_reset.take() {
+                        self.reset(&names)?;
+                    }
+                }
                 XfaEffect::Print => self.run.out.requests.push(Request::Print),
                 XfaEffect::SaveAs => self.run.out.requests.push(Request::SaveAs),
                 XfaEffect::LaunchUrl(u) => self.run.out.requests.push(Request::LaunchUrl(u.clone())),
@@ -669,7 +707,14 @@ impl<'a, 'b> Runner<'a, 'b> {
         #[cfg(test)]
         self.check_live();
         let event = XfaEvent { activity: ev.activity.clone(), target: ev.som.clone(), new_text: new_text.to_string(), prev_text: String::new() };
-        let root = to_js(&self.live().root);
+        let root = match &self.js_root {
+            Some(r) => Arc::clone(r),
+            None => {
+                let r = Arc::new(to_js(&self.live().root));
+                self.js_root = Some(Arc::clone(&r));
+                r
+            }
+        };
         let script = Script {
             source: ev.script.clone(),
             formcalc: ev.formcalc,

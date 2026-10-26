@@ -6576,6 +6576,57 @@ fn xfa_initialize_scripts_that_hide_subforms_lay_the_form_out_once() {
     assert_eq!(names(&s, again), opened);
 }
 
+/// A script that resets several subforms one after another (`xfa.host.resetData` once for
+/// each, as forms with optional pages do) resets every one of them, and nothing else; resets
+/// in a row are applied together.
+#[test]
+fn xfa_resets_in_a_row_reset_every_named_subform_and_nothing_else() {
+    let sections = 5;
+    let mut body = String::from(
+        r#"<field name="wanted" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><value><integer>0</integer></value>"#,
+    );
+    let resets: String = (0..sections).map(|n| format!("xfa.host.resetData('form.extra{n}');")).collect();
+    body.push_str(&format!(
+        r#"<event activity="initialize"><script contentType="application/x-javascript">{resets} keep.rawValue = "kept";</script></event></field>"#
+    ));
+    body.push_str(r#"<field name="keep" w="3in" h="0.3in"><ui><textEdit/></ui></field>"#);
+    for n in 0..sections {
+        body.push_str(&format!(
+            r#"<subform name="extra{n}" layout="tb"><field name="note" w="3in" h="0.3in"><ui><textEdit/></ui><value><text>default</text></value></field></subform>"#
+        ));
+    }
+    let notes: String = (0..sections).map(|n| format!("<extra{n}><note>typed {n}</note></extra{n}>")).collect();
+    let tpl = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><occur max="-1"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ {body}
+</subform>
+</template>
+<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><keep>typed</keep>{notes}</form></xfa:data></xfa:datasets>
+</xdp:xdp>
+"#
+    );
+    let mut s = Session::new().with_clock(|| 1_700_000_000).with_xfa_time_scale(100);
+    // Without the resets the sections show what was typed.
+    let untouched = Arc::new(pdfcraft_xfa::fixtures::shell(&tpl.replace(&resets, "")));
+    let plain = s.open("plain.pdf", None, untouched, None).expect("opens");
+    let typed: Vec<_> = s.get(plain).unwrap().form.iter().filter(|f| f.name.contains("note")).map(|f| f.value.clone()).collect();
+    assert_eq!(typed, (0..sections).map(|n| vec![format!("typed {n}")]).collect::<Vec<_>>());
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&tpl));
+    let id = s.open("resets.pdf", None, bytes, None).expect("opens");
+    let out = s.take_js_output(id);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let form = &s.get(id).unwrap().form;
+    let notes: Vec<_> = form.iter().filter(|f| f.name.contains("note")).map(|f| f.value.clone()).collect();
+    assert_eq!(notes.len(), sections, "{form:?}");
+    assert!(notes.iter().all(|v| v == &vec!["default".to_string()]), "every section is reset: {notes:?}");
+    let keep = form.iter().find(|f| f.name.contains("keep")).map(|f| f.value.clone());
+    assert_eq!(keep, Some(vec!["kept".to_string()]), "the script's later write stands");
+}
+
 /// The scripts of one event share the form as the engine holds it: a failed script's
 /// half-done writes reach nobody, and a script reads the saved value a choice list was given
 /// by its shown text.
