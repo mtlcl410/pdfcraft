@@ -225,6 +225,48 @@ impl Session {
             },
             (_, cos) => (bytes, info, cos),
         };
+        // The document-level scripts run as the document opens (ISO 32000-2 §12.6.4.17). What
+        // they change in the form (a field they hide, say) is one more revision, as for XFA
+        // above: still nothing to save. Not on a signed document, whose signatures would then
+        // cover a revision fewer than the file has.
+        let (bytes, info, cos) = match cos {
+            Ok(Ok(cos)) if !context.js_off => {
+                let mut work = cos.clone();
+                let ran =
+                    guard(|| js::on_open(&mut work, &name, &mut script_output)).unwrap_or_else(|m| Err(format!("they failed unexpectedly ({m})")));
+                match ran {
+                    Ok(names) if work.is_modified() && !pdfcraft_sign::pdf::list(&cos, &bytes, &context.trust).iter().any(|s| s.signed) => {
+                        match rebase(&work) {
+                            Ok((b, mut i, c)) => {
+                                // `rebase` inspected the file afresh: keep what earlier steps of
+                                // opening said (a layout that failed, values taken from XFA data).
+                                let earlier: Vec<String> = info.warnings.into_iter().filter(|w| !i.warnings.contains(w)).collect();
+                                i.warnings.splice(0..0, earlier);
+                                let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+                                let more = if names.len() > shown.len() { format!(" and {} more", names.len() - shown.len()) } else { String::new() };
+                                i.warnings.push(format!(
+                                    "This document's scripts changed {} form field{} on opening ({}{more}); saving keeps those changes",
+                                    names.len(),
+                                    if names.len() == 1 { "" } else { "s" },
+                                    shown.join(", ")
+                                ));
+                                (b, i, Ok(Ok(c)))
+                            }
+                            Err(e) => {
+                                script_output.errors.push(format!("The document's scripts could not be applied: {e}"));
+                                (bytes, info, Ok(Ok(cos)))
+                            }
+                        }
+                    }
+                    Ok(_) => (bytes, info, Ok(Ok(cos))),
+                    Err(e) => {
+                        script_output.errors.push(format!("The document's scripts could not run: {e}"));
+                        (bytes, info, Ok(Ok(cos)))
+                    }
+                }
+            }
+            cos => (bytes, info, cos),
+        };
         // The catalog leads to no page, but the reader found pages by scanning: gather the page
         // objects into a page tree as one more revision, or page edits address none of them
         // (#1656). Kept only when the reader then shows the same pages, and never on a signed

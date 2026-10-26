@@ -5062,6 +5062,104 @@ fn a_document_script_that_throws_still_lets_the_form_calculate() {
     assert_eq!((o.error, o.result.as_deref(), o.doc_errors.len()), (None, Some("6"), 1));
 }
 
+/// A one-page form (200 × 100 pt) with a text field `banner` across its top 20 pt, whose
+/// appearance is a yellow bar, and `script` (PDF string syntax) as its document-level script.
+/// Like the warning bar of public forms that a document script hides once the viewer opens them.
+fn banner_form(script: &str) -> Vec<u8> {
+    let bar = "1 1 0 rg 0 0 200 20 re f";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(init) 6 0 R] >> >> /AcroForm << /Fields [4 0 R] >> >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 100] >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 1 /T (banner) /V (Warning) /Rect [0 80 200 100] /P 3 0 R /F 4 /AP << /N 5 0 R >> >>"
+            .to_string(),
+        format!("<< /Type /XObject /Subtype /Form /BBox [0 0 200 20] /Length {} >>\nstream\n{bar}\nendstream", bar.len()),
+        format!("<< /S /JavaScript /JS ({script}) >>"),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+/// Whether the yellow bar is drawn in the middle of the top 20 pt of `bytes`' first page.
+fn shows_banner(bytes: &Arc<Vec<u8>>, config: &pdfcraft_render::RenderConfig) -> bool {
+    let mut r = pdfcraft_render::PageRenderer::new(bytes.clone(), config.clone());
+    let page = r.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+    assert!(page.error.is_none(), "{:?}", page.error);
+    let at = ((10 * page.width + 100) * 4) as usize;
+    let px = page.rgba.get(at..at + 4).unwrap();
+    assert!(px == [255, 255, 0, 255] || px == [255, 255, 255, 255], "neither the bar nor the page: {px:?}");
+    px == [255, 255, 0, 255]
+}
+
+/// A document-level script runs when the document opens (ISO 32000-2 §12.6.4.17): a field it
+/// hides with `hidden = true` or `display = display.hidden` is not drawn on screen or on paper,
+/// and saving keeps it hidden (annotation flags Hidden, Table 167).
+#[test]
+fn a_field_a_document_script_hides_on_opening_is_not_drawn() {
+    for script in ["this.getField('banner').hidden = true;", "this.getField('banner').display = display.hidden;"] {
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("form.pdf", None, Arc::new(banner_form(script)), None).unwrap();
+        let doc = s.get(id).unwrap();
+        assert!(!shows_banner(&doc.display, &doc.config), "{script}: drawn on screen");
+        assert!(!doc.dirty, "{script}: opening is not an edit");
+        let settings =
+            print::Settings { pages: vec![0], paper: (200.0, 100.0), layout: print::Layout::Size(print::SizeMode::Actual), ..Default::default() };
+        let printed = Arc::new(s.print_pdf(id, &settings).unwrap());
+        assert!(!shows_banner(&printed, &pdfcraft_render::RenderConfig::default()), "{script}: printed");
+        let saved = s.save_bytes(id).unwrap();
+        assert!(!shows_banner(&saved, &pdfcraft_render::RenderConfig::default()), "{script}: drawn from the saved file");
+    }
+    // A document script that hides nothing leaves the bar, and with JavaScript off none runs.
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("form.pdf", None, Arc::new(banner_form("var x = 1;")), None).unwrap();
+    assert!(shows_banner(&s.get(id).unwrap().display, &s.get(id).unwrap().config));
+    s.set_javascript(false);
+    let id = s.open("form.pdf", None, Arc::new(banner_form("this.getField('banner').hidden = true;")), None).unwrap();
+    assert!(shows_banner(&s.get(id).unwrap().display, &s.get(id).unwrap().config), "JavaScript off: no script runs");
+    // A signed document is left as signed: the change would be a revision its signatures don't cover.
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+    let opts = SignOptions { page: 0, rect: Some([20.0, 20.0, 60.0, 40.0]), ..SignOptions::default() };
+    let signed = s.sign(id, &digital_id, opts).unwrap();
+    s.set_javascript(true);
+    let id = s.open("signed.pdf", None, signed.clone(), None).unwrap();
+    assert!(*s.get(id).unwrap().bytes == *signed, "no revision was added");
+    assert!(shows_banner(&s.get(id).unwrap().display, &s.get(id).unwrap().config), "signed: left as it was signed");
+}
+
+/// What opening a form whose document script hides a field reports: the change, and that saving
+/// keeps it.
+#[test]
+fn opening_says_which_fields_the_document_scripts_changed() {
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("form.pdf", None, Arc::new(banner_form("this.getField('banner').hidden = true;")), None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert!(
+        doc.info.warnings.iter().any(|w| w == "This document's scripts changed 1 form field on opening (banner); saving keeps those changes"),
+        "{:?}",
+        doc.info.warnings
+    );
+    assert_eq!(doc.form.iter().find(|f| f.name == "banner").map(|f| f.value.clone()), Some(vec!["Warning".to_string()]), "the value stays");
+    // A script that fails at opening is reported, and what it did before failing still applies.
+    let script = "this.getField('banner').hidden = true; this.getOCGs()[0].state = false;";
+    let id = s.open("form.pdf", None, Arc::new(banner_form(script)), None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert!(!shows_banner(&doc.display, &doc.config));
+    let out = s.take_js_output(id);
+    assert!(out.errors.iter().any(|e| e.starts_with("document script 1: TypeError")), "{out:?}");
+}
+
 #[test]
 fn active_xfa_does_not_run_pdf_container_scripts_but_keeps_requested_alerts() {
     let template = pdfcraft_xfa::fixtures::scripted_template().replace(
