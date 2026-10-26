@@ -1,10 +1,10 @@
 use super::host::host;
 use super::instances::instance_manager;
-use super::model::{MAX_DEPTH, XfaDoc, XfaEffect, XfaEvent, clip, reset_names};
+use super::model::{MAX_DEPTH, MAX_NODES, XfaDoc, XfaEffect, XfaEvent, XfaKind, clip, reset_names};
 use super::nodes::{node_index, node_object, noop, resolve_som, resolver, sink};
 use super::{
-    Attribute, Context, JsResult, JsString, JsValue, NativeFunction, ObjectInitializer, arg, data_object, js_string, platform, printd, printf,
-    printx, s, scand, text,
+    Attribute, Context, HashSet, JsResult, JsString, JsValue, NativeFunction, ObjectInitializer, arg, data_object, error, js_string, platform,
+    printd, printf, printx, s, scand, text,
 };
 
 // ── xfa.host, xfa.layout, xfa.event, app, console ───────────────────────────────────────────
@@ -20,6 +20,131 @@ fn export_data_object(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsRes
     let (name, open) = data_object(args, ctx)?;
     effect(ctx, XfaEffect::OpenAttachment { name, open })?;
     Ok(JsValue::undefined())
+}
+
+/// `event.target.getField(name)`: the document's field whose fully qualified name is `name`.
+/// A field PdfCraft laid out is named by the SOM expression of its XFA field with every index
+/// written (`form1[0].page1[0].total[0]`), as form tools name the PDF fields of an XFA form
+/// (XFA 3.3, ch. 2, "Field Names", pp. 72-74), and only that spelling finds it: no other
+/// spelling, short name or missing index does. A subform's SOM expression gives an object that
+/// names the subform. A signature field isn't found by an initialize script (it is from later
+/// events). Anything else gives `null`; no name at all is an error.
+fn get_field(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let Some(wanted) = args.first() else { return Err(error("getField: a field name is required")) };
+    let name = clip(text(wanted, ctx)?);
+    if name.is_empty() {
+        return Ok(JsValue::null());
+    }
+    let kind = crate::host::host(ctx)?.borrow().fields.iter().find(|f| f.name == name).map(|f| f.kind);
+    match kind {
+        Some(crate::FieldType::Signature) if host(ctx)?.borrow().activity == "initialize" => Ok(JsValue::null()),
+        Some(_) => Ok(crate::document::field_object(ctx, &name).into()),
+        None => {
+            let subform = host(ctx)?.borrow().nodes.iter().any(|n| !n.gone && n.som == name && n.kind == XfaKind::Subform);
+            Ok(if subform {
+                ObjectInitializer::new(ctx).property(js_string!("name"), s(&name), Attribute::READONLY).build().into()
+            } else {
+                JsValue::null()
+            })
+        }
+    }
+}
+
+/// A SOM path without its indexes (`form.page1.qty`), for matching the names scripts pass.
+fn plain_som(som: &str) -> String {
+    let mut out = String::with_capacity(som.len());
+    let mut skip = false;
+    for c in som.chars() {
+        match c {
+            '[' => skip = true,
+            ']' => skip = false,
+            _ if !skip => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Does `name` from a script (`qty`, `page1.qty`, `xfa.form.form.page1.qty`, a SOM expression with
+/// its indexes, or a container such as `table`) name the object at `som` or one of its
+/// ancestors? What `xfa.host.resetData` and `event.target.resetForm` reset by.
+pub fn som_names(som: &str, name: &str) -> bool {
+    let plain = plain_som(som);
+    let n = plain_som(name.trim());
+    let n = n.strip_prefix("xfa.form.").or_else(|| n.strip_prefix("$form.")).unwrap_or(&n);
+    let want: Vec<&str> = n.split('.').filter(|s| !s.is_empty()).collect();
+    let have: Vec<&str> = plain.split('.').filter(|s| !s.is_empty()).collect();
+    !want.is_empty() && have.windows(want.len()).any(|w| w == want.as_slice())
+}
+
+/// `event.target.resetForm(names)`: resets the named fields (an array of names, or one name; a
+/// name is matched as [`som_names`] matches it), or every field when no names are given; a list
+/// that names nothing (an empty array, or only missing or empty entries) resets nothing. The
+/// script reads the fields' default values back at once; the form itself is reset by the
+/// effect when the script is done, as for `xfa.host.resetData`.
+fn reset_form(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let given = arg(args, 0);
+    let all = given.is_undefined() || given.is_null();
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for name in crate::host::strings(&given, ctx)? {
+        let name = clip(name.trim().to_string());
+        if !name.is_empty() && names.len() < MAX_NODES && seen.insert(name.clone()) {
+            names.push(name);
+        }
+    }
+    if !all && names.is_empty() {
+        return Ok(JsValue::undefined());
+    }
+    effect(ctx, XfaEffect::ResetData(names.clone()))?;
+    // What the script reads from now on: each reset field's default value.
+    let reset: Vec<(String, Vec<String>)> = {
+        let mut fields = crate::host::host(ctx)?.borrow_mut();
+        let fields = std::sync::Arc::make_mut(&mut fields.fields);
+        let mut out = Vec::new();
+        for f in fields.iter_mut() {
+            let named = names.is_empty() || names.iter().any(|n| som_names(&f.name, n));
+            if named && !matches!(f.kind, crate::FieldType::Button | crate::FieldType::Signature) {
+                f.value = f.default.clone();
+                out.push((f.name.clone(), f.default.clone()));
+            }
+        }
+        out
+    };
+    let mut h = host(ctx)?.borrow_mut();
+    for (som, value) in reset {
+        if let Some(n) = h.nodes.iter_mut().find(|n| !n.gone && n.som == som && n.kind == XfaKind::Field) {
+            n.value = value.join("\n");
+            n.formatted = None;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
+/// A script changed `before` into `after` through `getField`: a new value is set on the XFA
+/// field the same way `rawValue` sets it (so the script reads it back there too); properties
+/// XFA fields have no counterpart for here are noted and left as they were.
+pub(crate) fn field_written(ctx: &mut Context, before: &crate::FieldState, after: &crate::FieldState) -> JsResult<()> {
+    let mut h = host(ctx)?.borrow_mut();
+    if before.value != after.value {
+        let at = h.nodes.iter().position(|n| !n.gone && n.som == after.name);
+        if !at.is_some_and(|i| h.set_value(i, after.value.join("\n"))) {
+            h.unapplied(format!("{}: value", after.name));
+        }
+    }
+    let others = [
+        ("readonly", before.readonly != after.readonly),
+        ("required", before.required != after.required),
+        ("display", before.display != after.display),
+        ("textColor", before.text_color != after.text_color),
+        ("fillColor", before.fill_color != after.fill_color),
+    ];
+    for (property, changed) in others {
+        if changed {
+            h.unapplied(format!("{}: {property}", after.name));
+        }
+    }
+    Ok(())
 }
 
 /// `xfa.host.messageBox(message, title, icon, buttons)`: records the message with its title,
@@ -206,8 +331,11 @@ pub(super) fn install(ctx: &mut Context, event: &XfaEvent, doc: &XfaDoc, current
     // Two event objects, as in Acrobat's XFA scripting: `xfa.event`, whose target is the form
     // node the event happened on, and Acrobat's own `event`, whose target is the document
     // (`event.target.exportDataObject(…)` is how forms open their attached files).
-    let acrobat_doc =
-        ObjectInitializer::new(ctx).function(NativeFunction::from_fn_ptr(export_data_object), js_string!("exportDataObject"), 4).build();
+    let acrobat_doc = ObjectInitializer::new(ctx)
+        .function(NativeFunction::from_fn_ptr(export_data_object), js_string!("exportDataObject"), 4)
+        .function(NativeFunction::from_fn_ptr(get_field), js_string!("getField"), 1)
+        .function(NativeFunction::from_fn_ptr(reset_form), js_string!("resetForm"), 1)
+        .build();
     let event_object = |ctx: &mut Context, target: JsValue| {
         ObjectInitializer::new(ctx)
             .property(js_string!("name"), s(&event.activity), Attribute::all())

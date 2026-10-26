@@ -16,6 +16,9 @@ pub(crate) struct Host {
     pub(crate) kept: usize,
     /// Alerts, console lines and requests the limits left out.
     pub(crate) dropped: usize,
+    /// The fields belong to an XFA form, named by their SOM expressions: what a script changes
+    /// through them is changed in the form too ([`xfa::field_written`]).
+    pub(crate) xfa: bool,
 }
 
 impl Host {
@@ -171,13 +174,22 @@ pub(crate) fn read(ctx: &Context, name: &JsString) -> JsResult<FieldState> {
     Ok(host(ctx)?.borrow().fields[i].clone())
 }
 
-pub(crate) fn write(ctx: &Context, name: &JsString, change: impl FnOnce(&mut FieldState)) -> JsResult<()> {
+pub(crate) fn write(ctx: &mut Context, name: &JsString, change: impl FnOnce(&mut FieldState)) -> JsResult<()> {
     let i = field_index(ctx, name)?;
-    let mut h = host(ctx)?.borrow_mut();
-    let field = Arc::make_mut(&mut h.fields).get_mut(i).ok_or_else(|| error("the field is no longer available"))?;
-    change(field);
-    h.changed.insert(i);
-    Ok(())
+    let written = {
+        let mut h = host(ctx)?.borrow_mut();
+        let xfa = h.xfa;
+        let field = Arc::make_mut(&mut h.fields).get_mut(i).ok_or_else(|| error("the field is no longer available"))?;
+        let before = xfa.then(|| field.clone());
+        change(field);
+        let after = before.map(|b| (b, field.clone()));
+        h.changed.insert(i);
+        after
+    };
+    match written {
+        Some((before, after)) => xfa::field_written(ctx, &before, &after),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn value_of(f: &FieldState, ctx: &mut Context) -> JsValue {

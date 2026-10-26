@@ -112,7 +112,38 @@ fn display(doc: &pdfcraft_cos::Document, f: &Field) -> i32 {
 
 /// A form field as scripts see it.
 pub fn field_state(doc: &pdfcraft_cos::Document, f: &Field) -> pdfcraft_js::FieldState {
-    field_state_with_display(f, display(doc, f))
+    let mut s = field_state_with_display(f, display(doc, f));
+    s.signature = signature_in_value(doc, f);
+    s
+}
+
+/// A signature field's state as its value shows it, without checking the signature: signed
+/// (its validity unknown) when the value is a signature dictionary, else unsigned (ISO 32000-2
+/// 12.7.5.5). The state the document's signatures were checked with, where there is one, is
+/// [`signature_states`]'.
+pub(crate) fn signature_in_value(doc: &pdfcraft_cos::Document, f: &Field) -> pdfcraft_js::SignatureState {
+    let signed = f.kind == FieldKind::Signature
+        && doc.get(f.obj).as_dict().and_then(|d| d.get(b"V").map(|v| doc.resolve(v))).is_some_and(|v| v.as_dict().is_some());
+    if signed { pdfcraft_js::SignatureState::Unknown } else { pdfcraft_js::SignatureState::Unsigned }
+}
+
+/// The signature state of each signature field in `list` (the document's signatures as
+/// [`pdfcraft_sign::pdf::list`] checked them), by field name. Document timestamps are no
+/// field's signature and are left out.
+pub(crate) fn signature_states(list: &[pdfcraft_sign::SignatureInfo]) -> std::collections::HashMap<String, pdfcraft_js::SignatureState> {
+    use pdfcraft_js::SignatureState as S;
+    list.iter()
+        .filter(|s| !s.doc_timestamp)
+        .map(|s| {
+            let state = match (s.signed, s.status) {
+                (false, _) => S::Unsigned,
+                (true, pdfcraft_sign::Status::Valid) => S::Valid,
+                (true, pdfcraft_sign::Status::Unknown) => S::Unknown,
+                (true, pdfcraft_sign::Status::Invalid) => S::Invalid,
+            };
+            (s.field.clone(), state)
+        })
+        .collect()
 }
 
 fn field_state_with_display(f: &Field, display: i32) -> pdfcraft_js::FieldState {
@@ -209,7 +240,9 @@ impl Scripts for JsRunner {
                     Some(w) => *self.displays.entry(w.obj).or_insert_with(|| display(&self.cos, f)),
                     None => pdfcraft_js::DISPLAY_VISIBLE,
                 };
-                field_state_with_display(f, display)
+                let mut s = field_state_with_display(f, display);
+                s.signature = signature_in_value(&self.cos, f);
+                s
             })
             .collect();
         let states = std::sync::Arc::new(states);
@@ -296,7 +329,18 @@ impl Session {
         }
         let runner = JsRunner::new(&cos, &doc.name);
         let fields = pdfcraft_forms::fields(&cos);
-        let states: Vec<_> = fields.iter().map(|f| field_state(&cos, f)).collect();
+        // Signature fields as the document's signatures were checked.
+        let checked = signature_states(&doc.signatures);
+        let states: Vec<_> = fields
+            .iter()
+            .map(|f| {
+                let mut s = field_state(&cos, f);
+                if let Some(state) = checked.get(&f.name) {
+                    s.signature = *state;
+                }
+                s
+            })
+            .collect();
         let event = match target {
             Some(t) => pdfcraft_js::Event { will_commit: false, ..pdfcraft_js::Event::field("Mouse Up", t, "") },
             None => pdfcraft_js::Event::doc("Console"),
