@@ -5066,16 +5066,31 @@ fn a_document_script_that_throws_still_lets_the_form_calculate() {
 /// appearance is a yellow bar, and `script` (PDF string syntax) as its document-level script.
 /// Like the warning bar of public forms that a document script hides once the viewer opens them.
 fn banner_form(script: &str) -> Vec<u8> {
+    banner_form_with(script, "", "")
+}
+
+/// [`banner_form`] with `catalog` added to its catalog and `acroform` to its AcroForm
+/// dictionary; object 7 is an XFA packet without a template.
+fn banner_form_with(script: &str, catalog: &str, acroform: &str) -> Vec<u8> {
     let bar = "1 1 0 rg 0 0 200 20 re f";
+    let xdp = r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/"/>"#;
     let objs = [
-        "<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(init) 6 0 R] >> >> /AcroForm << /Fields [4 0 R] >> >>".to_string(),
+        format!(
+            "<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(init) 6 0 R] >> >> /AcroForm << /Fields [4 0 R] {acroform} >> {catalog} >>"
+        ),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 100] >>".to_string(),
         "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>".to_string(),
         "<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 1 /T (banner) /V (Warning) /Rect [0 80 200 100] /P 3 0 R /F 4 /AP << /N 5 0 R >> >>"
             .to_string(),
         format!("<< /Type /XObject /Subtype /Form /BBox [0 0 200 20] /Length {} >>\nstream\n{bar}\nendstream", bar.len()),
         format!("<< /S /JavaScript /JS ({script}) >>"),
+        format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len()),
     ];
+    pdf_of(&objs)
+}
+
+/// A PDF file of `objs`: objects 1, 2, …, object 1 its catalog.
+fn pdf_of(objs: &[String]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (i, o) in objs.iter().enumerate() {
@@ -5158,6 +5173,46 @@ fn opening_says_which_fields_the_document_scripts_changed() {
     assert!(!shows_banner(&doc.display, &doc.config));
     let out = s.take_js_output(id);
     assert!(out.errors.iter().any(|e| e.starts_with("document script 1: TypeError")), "{out:?}");
+}
+
+/// A value a document script sets on opening reruns the calculations: the opening warning names
+/// the calculated field they rewrote too, not only the field the script touched.
+#[test]
+fn opening_names_the_fields_the_calculations_changed_too() {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(init) 6 0 R] >> >> /AcroForm << /Fields [4 0 R 5 0 R] /CO [5 0 R] >> >>"
+            .to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 100] >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 5 0 R] >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (price) /V (1) /Rect [0 60 100 80] /P 3 0 R /F 4 >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (total) /V (2) /Rect [0 20 100 40] /P 3 0 R /F 4 /AA << /C 7 0 R >> >>".to_string(),
+        r"<< /S /JavaScript /JS (this.getField\('price'\).value = 5;) >>".to_string(),
+        r"<< /S /JavaScript /JS (event.value = this.getField\('price'\).value * 2;) >>".to_string(),
+    ];
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("form.pdf", None, Arc::new(pdf_of(&objs)), None).unwrap();
+    let doc = s.get(id).unwrap();
+    let value = |name: &str| doc.form.iter().find(|f| f.name == name).map(|f| f.value.clone());
+    assert_eq!(value("total"), Some(vec!["10".to_string()]), "the calculation ran");
+    assert!(
+        doc.info.warnings.iter().any(|w| w == "This document's scripts changed 2 form fields on opening (price, total); saving keeps those changes"),
+        "{:?}",
+        doc.info.warnings
+    );
+}
+
+/// When a document script changes a field on opening, the warnings earlier steps of opening gave
+/// stay: here, that the dynamic XFA form (it has no template) could not be laid out.
+#[test]
+fn opening_keeps_earlier_warnings_when_document_scripts_change_a_field() {
+    let bytes = banner_form_with("this.getField('banner').hidden = true;", "/NeedsRendering true", "/XFA 7 0 R");
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("form.pdf", None, Arc::new(bytes), None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert!(!shows_banner(&doc.display, &doc.config), "the document script ran");
+    let warnings = &doc.info.warnings;
+    assert!(warnings.iter().any(|w| w.contains("could not be laid out")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.starts_with("This document's scripts changed 1 form field on opening (banner)")), "{warnings:?}");
 }
 
 #[test]

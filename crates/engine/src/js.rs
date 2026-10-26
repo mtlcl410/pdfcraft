@@ -187,8 +187,9 @@ impl JsRunner {
 /// Run the document-level scripts as the document opens (ISO 32000-2 §12.6.4.17: "When the
 /// document is opened, all of the actions in this name tree shall be executed"), and apply to
 /// `work` the field changes they make: a form that hides its "your viewer may not be compatible"
-/// field from a document script shows without it. Returns the names of the fields changed; what
-/// the scripts printed, asked for or failed with goes to `out`.
+/// field from a document script shows without it. Returns the names of the fields changed,
+/// including fields a calculation the changes started rewrote; what the scripts printed, asked
+/// for or failed with goes to `out`.
 pub(crate) fn on_open(work: &mut pdfcraft_cos::Document, file_name: &str, out: &mut JsOutput) -> Result<Vec<String>, String> {
     let mut runner = JsRunner::new(work, file_name);
     if runner.doc_scripts.is_empty() {
@@ -206,7 +207,10 @@ pub(crate) fn on_open(work: &mut pdfcraft_cos::Document, file_name: &str, out: &
     // What a calculation the changes started printed or failed with.
     out.append(std::mem::take(&mut runner.output));
     applied?;
-    Ok(changes.into_iter().map(|c| c.name).collect())
+    // A value the scripts set reruns the calculations, which can change other fields too: name
+    // every field that differs from before opening, not only the ones the scripts touched.
+    let after: Vec<_> = pdfcraft_forms::fields(work).iter().map(|f| field_state(work, f)).collect();
+    Ok(self::changes(&states, &after).into_iter().map(|c| c.name).collect())
 }
 
 /// The Info dictionary as `this.info` keys (lower-case).
