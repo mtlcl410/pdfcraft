@@ -214,7 +214,8 @@ fn value_for(f: &FormField, v: &Value) -> Result<FieldValue> {
     Ok(match (f.kind, v) {
         (FormFieldKind::CheckBox, Value::Bool(b)) => FieldValue::Check(*b),
         (FormFieldKind::Radio, Value::Null) => FieldValue::Radio(None),
-        (FormFieldKind::Radio, Value::String(s)) => FieldValue::Radio(Some(s.clone())),
+        // An option as `form_fields` lists it (an export value) names its button's on state.
+        (FormFieldKind::Radio, Value::String(s)) => FieldValue::Radio(Some(f.state_for_export(s).unwrap_or(s).to_owned())),
         (FormFieldKind::Combo | FormFieldKind::List, Value::Array(a)) => FieldValue::Choice(
             a.iter().map(|x| x.as_str().map(str::to_owned).ok_or_else(|| wrong("list values must be strings"))).collect::<Result<_>>()?,
         ),

@@ -144,6 +144,30 @@ pub fn static_shell(data: &str) -> Vec<u8> {
     assemble(objs)
 }
 
+/// A static XFA form with one exclusion group `form1[0].page1[0].lang[0]` (items `1` English,
+/// `2` French) bound to the data by name, laid out as an AcroForm radio group whose `/Opt` holds
+/// the items and whose on states are the buttons' positions `/0` and `/1` (ISO 32000-2 Table 230),
+/// as public static forms write it. Its datasets hold `data` (the children of `xfa:data`).
+pub fn static_radio_shell(data: &str) -> Vec<u8> {
+    let xdp = format!(
+        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"><template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"><subform name=\"form1\"><subform name=\"page1\"><exclGroup name=\"lang\"><field name=\"en\"><ui><checkButton shape=\"round\"/></ui><items><integer>1</integer></items></field><field name=\"fr\"><ui><checkButton shape=\"round\"/></ui><items><integer>2</integer></items></field></exclGroup></subform></subform></template><xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data>{data}</xfa:data></xfa:datasets></xdp:xdp>"
+    );
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA 5 0 R /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) >> >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [9 0 R 10 0 R] >>".to_vec(),
+        b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
+        format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len()).into_bytes(),
+        b"<< /T (form1[0]) /Kids [7 0 R] >>".to_vec(),
+        b"<< /T (page1[0]) /Parent 6 0 R /Kids [8 0 R] >>".to_vec(),
+        b"<< /FT /Btn /Ff 49152 /T (lang[0]) /Parent 7 0 R /Opt [(1) (2)] /V /Off /Kids [9 0 R 10 0 R] >>".to_vec(),
+        b"<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [72 700 84 712] /P 3 0 R /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /0 11 0 R /Off 11 0 R >> >> >>".to_vec(),
+        b"<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [144 700 156 712] /P 3 0 R /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /1 11 0 R /Off 11 0 R >> >> >>".to_vec(),
+        b"<< /Type /XObject /Subtype /Form /BBox [0 0 12 12] /Length 0 >>\nstream\n\nendstream".to_vec(),
+    ];
+    assemble(objs)
+}
+
 /// A static XFA form of `n` text fields `form1[0].page1[0].f<i>[0]` on one page, whose values
 /// (`v<i>`) are only in its datasets, as when another viewer filled it in. The first field is
 /// read-only.
