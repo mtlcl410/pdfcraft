@@ -5,7 +5,7 @@
 //! presence and access changes become overrides kept in the PDF, added or removed rows change
 //! the datasets, and any of those lays the form out again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use pdfcraft_js::xfa::{XfaDoc, XfaEffect, XfaEvent, XfaKind, XfaNode};
@@ -159,20 +159,38 @@ fn to_js(n: &FormNode) -> XfaNode {
     }
 }
 
-/// Add the names of a `resetData` call to the run of resets before it. No names means the
-/// whole form, which takes in every other.
-fn merge_reset(merged: &mut Vec<String>, names: &[String]) {
-    if merged.is_empty() {
-        return;
-    }
-    if names.is_empty() {
-        merged.clear();
-        return;
-    }
-    for n in names {
-        if !merged.contains(n) {
-            merged.push(n.clone());
+/// The names of a run of `resetData` calls, applied together: each name once, in the order
+/// first given. A call without names resets the whole form, which takes in every other.
+#[derive(Default)]
+struct ResetRun {
+    names: Vec<String>,
+    /// `names` as a set, so adding a name costs the same however many there are (a script
+    /// may pass hundreds of thousands).
+    seen: HashSet<String>,
+    whole: bool,
+}
+
+impl ResetRun {
+    fn add(&mut self, names: &[String]) {
+        if self.whole {
+            return;
         }
+        if names.is_empty() {
+            self.whole = true;
+            self.names.clear();
+            self.seen.clear();
+            return;
+        }
+        for n in names {
+            if self.seen.insert(n.clone()) {
+                self.names.push(n.clone());
+            }
+        }
+    }
+
+    /// The names to reset; none for the whole form.
+    fn names(&self) -> &[String] {
+        if self.whole { &[] } else { &self.names }
     }
 }
 
@@ -616,7 +634,7 @@ impl<'a, 'b> Runner<'a, 'b> {
             }
         }
         // Resets in a row, applied together when the run of them ends.
-        let mut pending_reset: Option<Vec<String>> = None;
+        let mut pending_reset: Option<ResetRun> = None;
         for (at, e) in effects.iter().enumerate() {
             // Only a click script may print, save, open links or move the focus (not the
             // calculations a click sets off, nor anything run on open or on a change).
@@ -669,14 +687,10 @@ impl<'a, 'b> Runner<'a, 'b> {
                 XfaEffect::ResetData(names) => {
                     // A script resetting several subforms in a row (`resetData` once for each)
                     // resets them together: the same fields end up at their defaults.
-                    if let Some(merged) = pending_reset.as_mut() {
-                        merge_reset(merged, names);
-                    } else {
-                        pending_reset = Some(names.clone());
-                    }
+                    pending_reset.get_or_insert_with(ResetRun::default).add(names);
                     let next_is_reset = effects.get(at.saturating_add(1)).is_some_and(|e| matches!(e, XfaEffect::ResetData(_)));
-                    if !next_is_reset && let Some(names) = pending_reset.take() {
-                        self.reset(&names)?;
+                    if !next_is_reset && let Some(run) = pending_reset.take() {
+                        self.reset(run.names())?;
                     }
                 }
                 XfaEffect::Print => self.run.out.requests.push(Request::Print),
@@ -1003,6 +1017,40 @@ pub(crate) fn mark_script_buttons(doc: &pdfcraft_cos::Document, fields: &mut [pd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run of resets keeps each name once, in the order first given, and a reset of the whole
+    /// form takes in the rest, before or after it.
+    #[test]
+    fn resets_in_a_row_keep_each_name_once_and_a_whole_form_reset_wins() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut run = ResetRun::default();
+        run.add(&v(&["a", "b", "a"]));
+        run.add(&v(&["c", "b"]));
+        assert_eq!(run.names(), v(&["a", "b", "c"]).as_slice());
+        run.add(&[]);
+        assert!(run.names().is_empty());
+        run.add(&v(&["d"]));
+        assert!(run.names().is_empty(), "still the whole form");
+        let mut first = ResetRun::default();
+        first.add(&[]);
+        first.add(&v(&["a"]));
+        assert!(first.names().is_empty());
+    }
+
+    /// Adding a name to a run costs the same however many it holds: two runs of 60,000
+    /// distinct names merge at once (comparing each name with every kept one is 3.6 billion
+    /// comparisons).
+    #[test]
+    fn a_long_run_of_reset_names_merges_in_linear_time() {
+        let a: Vec<String> = (0..60_000).map(|i| format!("form1[0].a{i}")).collect();
+        let b: Vec<String> = (0..60_000).map(|i| format!("form1[0].b{i}")).collect();
+        let started = std::time::Instant::now();
+        let mut run = ResetRun::default();
+        run.add(&a);
+        run.add(&b);
+        assert_eq!(run.names().len(), 120_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+    }
 
     #[test]
     fn script_names_match_indexed_som_paths() {
