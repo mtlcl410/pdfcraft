@@ -6529,6 +6529,53 @@ fn the_xfa_open_budget_stops_the_calculations_it_has_no_time_for() {
     assert_eq!(pdfcraft_js::xfa_session::engines_started(), engines, "no script ran, so no engine started");
 }
 
+/// Opening lays the form out once after its initialize scripts, not after each one that
+/// hides a subform (XFA 3.3 pp. 388, 390: initialize fires once data binding is complete;
+/// the layout process has not run yet). Laying it out after every script spent the opening's
+/// time on the first few, and a form whose initialize scripts hide its optional pages was
+/// saved half initialized: the next opening hid more of it, and reset the data typed into
+/// what it hid.
+#[test]
+fn xfa_initialize_scripts_that_hide_subforms_lay_the_form_out_once() {
+    // Shaped like a form with optional extra pages: a check box, then more sections than one
+    // event may lay the form out again for, each hiding itself while the box is clear.
+    let sections = 60;
+    let mut body = String::from(
+        r#"<field name="wanted" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><value><integer>0</integer></value></field>"#,
+    );
+    for n in 0..sections {
+        body.push_str(&format!(
+            r#"<subform name="extra{n}" layout="tb"><event activity="initialize"><script contentType="application/x-javascript">if (wanted.rawValue == 0) this.presence = "hidden";</script></event><field name="note" w="3in" h="0.3in"><ui><textEdit/></ui></field></subform>"#
+        ));
+    }
+    let tpl = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><occur max="-1"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ {body}
+</subform>
+</template>
+</xdp:xdp>
+"#
+    );
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&tpl));
+    let mut s = Session::new().with_clock(|| 1_700_000_000).with_xfa_time_scale(100);
+    let id = s.open("extras.pdf", None, bytes, None).expect("opens");
+    let out = s.take_js_output(id);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let names = |s: &Session, id| s.get(id).unwrap().form.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    let opened = names(&s, id);
+    assert!(opened.iter().all(|n| !n.contains("note")), "every extra section is hidden on opening: {opened:?}");
+    assert!(opened.iter().any(|n| n.contains("wanted")), "{opened:?}");
+    // The saved form opens as it was saved.
+    let saved = s.save_bytes(id).unwrap();
+    let again = s.open("again.pdf", None, saved, None).expect("reopens");
+    assert!(s.take_js_output(again).errors.is_empty());
+    assert_eq!(names(&s, again), opened);
+}
+
 /// The scripts of one event share the form as the engine holds it: a failed script's
 /// half-done writes reach nobody, and a script reads the saved value a choice list was given
 /// by its shown text.

@@ -256,6 +256,11 @@ struct Runner<'a, 'b> {
     skipped: usize,
     relayouts: usize,
     relayouts_skipped: bool,
+    /// Lay the form out once, when the event ends, rather than after every script that changed
+    /// its structure (opening: see [`on_open`]).
+    defer_relayout: bool,
+    /// A deferred layout is owed.
+    relayout_owed: bool,
     dropped_output: usize,
     truncated_warned: bool,
     data: Option<pdfcraft_xfa::DataNode>,
@@ -291,6 +296,8 @@ impl<'a, 'b> Runner<'a, 'b> {
             skipped: 0,
             relayouts: 0,
             relayouts_skipped: false,
+            defer_relayout: false,
+            relayout_owed: false,
             dropped_output: 0,
             truncated_warned: false,
             data,
@@ -689,7 +696,11 @@ impl<'a, 'b> Runner<'a, 'b> {
             self.error(format!("{} ({}): {e}", ev.som, ev.activity));
         }
         if self.apply_effects(ev, &o.effects)? {
-            self.relayout()?;
+            if self.defer_relayout {
+                self.relayout_owed = true;
+            } else {
+                self.relayout()?;
+            }
         }
         Ok(Some(o))
     }
@@ -719,9 +730,10 @@ impl<'a, 'b> Runner<'a, 'b> {
     fn finish(mut self) -> Result<Changes, String> {
         #[cfg(test)]
         self.check_live();
-        if self.relayouts_skipped {
+        if self.relayouts_skipped || self.relayout_owed {
             self.relayouts = 0;
             self.relayouts_skipped = false;
+            self.relayout_owed = false;
             self.relayout()?;
         }
         self.flush()?;
@@ -825,6 +837,12 @@ pub(crate) fn relayout_changed_text(
 /// On open: initialize scripts, then calculations. Returns what they changed.
 pub(crate) fn on_open(doc: &mut pdfcraft_cos::Document, tpl: &Template, run: &mut XfaRun) -> Result<Changes, String> {
     let mut r = Runner::new(doc, tpl, run, OPEN_BUDGET_MS);
+    // The scripts read the live form (template, data and overrides), not the pages, so the
+    // pages are laid out once, after the last of them. Laying a large form out after every
+    // script that hides a subform spent the time limit on the first few, and the form was kept
+    // half initialized: a page its initialize scripts hide stayed open to typing until the
+    // next opening hid it and reset its data.
+    r.defer_relayout = true;
     let events: Vec<ScriptEvent> = r.live().events.iter().filter(|e| e.activity == "initialize" || e.activity == "docReady").cloned().collect();
     for ev in &events {
         r.run(ev, "")?;
