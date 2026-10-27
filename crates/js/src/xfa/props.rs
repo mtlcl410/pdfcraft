@@ -837,8 +837,10 @@ pub(crate) fn node_color(h: &XHost, node: usize, path: &str) -> String {
 /// than four. XFA 3.3 p. 38 says the last one listed is reused for the rest; readers draw a
 /// side not listed from the edge or corner on the same side instead, and reads follow them:
 /// one serves every side, two alternate (0, 1, 0, 1), three reuse the second for the fourth
-/// (0, 1, 2, 1). `None` past the four sides, and when none is listed (the side is a default
-/// one).
+/// (0, 1, 2, 1). `None` past the four sides, and when none is
+/// listed (the side is a default one). The layout picks edges and corners with the same
+/// pattern (`drawn_side` in `pdfcraft_xfa`, which this crate doesn't depend on); tests on both
+/// sides pin it.
 fn drawn_index(listed: usize, index: usize) -> Option<usize> {
     match listed {
         // A border has four sides: edges and corners occur at most four times (p. 629).

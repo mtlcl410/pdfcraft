@@ -136,26 +136,36 @@ fn parse_fill(n: Option<XmlNode>) -> Option<Color> {
     Some(parse_color(child(n, "color")).unwrap_or(Color::WHITE))
 }
 
-/// `<border>`: edges in XFA order. One edge applies to all four; two: top/bottom then
-/// left/right; three: top, left/right, bottom; four: top, right, bottom, left.
+/// `<border>`: edges top, right, bottom, left (XFA 3.3 p. 38), the sides not listed drawn as
+/// readers draw them ([`drawn_side`]), not as p. 38's text says.
 fn parse_border(n: Option<XmlNode>) -> Option<Border> {
     let n = n?;
-    let edges: Vec<Edge> = children(n, "edge").map(parse_edge).collect();
-    let d = Edge::default();
-    let e = |i: usize| edges.get(i).copied().unwrap_or(d);
-    let four = match edges.len() {
-        0 => [d; 4],
-        1 => [e(0); 4],
-        2 => [e(0), e(1), e(0), e(1)],
-        3 => [e(0), e(1), e(2), e(1)],
-        _ => [e(0), e(1), e(2), e(3)],
-    };
+    let edges: Vec<Edge> = children(n, "edge").take(4).map(parse_edge).collect();
+    let four = std::array::from_fn(|i| drawn_side(edges.len(), i).and_then(|k| edges.get(k).copied()).unwrap_or_default());
     Some(Border { presence: Presence::parse(n.attribute("presence")), edges: four, corners: parse_corners(n), fill: parse_fill(child(n, "fill")) })
 }
 
+/// Which of the `listed` edges (or corners) of a border is drawn on side `index`: edges go
+/// top, right, bottom, left and corners top-left, top-right, bottom-right, bottom-left (XFA 3.3
+/// p. 38). For a border that lists fewer than four, p. 38 says the last one listed is reused
+/// for the rest; readers draw a side not listed from the edge or corner on the same side
+/// instead, and so does this: one serves every side, two alternate (0, 1, 0, 1), three reuse
+/// the second for the fourth (0, 1, 2, 1). Edges already followed the readers; corners now do
+/// too. The scripting host's reads mirror the same pattern so a script reads what is drawn.
+/// `None` when none is listed.
+pub(crate) fn drawn_side(listed: usize, index: usize) -> Option<usize> {
+    match listed {
+        0 => None,
+        _ if index < listed => Some(index),
+        1 => Some(0),
+        2 => Some(index % 2),
+        _ => Some(1),
+    }
+}
+
 /// The `<corner>` children of a border or rectangle, top-left, top-right, bottom-right then
-/// bottom-left: one applies to all four, and a corner not given is the last one given. Without
-/// any, the corners are square.
+/// bottom-left, the ones not listed drawn as [`drawn_side`] picks, as edges are. Without any,
+/// the corners are square.
 fn parse_corners(n: XmlNode) -> [Corner; 4] {
     let given: Vec<Corner> = children(n, "corner")
         .take(4)
@@ -165,8 +175,7 @@ fn parse_corners(n: XmlNode) -> [Corner; 4] {
             inverted: c.attribute("inverted") == Some("1"),
         })
         .collect();
-    let Some(last) = given.last().copied() else { return [Corner::default(); 4] };
-    std::array::from_fn(|i| given.get(i).copied().unwrap_or(last))
+    std::array::from_fn(|i| drawn_side(given.len(), i).and_then(|k| given.get(k).copied()).unwrap_or_default())
 }
 
 /// `<font>`: typeface, size, weight, posture, underline, fill color and horizontal scale.

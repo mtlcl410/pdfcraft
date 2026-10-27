@@ -688,6 +688,24 @@ fn border_color_colours_all_four_edges() {
     assert_eq!(eval("this.borderColor = '7,7,7'; this.border.getElement('edge', 3).thickness", "styled"), "2pt");
 }
 
+/// A corner past those a border lists reads as the corner drawn there: one serves all four,
+/// two alternate, three reuse the second for the fourth, as for edges.
+#[test]
+fn corners_not_listed_read_as_the_corner_drawn_there() {
+    let corners = |listed: &[&str]| {
+        let kids = listed.iter().map(|r| p("corner", &[("radius", r)], vec![])).collect();
+        let f = node("c", XfaKind::Field, &[], vec![p("border", &[], kids)]);
+        let mut root = form();
+        root.children.push(f);
+        let o = go_on(&root, "[0, 1, 2, 3].map(function (i) { return this.border.getElement('corner', i).radius; }, this).join('|')", "c");
+        assert_eq!(o.error, None, "{o:?}");
+        o.result.unwrap_or_default()
+    };
+    assert_eq!(corners(&["1pt"]), "1pt|1pt|1pt|1pt");
+    assert_eq!(corners(&["1pt", "2pt"]), "1pt|2pt|1pt|2pt");
+    assert_eq!(corners(&["1pt", "2pt", "3pt"]), "1pt|2pt|3pt|2pt");
+}
+
 /// A border's presence reads `hidden` when the object has no `<border>` element, as readers
 /// read it, and `visible` when it has one that doesn't say (XFA 3.3 p. 629).
 #[test]
