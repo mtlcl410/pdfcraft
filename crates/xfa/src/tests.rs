@@ -2727,8 +2727,12 @@ fn the_form_packet_restores_the_presence_and_access_the_form_was_saved_with() {
     assert_eq!(locked, [true, true, false, false]);
 }
 
+/// A subform without a height, flowed or positioned, is as tall as what it holds, whatever its
+/// `minH`: readers don't stretch it. Four public immigration forms end their first page with
+/// a positioned section at `minH="58.274mm"` holding about 80pt, then an office-use box; read
+/// as 165pt, the section pushed the box onto a page of its own.
 #[test]
-fn a_flowed_subform_is_as_tall_as_its_content_whatever_its_minimum_height() {
+fn a_subform_is_as_tall_as_its_content_whatever_its_minimum_height() {
     // A bar with a stale 3in `minH` holds one 0.2in line; the row after it follows directly.
     let body = |bar: &str| {
         format!(
@@ -2742,8 +2746,7 @@ fn a_flowed_subform_is_as_tall_as_its_content_whatever_its_minimum_height() {
     };
     let flowed = top(r#"layout="lr-tb""#);
     assert!((top(r#"layout="tb""#) - flowed).abs() < 0.01);
-    // A positioned subform keeps its minimum: nothing else says how tall it is.
-    assert!((top("") - flowed - (216.0 - 14.4)).abs() < 0.01, "{} against {flowed}", top(""));
+    assert!((top("") - flowed).abs() < 0.01, "positioned: {} against {flowed}", top(""));
 }
 
 #[test]
