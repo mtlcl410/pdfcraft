@@ -3316,6 +3316,20 @@ fn a_caption_without_a_font_of_its_own_takes_its_fields() {
     );
 }
 
+#[test]
+fn a_button_caption_without_a_font_of_its_own_takes_its_fields() {
+    // An Arial 8pt button: a caption naming no font is shown in Arial 8pt, not the 10pt Courier
+    // default, and one naming only a size keeps the field's typeface.
+    let face = |caption_font: &str| {
+        let items = positioned(&format!(
+            r#"<field name="go" x="1in" y="0" w="100pt" h="20pt"><ui><button/></ui><font typeface="Arial" size="8pt"/><caption>{caption_font}<value><text>Go</text></value></caption></field>"#
+        ));
+        items.iter().find_map(|i| if let Item::Widget(w) = i { Some((w.face.family, w.face.size)) } else { None }).expect("the button")
+    };
+    assert_eq!(face(""), (crate::text::Family::Helvetica, 8.0));
+    assert_eq!(face(r#"<font size="12pt"/>"#), (crate::text::Family::Helvetica, 12.0));
+}
+
 /// A caption is measured as it is drawn: in its field's font (XFA 3.3, "Formatting Text That
 /// Appears as Fixed or Variable Content", p. 43) and in the paragraph around the field, not the
 /// field's own, which formats the field's value. A field paragraph's space above or line height
