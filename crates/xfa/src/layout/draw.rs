@@ -316,12 +316,20 @@ impl Layouter<'_> {
         self.push(Item::Image { rect: fitted, data: Arc::new(data.to_vec()), content_type: content_type.to_string() })
     }
 
-    /// A field name made from `base` that no earlier field of the form has: the first keeps it,
-    /// later ones get `_2`, `_3`, ….
+    /// A field name made from `base` that no other field of the form has: the first keeps it,
+    /// later ones get `_2`, `_3`, …, skipping a name another field already has or that the
+    /// template gives another field (a template field named `Cell4_2` keeps it, and the second
+    /// `Cell4` becomes `Cell4_3`).
     pub(super) fn unique_name(&mut self, base: &str) -> String {
         let base = clean_name(base);
-        let n = self.names.entry(base.clone()).or_insert(0);
-        *n += 1;
-        if *n == 1 { base } else { format!("{base}_{n}") }
+        loop {
+            let n = self.names.entry(base.clone()).or_insert(0);
+            *n = n.saturating_add(1);
+            let candidate = if *n == 1 { base.clone() } else { format!("{base}_{n}") };
+            let reserved = *n > 1 && self.template_names.contains(&candidate);
+            if !reserved && self.taken.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
     }
 }
