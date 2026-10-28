@@ -4117,3 +4117,18 @@ fn a_made_up_field_name_never_takes_one_the_template_uses() {
         assert_eq!(got, Some("Cell4_2"), "{rows:?}: the template's own name is kept ({names:?})");
     }
 }
+
+/// An unnamed field's made-up name (`field`) doesn't take the name a later field has in the
+/// template: the field the template names `field` keeps it, and the unnamed one before it takes
+/// the next free name.
+#[test]
+fn an_unnamed_field_never_takes_a_name_the_template_uses() {
+    let body = r#"<field w="2in" h="0.3in"><ui><textEdit/></ui></field>
+<field name="field" w="2in" h="0.3in"><ui><textEdit/></ui></field>"#;
+    let form = layout_xml(&one_area_form(r#"layout="tb""#, body)).unwrap();
+    let all = widgets(&form.pages[0]);
+    // In layout order: the unnamed field, then the one the template names `field`.
+    let names: Vec<&str> = all.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names.get(1), Some(&"field"), "{names:?}");
+    assert_ne!(names.first(), Some(&"field"), "{names:?}");
+}
