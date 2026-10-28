@@ -3318,16 +3318,21 @@ fn a_caption_without_a_font_of_its_own_takes_its_fields() {
 
 #[test]
 fn a_button_caption_without_a_font_of_its_own_takes_its_fields() {
-    // An Arial 8pt button: a caption naming no font is shown in Arial 8pt, not the 10pt Courier
-    // default, and one naming only a size keeps the field's typeface.
-    let face = |caption_font: &str| {
+    // An Arial 8pt button without a height: a caption naming no font is shown in Arial 8pt, not
+    // the 10pt Courier default, and the button is as tall as one 8pt line; one naming only a size
+    // keeps the field's typeface.
+    let button = |caption_font: &str| {
         let items = positioned(&format!(
-            r#"<field name="go" x="1in" y="0" w="100pt" h="20pt"><ui><button/></ui><font typeface="Arial" size="8pt"/><caption>{caption_font}<value><text>Go</text></value></caption></field>"#
+            r#"<field name="go" x="1in" y="0" w="100pt"><ui><button/></ui><font typeface="Arial" size="8pt"/><caption>{caption_font}<value><text>Go</text></value></caption></field>"#
         ));
-        items.iter().find_map(|i| if let Item::Widget(w) = i { Some((w.face.family, w.face.size)) } else { None }).expect("the button")
+        items.iter().find_map(|i| if let Item::Widget(w) = i { Some((w.face.family, w.face.size, w.rect.h)) } else { None }).expect("the button")
     };
-    assert_eq!(face(""), (crate::text::Family::Helvetica, 8.0));
-    assert_eq!(face(r#"<font size="12pt"/>"#), (crate::text::Family::Helvetica, 12.0));
+    let (family, size, h) = button("");
+    assert_eq!((family, size), (crate::text::Family::Helvetica, 8.0));
+    assert!((h - text::line_height(8.0)).abs() < 0.05, "{h}");
+    let (family, size, h) = button(r#"<font size="12pt"/>"#);
+    assert_eq!((family, size), (crate::text::Family::Helvetica, 12.0));
+    assert!((h - text::line_height(12.0)).abs() < 0.05, "{h}");
 }
 
 /// A caption is measured as it is drawn: in its field's font (XFA 3.3, "Formatting Text That
