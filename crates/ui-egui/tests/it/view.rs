@@ -2487,8 +2487,8 @@ fn full_screen_stays_on_esc_when_esc_does_not_leave_it() {
 }
 
 /// From a form field being filled, the first Esc closes the field and the second leaves full
-/// screen: "Esc (press twice)" (*Adobe Acrobat Help*, 2019, "Options for moving among form
-/// fields", p. 248).
+/// screen: "Esc (press twice)" (*Adobe Acrobat Help*, 2019, "Options for working in forms",
+/// p. 248).
 #[test]
 fn full_screen_esc_from_a_field_closes_the_field_first() {
     const FIELD: &[u8] = b"%PDF-1.7
