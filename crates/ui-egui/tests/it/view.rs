@@ -2329,3 +2329,113 @@ fn a_document_press_releases_pages_keyboard_focus_without_escape() {
     sidebar_key(&mut h, Key::A, Modifiers::COMMAND);
     assert!(h.state().views[0].selected.is_empty(), "Ctrl+A now belongs to the viewer, not page thumbnails");
 }
+
+/// Three 300×400 pt pages; the second comes in with a one-second Wipe and stays one second
+/// (`/Trans`, `/Dur`), the others have neither.
+const PRESENTATION: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 300 400] >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R /Trans << /S /Wipe /D 1 >> /Dur 1 >> endobj
+5 0 obj << /Type /Page /Parent 2 0 R >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+/// The presentation document in full screen, frames a tenth of a second apart, every raster in.
+fn presenting(options: &'static [(&'static str, &'static str)]) -> Harness<'static, PdfCraftApp> {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_step_dt(0.1).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("slides.pdf", None, PRESENTATION.to_vec()).expect("opens");
+        app.set_option("left", "closed").unwrap();
+        app.set_option("panel", "none").unwrap();
+        app.set_option("animation_effects", "on").unwrap();
+        for (k, v) in options {
+            app.set_option(k, v).unwrap();
+        }
+        app
+    });
+    h.run_steps(4);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(4);
+    assert!(h.state().full_screen);
+    settle(&mut h);
+    h
+}
+
+/// Run frames until the renderer has nothing left to deliver (bounded, in real time: the
+/// renderer's threads do not follow the harness clock).
+fn settle(h: &mut Harness<'static, PdfCraftApp>) {
+    for _ in 0..300 {
+        h.run_steps(1);
+        if !h.state().render_pending() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Run frames until `done` holds (bounded), returning the number of frames it took.
+fn frames_until(h: &mut Harness<'static, PdfCraftApp>, done: impl Fn(&PdfCraftApp) -> bool) -> usize {
+    for n in 0..300 {
+        if done(h.state()) {
+            return n;
+        }
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("never happened");
+}
+
+/// #379: in full screen, a page's /Trans plays when it comes into view (from the page before,
+/// once the new one has rendered), and its /Dur turns to the next page once it is up; the last
+/// page, with no display time, stays.
+#[test]
+fn full_screen_plays_a_page_transition_and_honours_the_display_time() {
+    let mut h = presenting(&[]);
+    assert!(!h.state().views[0].presenting_a_transition(), "page 1 just shows");
+    h.key_press(Key::ArrowRight);
+    h.run_steps(1);
+    assert_eq!(h.state().views[0].current, 1);
+    assert!(h.state().views[0].presenting_a_transition(), "page 2 comes in with its Wipe");
+    let frames = frames_until(&mut h, |a| !a.views[0].presenting_a_transition());
+    assert!(frames >= 9, "the Wipe takes its second ({frames} frames of 0.1 s)");
+    assert_eq!(h.state().views[0].current, 1, "still page 2 when the transition ends");
+    h.run_steps(5);
+    assert_eq!(h.state().views[0].current, 1, "half of its display time");
+    h.run_steps(7);
+    assert_eq!(h.state().views[0].current, 2, "its one-second display time is up");
+    assert!(!h.state().views[0].presenting_a_transition(), "page 3 has no transition");
+    h.run_steps(30);
+    assert_eq!(h.state().views[0].current, 2, "the last page stays");
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(!h.state().views[0].presenting_a_transition());
+}
+
+/// The page changes at once where a transition can't or shouldn't play: with the Animation
+/// effects preference off, and with two-page spreads.
+#[test]
+fn full_screen_turns_at_once_without_animations_or_in_spreads() {
+    for options in [&[("animation_effects", "off")][..], &[("layout", "two-up")][..]] {
+        let mut h = presenting(options);
+        h.key_press(Key::ArrowRight);
+        h.run_steps(1);
+        assert!(!h.state().views[0].presenting_a_transition(), "{options:?}");
+    }
+}
+
+/// In full screen the pointer hides after three still seconds, and shows again when it moves.
+#[test]
+fn full_screen_hides_a_still_pointer() {
+    let mut h = presenting(&[]);
+    let centre = h.state().views[0].viewport_rect().center();
+    h.hover_at(centre);
+    h.run_steps(2);
+    assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "just moved");
+    h.run_steps(32);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "still for over three seconds");
+    h.hover_at(centre + egui::vec2(40.0, 0.0));
+    h.run_steps(1);
+    assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "moved again");
+}

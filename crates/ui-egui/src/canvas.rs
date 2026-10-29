@@ -30,6 +30,7 @@ mod organize;
 pub(super) mod page_cursor;
 pub(super) mod page_pointer;
 pub(super) mod page_router;
+mod presenter;
 pub mod scroll_speed;
 mod selection;
 pub(super) mod signature_drag;
@@ -322,6 +323,8 @@ pub struct DocView {
     /// Full screen (Acrobat's Full Screen Mode): the display saved on entering it, while the view
     /// shows one page or spread at a time, fitted to the screen. `None` outside full screen.
     presentation: Option<SavedDisplay>,
+    /// Full screen's transitions, display times and pointer (see [`presenter`]).
+    pub(crate) presenter: presenter::Presenter,
     pages: HashMap<usize, PageTex>,
     /// Pages the renderer could not draw, with the reason (never re-requested).
     errors: HashMap<usize, String>,
@@ -636,6 +639,7 @@ impl DocView {
             flash: None,
             compare_marks: Vec::new(),
             presentation: None,
+            presenter: Default::default(),
             pages: HashMap::new(),
             errors: HashMap::new(),
             waiting_since: HashMap::new(),
@@ -795,6 +799,7 @@ impl DocView {
         fresh.cover = self.cover;
         // Still presenting, with the display to go back to on leaving.
         fresh.presentation = self.presentation.take();
+        fresh.presenter = std::mem::take(&mut self.presenter);
         fresh.back = std::mem::take(&mut self.back);
         fresh.forward = std::mem::take(&mut self.forward);
         fresh.find = self.find.take();
@@ -856,6 +861,8 @@ struct PageEnv<'a> {
     glide: Vec2,
     hand: bool,
     info: &'a DocInfo,
+    /// The Animation effects preference as it applies now (full screen's transitions follow it).
+    animates: bool,
     initials: &'a Option<crate::fill_sign::SavedSig>,
     key_scroll: f32,
     middle_gesture: bool,
@@ -1974,6 +1981,7 @@ fn draw_pages(
         y_shift,
         ..
     } = *env;
+    let animates = env.animates;
     // egui's drag responses accept every pointer button. Keep a wheel gesture from also
     // selecting text, drawing a mark, or panning with the Hand tool.
     if middle_gesture {
@@ -2081,6 +2089,11 @@ fn draw_pages(
         view.calc_order.set_hover_page(calc_hover);
         let selected = view.prepare.selected.as_ref().map(|(name, _)| name.as_str());
         crate::calc_order_ui::paint_trace(ui, painter, visible, &view.calc_order, generation, selected);
+    }
+    // Full screen plays transitions over the page just drawn, and keeps time (#379).
+    if view.presentation.is_some() {
+        let now = ui.input(|i| i.time);
+        presenter::frame(view, info, painter, ui.ctx(), now, animates, pointer);
     }
     // The pages' one cursor, from the claim on the highest layer the tool reaches, and the tip.
     let hover_text = pointer.filter(|_| unobstructed).zip(view.cursor.resolve(ui.ctx(), tool));
@@ -3174,6 +3187,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let env = PageEnv {
         added: &added,
         allowed,
+        animates,
         author: &author,
         auto_delta,
         avail,
