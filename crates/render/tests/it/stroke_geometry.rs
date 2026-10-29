@@ -97,6 +97,16 @@ fn degenerate_subpaths_leave_the_rest_of_the_path_alone() {
     let page = render("0 0 1 RG 6 w 1 J 10 30 m 30 30 l 20 10 m h S", "<< >>");
     assert_eq!(px(&page, 20, 10), BLUE, "the line");
     assert_eq!(px(&page, 20, 30), BLUE, "the dot");
+    // A trailing open single-point subpath (`m` with nothing after it) paints nothing, and leaves
+    // the line before it as it is, with either cap.
+    let page = render("0 0 1 RG 6 w 2 J 10 30 m 30 30 l 20 10 m S", "<< >>");
+    for x in [8, 20, 32] {
+        assert_eq!(px(&page, x, 10), BLUE, "({x}, 10) on the line before a trailing m");
+    }
+    assert_eq!(px(&page, 20, 30), WHITE, "a trailing m with square caps paints nothing");
+    let page = render("0 0 1 RG 6 w 1 J 10 30 m 30 30 l 20 10 m S", "<< >>");
+    assert_eq!(px(&page, 20, 10), BLUE, "the line before a trailing m");
+    assert_eq!(px(&page, 20, 30), WHITE, "a trailing m with round caps paints no dot");
     // `b` (close, fill and stroke) of a single point strokes the dot too.
     let page = render("0 0 1 RG 1 0 0 rg 6 w 1 J 20 20 m b", "<< >>");
     assert_eq!(px(&page, 20, 20), BLUE, "b of one point strokes a round dot");
