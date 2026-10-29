@@ -141,6 +141,7 @@ impl PdfCraftApp {
         v["default_page_gaps"] = serde_json::Value::Bool(self.view_defaults.show_page_gaps);
         v["fill_text_color"] = serde_json::json!(self.fill_text_color);
         v["full_screen_fill"] = serde_json::Value::Bool(self.view_defaults.full_screen_fill);
+        v["full_screen_escape_exits"] = serde_json::Value::Bool(self.full_screen_escape_exits);
         v["redact_prefs"] = self.redact_defaults.to_json();
         // Set outside json! above, which is at serde_json's macro recursion limit.
         v["hide_empty_highlight_hover"] = serde_json::Value::Bool(self.comment_prefs.hide_empty_highlight_hover);
@@ -231,6 +232,9 @@ impl PdfCraftApp {
         }
         if let Some(fill) = v["full_screen_fill"].as_bool() {
             self.view_defaults.full_screen_fill = fill;
+        }
+        if let Some(exits) = v["full_screen_escape_exits"].as_bool() {
+            self.full_screen_escape_exits = exits;
         }
         if let Ok(units) = serde_json::from_value::<units::Unit>(v["units"].clone()) {
             self.units = units;

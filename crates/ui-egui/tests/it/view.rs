@@ -2364,6 +2364,46 @@ fn full_screen_keeps_continuous_scrolling_when_fill_is_off() {
     assert!(!h.state().full_screen && h.state().views[0].continuous());
 }
 
+/// #5302: Esc closes one thing at a time. In full screen with the find bar open, the first Esc
+/// closes the find bar and full screen stays; the next one leaves full screen (*Adobe Acrobat
+/// Help*, 2019, p. 248: in a form field, "Esc" deselects it and "Esc (press twice)" exits Full
+/// Screen mode).
+#[test]
+fn full_screen_esc_closes_the_find_bar_before_leaving() {
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    h.state_mut().views[0].open_find();
+    h.run_steps(2);
+    assert!(h.state().views[0].find.is_some());
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().views[0].find.is_none(), "the first Esc closes the find bar");
+    assert!(h.state().full_screen, "and full screen stays");
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(!h.state().full_screen, "the next Esc leaves full screen");
+}
+
+/// With the "Esc leaves full screen" preference off, Esc doesn't leave full screen and only
+/// Ctrl+L (⌘L) does (*Adobe Acrobat Help*, 2019, "Full Screen preferences", p. 69: "Escape Key
+/// Exits: Lets you exit Full-Screen mode by pressing the Esc key. If this option is not selected,
+/// you can exit by pressing Ctrl+L").
+#[test]
+fn full_screen_stays_on_esc_when_esc_does_not_leave_it() {
+    let mut h = harness(&[("full-screen-escape", "off")]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().full_screen, "Esc doesn't leave full screen");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(4);
+    assert!(!h.state().full_screen, "Ctrl+L / ⌘L leaves it");
+}
+
 /// Full screen shows no notice bar above the page (a form's "interactive form fields" notice, here),
 /// so a page filling the screen is whole on it; the bar is back on leaving.
 #[test]

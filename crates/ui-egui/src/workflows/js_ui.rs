@@ -467,6 +467,12 @@ pub(crate) fn preferences_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tok
     ui.label(
         egui::RichText::new(tl!("Turn off to keep the page display, such as continuous scrolling, in full screen.")).small().color(t.text_muted),
     );
+    ui.add(widgets::checkbox(&mut app.full_screen_escape_exits, tl!("Esc leaves full screen")));
+    ui.label(
+        egui::RichText::new(tl!("Turn off so that only Ctrl+L (⌘L on macOS) leaves full screen, as for a kiosk display."))
+            .small()
+            .color(t.text_muted),
+    );
     ui.horizontal(|ui| {
         use crate::canvas::Fit;
         ui.label(tl!("Default zoom"));

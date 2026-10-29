@@ -37,8 +37,17 @@ impl PdfCraftApp {
         if !craft_menu::bar::is_open(ctx) && !craft_menu::bar::is_focused(ctx) {
             self.registry_shortcuts(ctx);
         }
-        // (Esc closes a Combine file shown large first.)
-        if self.full_screen && self.combine_tab.preview.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        // Esc closes one thing at a time: a Combine file shown large, an open menu, or the camera,
+        // a selection or the find bar on the page go first, and full screen stays (#5302). With
+        // the Esc leaves full screen preference off, only ⌘L / Ctrl+L leaves it.
+        let page_takes_escape =
+            egui::Popup::is_any_open(ctx) || self.active.and_then(|i| self.views.get(i)).is_some_and(|v| v.escape_closes_something());
+        if self.full_screen
+            && self.full_screen_escape_exits
+            && self.combine_tab.preview.is_none()
+            && !page_takes_escape
+            && ctx.input(|i| i.key_pressed(Key::Escape))
+        {
             self.set_full_screen(ctx, false);
         }
         if let Some(i) = self.active {

@@ -180,6 +180,13 @@ impl DocView {
         }
     }
 
+    /// Whether Esc has something on the page to close: the camera, a selection or the find bar
+    /// ([`shortcuts`] closes them in that order). Esc closes one thing at a time, so full screen
+    /// leaves only on an Esc that finds none of them (#5302).
+    pub fn escape_closes_something(&self) -> bool {
+        self.camera.is_some() || self.camera_done.is_some() || self.selection.is_some() || self.all_text || self.find.is_some()
+    }
+
     /// Next page (`true`) or previous page. In two-page view this moves a whole spread: the other
     /// page of the spread is already on screen, so stepping to it wouldn't move the view (#70).
     pub fn step_page(&mut self, forward: bool) {
