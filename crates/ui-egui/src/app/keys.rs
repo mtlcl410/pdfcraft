@@ -49,6 +49,8 @@ impl PdfCraftApp {
             && ctx.input(|i| i.key_pressed(Key::Escape))
         {
             self.set_full_screen(ctx, false);
+            // The Esc that left full screen closes nothing on the page as well.
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
         }
         if let Some(i) = self.active {
             // Select all belongs to the document or page grid, unless a text field or

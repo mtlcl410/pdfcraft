@@ -1713,14 +1713,17 @@ fn full_screen_two_page_view_fits_the_spread_it_shows() {
     v.current = 1;
     v.fit_zoom(&info);
     assert_eq!(v.zoom, small, "page 2 is in the first spread");
-    // With a cover page: [0] alone, then [1, 2] (the large page decides), then [3].
+    // With a cover page: [0] alone, then [1, 2], then [3].
     v.cover = true;
     v.current = 0;
     v.fit_zoom(&info);
     assert_eq!(v.zoom, small, "the cover page alone");
+    // The mixed spread [1, 2] fits its two pages' own widths side by side, 300 + 600 points,
+    // and not twice the wider one: here the height decides.
     v.current = 1;
     v.fit_zoom(&info);
-    assert!((v.zoom - edge_to_edge).abs() < 1e-4, "page 2 shares a spread with the large page 3");
+    let mixed_fit = ((v.viewport_w - v.page_gap()) / (900.0 * PT)).min(v.viewport_h / (800.0 * PT));
+    assert!((v.zoom - mixed_fit).abs() < 1e-4 && v.zoom > edge_to_edge, "page 2 shares a spread with the large page 3: {} vs {mixed_fit}", v.zoom);
     // Scrolling while in full screen fits the document, as scrolling does in the window.
     (v.continuous, v.current) = (true, 0);
     v.fit_zoom(&info);

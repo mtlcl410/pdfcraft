@@ -2386,6 +2386,66 @@ fn full_screen_esc_closes_the_find_bar_before_leaving() {
     assert!(!h.state().full_screen, "the next Esc leaves full screen");
 }
 
+/// Full screen hides the Search panel, and a search shown there isn't the find bar: the first
+/// Esc leaves full screen, and the panel's search is still there afterwards.
+#[test]
+fn full_screen_esc_leaves_and_keeps_the_search_panels_search() {
+    let mut h = harness(&[]);
+    h.state_mut().set_option("panel", "search").unwrap();
+    h.state_mut().views[0].open_find();
+    h.state_mut().views[0].find.as_mut().expect("find opened").in_panel = true;
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(!h.state().full_screen, "the first Esc leaves full screen");
+    assert!(h.state().views[0].find.is_some(), "and the Search panel's search stays");
+}
+
+/// When Esc doesn't leave full screen, it doesn't close the hidden Search panel's search either.
+#[test]
+fn full_screen_esc_that_stays_keeps_the_search_panels_search() {
+    let mut h = harness(&[("full-screen-escape", "off")]);
+    h.state_mut().set_option("panel", "search").unwrap();
+    h.state_mut().views[0].open_find();
+    h.state_mut().views[0].find.as_mut().expect("find opened").in_panel = true;
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().full_screen, "Esc doesn't leave full screen");
+    assert!(h.state().views[0].find.is_some(), "and the Search panel's search stays");
+}
+
+/// With the Fill screen preference off, full screen keeps the reading position: half way down
+/// page 2, it is still half way down page 2 in full screen and again after leaving.
+#[test]
+fn full_screen_keeps_the_reading_position_when_fill_is_off() {
+    let mut h = harness(&[("layout", "continuous"), ("zoom", "200"), ("full-screen-fill", "off")]);
+    h.run_steps(4);
+    h.state_mut().views[0].goto = Some((1, 0.5));
+    h.run_steps(4);
+    let above = |h: &Harness<'static, PdfCraftApp>| {
+        let v = &h.state().views[0];
+        v.viewport_rect().top() - rect(h, 1).expect("page 2 on screen").top()
+    };
+    let before = above(&h);
+    assert!(before > 300.0, "page 2 starts well above the window's top: {before}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    let full = above(&h);
+    assert!((full - before).abs() < 40.0, "full screen keeps the position: {full} vs {before}");
+    h.key_press(Key::Escape);
+    h.run_steps(6);
+    assert!(!h.state().full_screen);
+    let after = above(&h);
+    assert!((after - before).abs() < 40.0, "and so does leaving it: {after} vs {before}");
+}
+
 /// With the "Esc leaves full screen" preference off, Esc doesn't leave full screen and only
 /// Ctrl+L (⌘L) does (*Adobe Acrobat Help*, 2019, "Full Screen preferences", p. 69: "Escape Key
 /// Exits: Lets you exit Full-Screen mode by pressing the Esc key. If this option is not selected,

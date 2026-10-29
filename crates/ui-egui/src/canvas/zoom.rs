@@ -32,24 +32,39 @@ impl DocView {
         }
         self.presentation =
             Some(SavedDisplay { layout: self.layout, continuous: self.continuous, cover: self.cover, fit: self.fit, zoom: self.zoom });
-        // Off, the Fill screen preference keeps the display full screen was entered from (#4273).
+        self.selection = None;
+        // Off, the Fill screen preference keeps the display full screen was entered from (#4273),
+        // and the reading position in it.
         if self.full_screen_fill {
             self.continuous = false;
             self.fit = Fit::Page;
+            self.goto = Some((self.current, 0.0));
+        } else {
+            self.goto = Some(self.reading_position());
         }
-        self.selection = None;
-        self.goto = Some((self.current, 0.0));
     }
 
     /// Leave full screen: the display from before it comes back, at the page reached meanwhile.
+    /// From a display full screen kept, at the reading position.
     pub fn leave_presentation(&mut self) {
+        let goto = if self.fills_screen() { (self.current, 0.0) } else { self.reading_position() };
         let Some(saved) = self.presentation.take() else { return };
         self.layout = saved.layout;
         self.continuous = saved.continuous;
         self.cover = saved.cover;
         self.fit = saved.fit;
         self.zoom = saved.zoom;
-        self.goto = Some((self.current, 0.0));
+        self.goto = Some(goto);
+    }
+
+    /// Where the reader is, as of the last frame: the page at the top of the document area and
+    /// the fraction of it scrolled past, or the top of the current page when no page is there.
+    fn reading_position(&self) -> (usize, f32) {
+        let top = self.viewport_screen.top();
+        self.screen_xforms
+            .iter()
+            .find(|(_, xf)| xf.rect.top() <= top && top < xf.rect.bottom() && xf.rect.height() > 0.0)
+            .map_or((self.current, 0.0), |(p, xf)| (*p, ((top - xf.rect.top()) / xf.rect.height()).clamp(0.0, 1.0)))
     }
 
     /// The display shown outside full screen: the one presenting replaced, or the current one.
@@ -281,7 +296,9 @@ impl DocView {
         // A single page shown on its own fits that page, and full screen in two-page view fits
         // the spread it shows (review on #2070). Every other display (scrolling, or two-page
         // view in the window) fits its largest page, so the zoom holds still while pages of
-        // other sizes scroll or page past.
+        // other sizes scroll or page past. A spread of two pages fits their own widths side by
+        // side; a page alone in a spread keeps a spread's room (a cover keeps its blank slot).
+        let mut spread_w = None;
         let (w, h) = if self.layout == PageLayout::Single && !self.continuous {
             info.pages.get(self.current).map_or_else(|| (max_w, largest(|s| s.1)), |p| self.display_size(p))
         } else if self.presentation.is_some() && self.layout == PageLayout::TwoUp && !self.continuous {
@@ -291,6 +308,9 @@ impl DocView {
             if spread.is_empty() {
                 (max_w, largest(|s| s.1))
             } else {
+                if let [a, b] = spread.as_slice() {
+                    spread_w = Some((a.0 + b.0).max(1.0));
+                }
                 (spread.iter().map(|s| s.0).fold(1.0, f32::max), spread.iter().map(|s| s.1).fold(1.0, f32::max))
             }
         } else {
@@ -298,10 +318,10 @@ impl DocView {
         };
         let avail_w = (self.viewport_w - 2.0 * self.side()).max(100.0);
         let per_row = if self.layout == PageLayout::TwoUp { 2.0 } else { 1.0 };
+        let zw = (avail_w - self.page_gap() * (per_row - 1.0)) / (spread_w.unwrap_or(w * per_row) * PT);
         match self.fit {
-            Fit::Width => self.zoom = (avail_w - self.page_gap() * (per_row - 1.0)) / (w * PT * per_row),
+            Fit::Width => self.zoom = zw,
             Fit::Page => {
-                let zw = (avail_w - self.page_gap() * (per_row - 1.0)) / (w * PT * per_row);
                 let zh = (self.viewport_h - 2.0 * self.margin()) / (h * PT);
                 self.zoom = zw.min(zh);
             }

@@ -182,9 +182,14 @@ impl DocView {
 
     /// Whether Esc has something on the page to close: the camera, a selection or the find bar
     /// ([`shortcuts`] closes them in that order). Esc closes one thing at a time, so full screen
-    /// leaves only on an Esc that finds none of them (#5302).
+    /// leaves only on an Esc that finds none of them (#5302). A search shown in the Search panel
+    /// isn't on the page: full screen hides the panel, and keeps its search.
     pub fn escape_closes_something(&self) -> bool {
-        self.camera.is_some() || self.camera_done.is_some() || self.selection.is_some() || self.all_text || self.find.is_some()
+        self.camera.is_some()
+            || self.camera_done.is_some()
+            || self.selection.is_some()
+            || self.all_text
+            || self.find.as_ref().is_some_and(|f| !f.in_panel)
     }
 
     /// Next page (`true`) or previous page. In two-page view this moves a whole spread: the other
@@ -394,7 +399,8 @@ pub fn shortcuts(view: &mut DocView, ctx: &egui::Context, speed: crate::scroll_s
         } else if view.selection.is_some() || view.all_text {
             view.selection = None;
             view.all_text = false;
-        } else {
+        } else if view.presentation.is_none() || view.find.as_ref().is_some_and(|f| !f.in_panel) {
+            // Full screen hides the Search panel: its search stays for when the panel is back.
             view.find = None;
         }
     }
