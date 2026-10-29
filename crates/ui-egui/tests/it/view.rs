@@ -2439,3 +2439,44 @@ fn full_screen_hides_a_still_pointer() {
     h.run_steps(1);
     assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "moved again");
 }
+
+/// In full screen a right-click goes back a page, as a left click goes forward (*Adobe Acrobat
+/// Help*, 2019, "Full Screen preferences", p. 69: "Left Click To Go Forward One Page; Right Click
+/// To Go Back One Page"), and no context menu opens.
+#[test]
+fn full_screen_right_click_goes_back_a_page() {
+    // A document with no display times, so no page turns by itself meanwhile.
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    h.key_press(Key::ArrowRight);
+    h.run_steps(4);
+    assert_eq!(h.state().views[0].current, 1);
+    let centre = h.state().views[0].viewport_rect().center();
+    h.hover_at(centre);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: centre, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(6);
+    assert_eq!(h.state().views[0].current, 0, "a right-click goes back");
+    assert!(!egui::Popup::is_any_open(&h.ctx), "no context menu in full screen");
+}
+
+/// In full screen Enter goes forward a page and Shift+Enter back (*Adobe Acrobat Help*, 2019,
+/// "Read a document in Full Screen mode", p. 66: "To go to the previous page, press Shift+Enter").
+#[test]
+fn full_screen_shift_enter_goes_back_a_page() {
+    // A document with no display times, so no page turns by itself meanwhile.
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    h.key_press(Key::Enter);
+    h.run_steps(4);
+    assert_eq!(h.state().views[0].current, 1, "Enter goes forward");
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+    h.run_steps(4);
+    assert_eq!(h.state().views[0].current, 0, "Shift+Enter goes back");
+}

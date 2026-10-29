@@ -397,13 +397,16 @@ pub fn shortcuts(view: &mut DocView, ctx: &egui::Context, speed: crate::scroll_s
     if key(Key::End) {
         view.go_to_page(usize::MAX);
     }
-    // Full screen: Space and Enter go forward a page and Backspace back, as in Acrobat (the
-    // arrows and Page Up / Page Down already turn pages where nothing scrolls, below).
+    // Full screen: Space and Enter go forward a page, and Shift+Enter and Backspace back
+    // (*Adobe Acrobat Help*, 2019, "Read a document in Full Screen mode", p. 66: "To go to the
+    // previous page, press Shift+Enter"). The arrows and Page Up / Page Down already turn pages
+    // where nothing scrolls, below.
     if view.presentation.is_some() {
-        if key(Key::Space) || key(Key::Enter) {
+        let shift = ctx.input(|i| i.modifiers.shift);
+        if key(Key::Space) || (key(Key::Enter) && !shift) {
             view.step_page(true);
         }
-        if key(Key::Backspace) {
+        if key(Key::Backspace) || (key(Key::Enter) && shift) {
             view.step_page(false);
         }
     }

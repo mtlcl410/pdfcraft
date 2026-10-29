@@ -2139,7 +2139,8 @@ fn draw_pages(
     if view.continuous {
         view.current = current;
     }
-    resp.context_menu(|ui| {
+    let presenting = view.presentation.is_some();
+    page_context_menu(&resp, presenting, |ui| {
         // Preparing a form: the selected field's menu.
         if preparing && let Some((name, wi)) = view.prepare.selected.clone() {
             // Several fields: Align, Center, Distribute, Set Fields to Same Size.
@@ -2860,8 +2861,22 @@ fn shown_row(view: &DocView, rects: &[Rect]) -> Vec<usize> {
 /// Full screen: a click on the document goes forward a page and a shift-click back, as in
 /// Acrobat, unless the click did something else (a link, a word selected). Decided once the pages
 /// have had the click. `Some(back)` on the frame of a click, `back` when it was a shift-click.
+/// The pages' context menu, except in full screen, where a right-click turns back a page instead
+/// ([`presentation_click_state`]).
+fn page_context_menu(resp: &egui::Response, presenting: bool, add: impl FnOnce(&mut egui::Ui)) {
+    if !presenting {
+        resp.context_menu(add);
+    }
+}
+
 fn presentation_click_state(ui: &egui::Ui, view: &DocView, navigation_rect: Rect, enabled: bool) -> Option<bool> {
-    let clicked = view.presentation.is_some() && enabled && presentation_click(ui, navigation_rect);
+    let presenting = view.presentation.is_some() && enabled;
+    // A right-click goes back a page, as a left click goes forward (*Adobe Acrobat Help*, 2019,
+    // "Full Screen preferences", p. 69).
+    if presenting && ui.rect_contains_pointer(navigation_rect) && ui.input(|i| i.pointer.secondary_clicked()) {
+        return Some(true);
+    }
+    let clicked = presenting && presentation_click(ui, navigation_rect);
     // Shift as held now, or as the click's own event carried it (a synthetic click).
     clicked.then(|| {
         ui.input(|i| {
