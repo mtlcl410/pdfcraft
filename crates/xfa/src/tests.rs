@@ -4145,3 +4145,29 @@ fn clear_password_values_clears_static_xfa_password_fields() {
     let packets = read_packets(&doc).unwrap().unwrap();
     assert!(!packets.xdp.contains("hunter2"), "{}", packets.xdp);
 }
+
+/// A `subformSet` is transparent to layout (XFA 3.3 p. 357): in a positioned subform its members
+/// sit at their own positions, side by side as a public stamp-duty form's two columns do, not one
+/// under the other; in a flowed one they still go one under another.
+#[test]
+fn a_subform_set_in_a_positioned_subform_places_its_members_where_they_are() {
+    let xml = |layout: &str| {
+        format!(
+            r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ <subform name="box" w="7in" {layout}>
+  <subformSet name="cols">
+   <subform name="left" w="3in" h="2in"><draw name="a" x="0in" y="0.5in" w="2in" h="0.3in"><value><text>left</text></value></draw></subform>
+   <subform name="right" w="3in" h="2in"><draw name="b" x="4in" y="0.5in" w="2in" h="0.3in"><value><text>right</text></value></draw></subform>
+  </subformSet>
+ </subform>
+</subform></template>"#
+        )
+    };
+    let baseline = |layout: &str, text: &str| {
+        let form = crate::layout::layout(&crate::parse(&xml(layout)).unwrap().0, None).unwrap();
+        form.pages[0].items.iter().find_map(|i| if let Item::Text(s) = i { (s.text == text).then_some(s.baseline) } else { None }).unwrap()
+    };
+    assert!((baseline(r#"h="3in""#, "left") - baseline(r#"h="3in""#, "right")).abs() < 0.01, "positioned: side by side");
+    assert!(baseline(r#"layout="tb""#, "right") - baseline(r#"layout="tb""#, "left") > 140.0, "flowed: one under the other");
+}
