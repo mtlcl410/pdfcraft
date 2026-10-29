@@ -243,8 +243,9 @@ impl Scripts for JsRunner {
         let o = pdfcraft_js::run_shared(script, &ev, &self.doc, std::sync::Arc::clone(&states), &self.doc_scripts, Limits::default());
         self.output.absorb(&o);
         if o.error.is_some() {
-            // As in Acrobat, a failing script leaves the value alone (the error goes to the console).
-            return ScriptResult { rc: true, value: value.to_string(), changes: Vec::new(), message: None };
+            // As in Acrobat, a failing script leaves the value alone (the error goes to the console);
+            // what it wrote to other fields before it failed stays written.
+            return ScriptResult { rc: true, value: value.to_string(), changes: changes(&states, &o.changed), message: None };
         }
         ScriptResult {
             rc: o.rc,

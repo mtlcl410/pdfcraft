@@ -5201,6 +5201,30 @@ fn opening_names_the_fields_the_calculations_changed_too() {
     );
 }
 
+/// A calculation the opening rerun starts that writes another field and then fails keeps that
+/// write: the failure leaves its own field's value alone, not what it already set elsewhere.
+#[test]
+fn a_failing_calculation_keeps_what_it_wrote_before_failing() {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(init) 7 0 R] >> >> /AcroForm << /Fields [4 0 R 5 0 R 6 0 R] /CO [5 0 R] >> >>"
+            .to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 140] >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 5 0 R 6 0 R] >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (price) /V (1) /Rect [0 100 100 120] /P 3 0 R /F 4 >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (total) /V (2) /Rect [0 60 100 80] /P 3 0 R /F 4 /AA << /C 8 0 R >> >>".to_string(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (note) /V (none) /Rect [0 20 100 40] /P 3 0 R /F 4 >>".to_string(),
+        r"<< /S /JavaScript /JS (this.getField\('price'\).value = 5;) >>".to_string(),
+        r"<< /S /JavaScript /JS (this.getField\('note'\).value = 'seen'; throw new Error\('boom'\);) >>".to_string(),
+    ];
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("form.pdf", None, Arc::new(pdf_of(&objs)), None).unwrap();
+    let doc = s.get(id).unwrap();
+    let value = |name: &str| doc.form.iter().find(|f| f.name == name).map(|f| f.value.clone());
+    assert_eq!(value("price"), Some(vec!["5".to_string()]));
+    assert_eq!(value("total"), Some(vec!["2".to_string()]), "the failing calculation leaves its own value");
+    assert_eq!(value("note"), Some(vec!["seen".to_string()]), "what it wrote before failing stays");
+}
+
 /// When a document script changes a field on opening, the warnings earlier steps of opening gave
 /// stay: here, that the dynamic XFA form (it has no template) could not be laid out.
 #[test]
