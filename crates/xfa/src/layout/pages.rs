@@ -100,8 +100,12 @@ impl Layouter<'_> {
         self.pages.push(Page { width: area.width, height: area.height, items: Vec::new() });
         let content = area.content.first().copied().unwrap_or(Rect::new(0.0, 0.0, area.width, area.height));
         self.cur = Some(Cursor { area: idx, content: 0, rect: content, y: content.y, placed: false });
-        // Master page content: positioned draws and fields.
-        let ctx = Ctx { font: Font::default(), para: Para::default(), som: area.name.clone().map(|n| format!("{n}[0]")).unwrap_or_default() };
+        // Master page content: positioned draws and fields. The page area's own SOM index counts
+        // the pages made from it, so a field repeated on each page (a page number, an office-use
+        // box) has a path of its own per page rather than every page sharing `[0]`.
+        let instance = self.uses.get(idx).map_or(0, |u| u.saturating_sub(1));
+        let ctx =
+            Ctx { font: Font::default(), para: Para::default(), som: area.name.clone().map(|n| format!("{n}[{instance}]")).unwrap_or_default() };
         let page_rect = Rect::new(0.0, 0.0, area.width, area.height);
         let sibs = SomIndices::of(&area.items);
         for (i, item) in area.items.iter().enumerate() {

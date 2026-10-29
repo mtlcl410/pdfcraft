@@ -406,32 +406,48 @@ impl Walker<'_> {
 /// from the template and `ov`) and every scripted event, in document order, within
 /// [`MAX_FORM_NODES`] objects.
 pub fn form_tree(tpl: &Template, data: Option<&DataNode>, ov: &Overrides) -> LiveForm {
+    form_tree_paged(tpl, data, ov, &HashMap::new())
+}
+
+/// [`form_tree`] for a laid-out form whose page areas made `uses` pages each, by name
+/// ([`page_area_uses`]): the master content of each of those pages is a node of its own
+/// (`master[0]`, `master[1]`, …), as the layout names its fields, so a button repeated on every
+/// page runs its click script as itself. A page area not in `uses` gets one node.
+pub fn form_tree_paged(tpl: &Template, data: Option<&DataNode>, ov: &Overrides, uses: &HashMap<String, usize>) -> LiveForm {
     let mut w = Walker { tpl, data, ov, events: Vec::new(), script_bytes: 0, nodes: 0, truncated: false };
     let root = Node::Subform(Box::new(tpl.root.clone()));
     let mut nodes = w.children(std::slice::from_ref(&root), "", 0);
     let mut root_node = nodes.pop().unwrap_or_default();
     // Page masters' fields (Print and Save buttons, page numbers) belong to the layout model
-    // in XFA; they hang off the root here, under their page area's name, as the layouter
-    // names them, so their click scripts can run.
+    // in XFA; they hang off the root here, under their page area's name, one node per page made
+    // from it, as the layouter names them, so their click scripts can run.
     if let Some(ps) = &tpl.root.page_set {
         for (i, area) in ps.areas.iter().enumerate() {
-            let som = area.name.clone().map(|n| format!("{n}[0]")).unwrap_or_else(|| format!("#pageArea[{i}]"));
-            let children = w.children(&area.items, &som, 1);
-            if children.is_empty() {
-                continue;
+            // A name two areas share stays one node: its pages can't be told apart by it.
+            let unique = area.name.as_ref().is_some_and(|n| ps.areas.iter().filter(|a| a.name.as_ref() == Some(n)).count() == 1);
+            let pages = match &area.name {
+                Some(n) if unique => uses.get(n).copied().unwrap_or(1).clamp(1, crate::layout::MAX_PAGES),
+                _ => 1,
+            };
+            for page in 0..pages {
+                let som = area.name.clone().map(|n| format!("{n}[{page}]")).unwrap_or_else(|| format!("#pageArea[{i}]"));
+                let children = w.children(&area.items, &som, 1);
+                if children.is_empty() {
+                    break;
+                }
+                root_node.children.push(FormNode {
+                    name: area.name.clone().unwrap_or_else(|| "#pageArea".into()),
+                    som,
+                    kind: Some(NodeKind::Area),
+                    presence: "visible".into(),
+                    access: "open".into(),
+                    occur_min: 1,
+                    occur_max: Some(1),
+                    index: page,
+                    children,
+                    ..Default::default()
+                });
             }
-            root_node.children.push(FormNode {
-                name: area.name.clone().unwrap_or_else(|| "#pageArea".into()),
-                som,
-                kind: Some(NodeKind::Area),
-                presence: "visible".into(),
-                access: "open".into(),
-                occur_min: 1,
-                occur_max: Some(1),
-                index: 0,
-                children,
-                ..Default::default()
-            });
         }
     }
     LiveForm { root: root_node, events: w.events, truncated: w.truncated }
@@ -571,6 +587,25 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
     let fields = acro.get(b"Fields").map(|f| doc.resolve(f)).and_then(|f| f.as_array().cloned()).unwrap_or_default();
     for f in fields.iter().filter_map(Object::as_ref) {
         walk(doc, f, "", &mut out, 0);
+    }
+    out
+}
+
+/// How many pages the layout made from each named page area of `tpl`, as the generated fields
+/// of `doc` show it: the master content of the n-th page from area `master` is `master[n-1]`.
+/// Areas no generated field names are left out (one page's worth, to [`form_tree_paged`]).
+pub fn page_area_uses(doc: &Document, tpl: &Template) -> HashMap<String, usize> {
+    let mut out: HashMap<String, usize> = HashMap::new();
+    let Some(ps) = &tpl.root.page_set else { return out };
+    for som in fields_by_som(doc).keys() {
+        let first = som.split('.').next().unwrap_or_default();
+        let Some((name, rest)) = first.split_once('[') else { continue };
+        let Some(index) = rest.strip_suffix(']').and_then(|i| i.parse::<usize>().ok()) else { continue };
+        if tpl.root.common.name.as_deref() == Some(name) || !ps.areas.iter().any(|a| a.name.as_deref() == Some(name)) {
+            continue;
+        }
+        let pages = out.entry(name.to_string()).or_insert(1);
+        *pages = (*pages).max(index.saturating_add(1)).min(crate::layout::MAX_PAGES);
     }
     out
 }

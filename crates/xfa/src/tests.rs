@@ -2102,6 +2102,47 @@ fn page_area_without_occur_serves_every_body_page() {
     assert_eq!(soms[4].iter().filter(|s| s.contains("PrintButton")).count(), 1, "the required page is laid out once: {soms:?}");
 }
 
+#[test]
+fn page_master_content_repeated_on_each_page_has_its_own_som_index() {
+    // One page area (no occur limit) serves three body pages and carries a field in its own
+    // master content. Each page's copy of that field gets the page area's instance index, so the
+    // three do not share one SOM path (and one data node).
+    let section = |n: u32| {
+        format!(
+            r#"<subform name="s{n}" layout="tb"><breakBefore targetType="pageArea" startNew="1"/><field name="f{n}" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>"#
+        )
+    };
+    let xdp = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet>
+  <pageArea name="Body"><contentArea x="0.5in" y="0.5in" w="7.5in" h="2in"/><medium short="8.5in" long="11in"/>
+   <field name="pageNo" x="7in" y="10in" w="1in" h="0.3in"><ui><textEdit/></ui></field>
+   <field name="total" x="1in" y="10in" w="1in" h="0.3in"><ui><textEdit/></ui><bind match="global"/></field>
+  </pageArea>
+ </pageSet>
+ {}{}{}
+</subform>
+</template>
+</xdp:xdp>
+"##,
+        section(1),
+        section(2),
+        section(3)
+    );
+    let form = layout_xml(&xdp).unwrap();
+    let page_nos: Vec<String> = form.pages.iter().flat_map(|p| widgets(p)).filter(|w| w.som.contains("pageNo")).map(|w| w.som.clone()).collect();
+    assert_eq!(page_nos, ["Body[0].pageNo[0]", "Body[1].pageNo[0]", "Body[2].pageNo[0]"], "each page's master field has its own index");
+    // Its data path keeps that index, so each page binds apart; a field whose bind is global
+    // shares one data node, so every page binds it as instance 0 (XFA 3.3, "Page Background").
+    let (tpl, _) = crate::parse(&xdp).unwrap();
+    let dp = |som: &str| crate::data_path(&tpl, som);
+    assert_eq!(dp("Body[2].pageNo[0]"), crate::som_to_path("Body[2].pageNo[0]"));
+    assert_eq!(dp("Body[2].total[0]"), crate::som_to_path("Body[0].total[0]"), "a global field binds as instance 0 on each page");
+}
+
 /// A page area's `occur min` is a page it must have even when the body never reaches it, and a
 /// body that already used it does not get another. An area with no `<occur>` needs none.
 #[test]

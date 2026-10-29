@@ -6626,6 +6626,57 @@ fn repeated_xfa_print_buttons_run_their_click_script() {
     }
 }
 
+/// A button on the page master runs its click script as the copy on the page that was clicked:
+/// the field it writes next to it changes on that page only.
+#[test]
+fn a_page_master_button_writes_the_field_on_its_own_page() {
+    let template = pdfcraft_xfa::fixtures::repeated_print_button_template().replace(
+        "</pageArea>",
+        r#"<field name="stamp" x="200pt" y="24pt" w="100pt" h="25pt"><ui><textEdit/></ui></field>
+  <field name="mark" x="320pt" y="24pt" w="80pt" h="25pt"><ui><button/></ui>
+   <event activity="click"><script contentType="application/x-javascript">stamp.rawValue = "clicked";</script></event>
+  </field>
+ </pageArea>"#,
+    );
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&template));
+    let mut s = Session::new();
+    let id = s.open("stamp.pdf", None, bytes, None).unwrap();
+    assert_eq!(s.get(id).unwrap().info.pages.len(), 3);
+    let out = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("mark_2")).unwrap();
+    assert_eq!(out.error, None, "{out:?}");
+    let value = |s: &Session, n: &str| s.get(id).unwrap().form.iter().find(|f| f.name == n).unwrap().value.clone();
+    assert_eq!(value(&s, "stamp_2"), vec!["clicked".to_string()], "the page clicked");
+    for other in ["stamp", "stamp_3"] {
+        assert_ne!(value(&s, other), vec!["clicked".to_string()], "{other} is on another page");
+    }
+}
+
+/// An initialize script that hides the last page's subform takes a page away; the page-master
+/// button of that page, listed to initialize before it went, doesn't run with `this` at the
+/// form instead and hide all of it.
+#[test]
+fn a_page_master_script_of_a_page_gone_does_not_hide_the_form() {
+    let template = pdfcraft_xfa::fixtures::repeated_print_button_template()
+        .replace(
+            r#"<caption><value><text>Print form</text></value></caption>"#,
+            r#"<caption><value><text>Print form</text></value></caption>
+   <event activity="initialize"><script contentType="application/x-javascript">this.presence = "hidden";</script></event>"#,
+        )
+        .replace(
+            r#"<subform name="page3" layout="tb"><breakBefore targetType="pageArea"/>"#,
+            r#"<subform name="page3" layout="tb"><breakBefore targetType="pageArea"/>
+ <event activity="initialize"><script contentType="application/x-javascript">this.presence = "hidden";</script></event>"#,
+        );
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&template));
+    let mut s = Session::new();
+    let id = s.open("gone.pdf", None, bytes, None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert_eq!(doc.info.pages.len(), 2, "page 3 is hidden");
+    for note in ["note1", "note2"] {
+        assert!(doc.form.iter().any(|f| f.name == note), "{note} is still shown");
+    }
+}
+
 /// An XFA form's scripts initialize, calculate, validate, show subforms and add and remove rows,
 /// with undo and save/reopen.
 #[test]
