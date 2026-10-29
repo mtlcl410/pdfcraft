@@ -2329,3 +2329,63 @@ fn a_document_press_releases_pages_keyboard_focus_without_escape() {
     sidebar_key(&mut h, Key::A, Modifiers::COMMAND);
     assert!(h.state().views[0].selected.is_empty(), "Ctrl+A now belongs to the viewer, not page thumbnails");
 }
+
+/// #576: full screen fills the screen with the page: a portrait page fits the screen's height
+/// edge to edge, with no margin above or below it, and sits centred across.
+#[test]
+fn full_screen_fills_the_screen_edge_to_edge() {
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen && h.state().views[0].fills_screen());
+    let vp = h.state().views[0].viewport_rect();
+    let r = rect(&h, 0).expect("page 1 on screen");
+    assert!((r.height() - vp.height()).abs() <= 1.0, "the page {r:?} spans the screen's height {vp:?}");
+    assert!((r.top() - vp.top()).abs() <= 1.0 && (r.bottom() - vp.bottom()).abs() <= 1.0, "no margin: {r:?} in {vp:?}");
+    assert!((r.center().x - vp.center().x).abs() <= 1.0, "centred across: {r:?} in {vp:?}");
+}
+
+/// #4273: with the "Full screen fills the screen with one page at a time" preference off, full
+/// screen keeps the page display it was entered from (continuous scrolling here), and Esc
+/// brings the window's display back.
+#[test]
+fn full_screen_keeps_continuous_scrolling_when_fill_is_off() {
+    let mut h = harness(&[("layout", "continuous"), ("zoom", "50"), ("full-screen-fill", "off")]);
+    h.run_steps(4);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    let v = &h.state().views[0];
+    assert!(h.state().full_screen && v.presenting() && !v.fills_screen());
+    assert!(v.continuous(), "still scrolling continuously");
+    assert!(rect(&h, 0).is_some() && rect(&h, 1).is_some(), "more than one page on screen");
+    assert!((v.zoom - 0.5).abs() < 1e-3, "the zoom stays: {}", v.zoom);
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    assert!(!h.state().full_screen && h.state().views[0].continuous());
+}
+
+/// Full screen shows no notice bar above the page (a form's "interactive form fields" notice, here),
+/// so a page filling the screen is whole on it; the bar is back on leaving.
+#[test]
+fn full_screen_hides_the_notice_bar_and_the_page_fits_whole() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("form.pdf", None, include_bytes!("../data/form.pdf").to_vec()).expect("opens");
+        app.set_option("left", "closed").unwrap();
+        app.set_option("panel", "none").unwrap();
+        app
+    });
+    h.run_steps(8);
+    let notice = |h: &Harness<'static, PdfCraftApp>| h.query_by_label_contains("interactive form fields").is_some();
+    assert!(notice(&h), "the form notice shows in the window");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen && !notice(&h), "no notice bar in full screen");
+    let vp = h.state().views[0].viewport_rect();
+    let r = rect(&h, 0).expect("page 1 on screen");
+    assert!(r.top() >= vp.top() - 1.0 && r.bottom() <= vp.bottom() + 1.0, "the page {r:?} is whole in {vp:?}");
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    assert!(notice(&h), "the notice is back after full screen");
+}

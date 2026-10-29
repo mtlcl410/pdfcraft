@@ -1707,7 +1707,9 @@ fn full_screen_two_page_view_fits_the_spread_it_shows() {
     assert!(small > windowed * 1.9, "the small spread fills the screen: {small} vs {windowed}");
     v.current = 3;
     v.fit_zoom(&info);
-    assert!((v.zoom - windowed).abs() < 1e-4, "the large spread fits as before");
+    // The large spread fits the screen edge to edge, without the window's margins (#576).
+    let edge_to_edge = (v.viewport_w - v.page_gap()) / (2.0 * 600.0 * PT);
+    assert!((v.zoom - edge_to_edge).abs() < 1e-4 && v.zoom > windowed, "the large spread fills the screen: {} vs {edge_to_edge}", v.zoom);
     v.current = 1;
     v.fit_zoom(&info);
     assert_eq!(v.zoom, small, "page 2 is in the first spread");
@@ -1718,11 +1720,11 @@ fn full_screen_two_page_view_fits_the_spread_it_shows() {
     assert_eq!(v.zoom, small, "the cover page alone");
     v.current = 1;
     v.fit_zoom(&info);
-    assert!((v.zoom - windowed).abs() < 1e-4, "page 2 shares a spread with the large page 3");
+    assert!((v.zoom - edge_to_edge).abs() < 1e-4, "page 2 shares a spread with the large page 3");
     // Scrolling while in full screen fits the document, as scrolling does in the window.
     (v.continuous, v.current) = (true, 0);
     v.fit_zoom(&info);
-    assert!((v.zoom - windowed).abs() < 1e-4, "continuous full screen keeps one zoom");
+    assert!((v.zoom - edge_to_edge).abs() < 1e-4, "continuous full screen keeps one zoom");
     v.continuous = false;
     // The cover page is a spread of its own even when the next page is larger.
     let mixed = DocInfo { pages: vec![page(300.0, 400.0), page(600.0, 800.0), page(600.0, 800.0)], ..Default::default() };
