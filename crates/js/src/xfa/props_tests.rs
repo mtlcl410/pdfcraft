@@ -569,6 +569,32 @@ fn resolve_nodes_through_instances_gives_each_instances_property() {
     assert_eq!((o.error, o.result.as_deref()), (None, Some("2|1,1,1|2,2,2")));
 }
 
+/// A child named as a property comes first for each instance on its own: with a field `border`
+/// in the first row and only the border property in the second, `row[*].border` lists the
+/// field and then the second row's border.
+#[test]
+fn resolve_nodes_takes_a_child_over_a_property_instance_by_instance() {
+    let row = |i: usize, children: Vec<XfaNode>| XfaNode {
+        som: format!("form1[0].row[{i}]"),
+        index: i,
+        repeatable: true,
+        children,
+        ..node("row", XfaKind::Subform, &[], vec![p("border", &[("presence", "hidden")], vec![])])
+    };
+    let field = XfaNode { som: "form1[0].row[0].border[0]".into(), ..node("border", XfaKind::Field, &[], vec![]) };
+    let root = XfaNode {
+        name: "form1".into(),
+        som: "form1[0]".into(),
+        kind: Some(XfaKind::Subform),
+        children: vec![row(0, vec![field]), row(1, Vec::new())],
+        ..Default::default()
+    };
+    let script = "var l = xfa.resolveNodes('xfa.form.form1.row[*].border'); \
+                  [l.length, l.item(0).className, l.item(1).className, l.item(1).presence, l.namedItem('border').className].join('|')";
+    let o = go_on(&root, script, "row");
+    assert_eq!((o.error, o.result.as_deref()), (None, Some("2|field|border|hidden|field")));
+}
+
 /// `keep` reads as the template writes it, else with its defaults (XFA 3.3 pp. 762-763):
 /// `intact` is `contentArea` for a draw and a positioned or row subform, `none` for a field and
 /// a flowing subform; `next` and `previous` are `none`. A write reads back in the run.

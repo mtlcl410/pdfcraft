@@ -387,18 +387,22 @@ pub(super) fn resolver(ctx: &mut Context, from: usize, many: bool) -> JsResult<J
         let many = key.get(js_string!("many"), ctx)?.to_boolean();
         let expr = text(&arg(args, 0), ctx)?;
         let found = resolve_som(&host(ctx)?.borrow(), from, &expr);
-        // An expression that runs into an object's properties (`ui.#textEdit`, `border.edge[1]`).
-        if found.is_empty() {
-            let props = props::resolve_into_props(&host(ctx)?.borrow(), from, &expr);
-            if let Some((node, path)) = props.first().cloned() {
-                {
-                    // Edges and corners reached past those a border lists come into being.
-                    let mut h = host(ctx)?.borrow_mut();
-                    let reached = if many { props.as_slice() } else { props.get(..1).unwrap_or_default() };
-                    reached.iter().for_each(|(n, p)| h.instantiate(*n, p));
-                }
-                return if many { props::list_object(ctx, props) } else { props::prop_object(ctx, node, &path) };
+        // An expression that runs into an object's properties (`ui.#textEdit`, `border.edge[1]`),
+        // for some of the objects it names at least: a child named as the property comes first
+        // for each object on its own, in place ((child, "")).
+        let props = props::resolve_into_props(&host(ctx)?.borrow(), from, &expr);
+        if let Some((node, path)) = props.first().cloned() {
+            {
+                // Edges and corners reached past those a border lists come into being.
+                let mut h = host(ctx)?.borrow_mut();
+                let reached = if many { props.as_slice() } else { props.get(..1).unwrap_or_default() };
+                reached.iter().filter(|(_, p)| !p.is_empty()).for_each(|(n, p)| h.instantiate(*n, p));
             }
+            return match (many, path.is_empty()) {
+                (true, _) => props::list_object(ctx, props),
+                (false, true) => node_object(ctx, node),
+                (false, false) => props::prop_object(ctx, node, &path),
+            };
         }
         if many {
             return list_object(ctx, &found);

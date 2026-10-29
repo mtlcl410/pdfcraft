@@ -701,8 +701,11 @@ fn resolve(h: &XHost, node: usize, path: &str, expr: &str) -> Vec<String> {
 /// A SOM expression from node `from` that runs into an object's properties
 /// (`resolveNode("ui.#textEdit")`, `xfa.resolveNode("form1.page.f.border.edge[1]")`): the
 /// objects the longest leading part names (each instance of `row[*]`), and the properties the
-/// rest names from each, as (node, path). Empty when no part of it does, or the expression has
-/// more than [`super::model::MAX_DEPTH`] steps.
+/// rest names from each, as (node, path). A child named as the property comes first, for each
+/// object on its own: where one has such a child, what the rest names from it is listed in
+/// place, as (child, "") (`row[*].border` with a field `border` in one row and only the property
+/// in another). Empty when no part of it names a property, or the expression has more than
+/// [`super::model::MAX_DEPTH`] steps.
 pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usize, String)> {
     let segs: Vec<&str> = expr.trim().split('.').collect();
     if segs.len() > super::model::MAX_DEPTH {
@@ -727,10 +730,19 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
             // carry: `value.#text` on a draw stays unresolved (null) rather than reading as
             // empty, until a node's value is its value element.
             .filter(|&n| !(first == "value" && h.nodes.get(n).is_some_and(|x| x.kind == XfaKind::Draw)))
-            .flat_map(|n| resolve(h, n, "", &rest).into_iter().map(move |p| (n, p)))
+            .flat_map(|n| {
+                let named = h.nodes.get(n).is_some_and(|x| x.children.iter().any(|&c| h.nodes.get(c).is_some_and(|c| !c.gone && c.name == first)));
+                let children = if named { super::resolve_som(h, n, &rest) } else { Vec::new() };
+                if children.is_empty() {
+                    resolve(h, n, "", &rest).into_iter().map(|p| (n, p)).collect::<Vec<_>>()
+                } else {
+                    children.into_iter().map(|c| (c, String::new())).collect()
+                }
+            })
             .take(MAX_RESOLVED)
             .collect();
-        if !found.is_empty() {
+        // Children alone are no property: the expression names nodes, as `resolve_som` finds them.
+        if found.iter().any(|(_, p)| !p.is_empty()) {
             return found;
         }
     }
@@ -1419,6 +1431,7 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
             return Ok(JsValue::null());
         }
         match listed(key, ctx)?.get(i as usize) {
+            Some((node, p)) if p.is_empty() => super::nodes::node_object(ctx, *node),
             Some((node, p)) => prop_object(ctx, *node, p),
             None => Ok(JsValue::null()),
         }
@@ -1428,10 +1441,17 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
         let items = listed(key, ctx)?;
         let found = {
             let h = host(ctx)?.borrow();
-            let named = |(n, p): &&(usize, String)| template_prop(&h, *n, p).is_some_and(|e| e.attrs.iter().any(|(k, v)| k == "name" && *v == name));
-            items.iter().find(named).or_else(|| items.iter().find(|(_, p)| tag_of(p) == name)).cloned()
+            let named = |(n, p): &&(usize, String)| {
+                if p.is_empty() {
+                    h.nodes.get(*n).is_some_and(|x| x.name == name)
+                } else {
+                    template_prop(&h, *n, p).is_some_and(|e| e.attrs.iter().any(|(k, v)| k == "name" && *v == name))
+                }
+            };
+            items.iter().find(named).or_else(|| items.iter().find(|(_, p)| !p.is_empty() && tag_of(p) == name)).cloned()
         };
         match found {
+            Some((node, p)) if p.is_empty() => super::nodes::node_object(ctx, node),
             Some((node, p)) => prop_object(ctx, node, &p),
             None => Ok(JsValue::null()),
         }
