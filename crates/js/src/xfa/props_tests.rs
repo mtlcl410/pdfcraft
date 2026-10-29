@@ -445,6 +445,11 @@ fn named_children_class_names_and_validation_members_read_as_forms_use_them() {
     for (expr, want) in [
         ("this.desc.vMandatory.value", "1"),
         ("this.desc.nodes.namedItem('title').value", "Title"),
+        // A name written in the run is the one `namedItem` finds.
+        (
+            "this.desc.nodes.namedItem('title').setAttribute('heading', 'name'), String(this.desc.nodes.namedItem('title')) + '|' + this.desc.nodes.namedItem('heading').value",
+            "null|Title",
+        ),
         ("this.extras.nodes.namedItem('note').value", "N"),
         ("this.extras.note.value", "N"),
         ("this.bind.ref", "$.a"),
@@ -593,6 +598,27 @@ fn resolve_nodes_takes_a_child_over_a_property_instance_by_instance() {
                   [l.length, l.item(0).className, l.item(1).className, l.item(1).presence, l.namedItem('border').className].join('|')";
     let o = go_on(&root, script, "row");
     assert_eq!((o.error, o.result.as_deref()), (None, Some("2|field|border|hidden|field")));
+}
+
+/// A child named as a property shadows that property for the rest of the expression too
+/// (`row.border.edge[0]` with a field `border`): the rest is resolved from the child, and when the
+/// child has no such property the expression names nothing; it does not fall back to the parent's
+/// property. `#border` names the property by class (XFA 3.3 p. 96), so it still reaches it.
+#[test]
+fn a_child_named_as_a_property_shadows_it_for_the_rest_of_the_expression() {
+    let edges = |presence: &str| vec![p("edge", &[("presence", presence)], vec![])];
+    let field =
+        XfaNode { som: "form1[0].row[0].border[0]".into(), ..node("border", XfaKind::Field, &[], vec![p("border", &[], edges("invisible"))]) };
+    let row = XfaNode {
+        som: "form1[0].row[0]".into(),
+        children: vec![field],
+        ..node("row", XfaKind::Subform, &[], vec![p("border", &[], edges("hidden"))])
+    };
+    let root = XfaNode { name: "form1".into(), som: "form1[0]".into(), kind: Some(XfaKind::Subform), children: vec![row], ..Default::default() };
+    let script = "var r = function (s) { var o = xfa.resolveNode('xfa.form.form1.row.' + s); return o === null ? 'null' : o.presence; }; \
+                  [r('border.border.edge[0]'), r('border.edge[0]'), r('#border.edge[0]')].join('|')";
+    let o = go_on(&root, script, "row");
+    assert_eq!((o.error, o.result.as_deref()), (None, Some("invisible|null|hidden")));
 }
 
 /// `keep` reads as the template writes it, else with its defaults (XFA 3.3 pp. 762-763):

@@ -715,6 +715,8 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
         let (Some(head), Some(rest)) = (segs.get(..i), segs.get(i..)) else { continue };
         let first = rest.first().map_or("", |s| s.trim());
         let first = first.split('[').next().unwrap_or(first);
+        // `#border` names the property by its class (XFA 3.3 p. 96), past a child named `border`.
+        let by_class = first.starts_with('#');
         let first = first.strip_prefix('#').unwrap_or(first);
         // Only an object's properties start the rest (the parser's property tags): the
         // prefix is resolved only then.
@@ -731,12 +733,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
             // empty, until a node's value is its value element.
             .filter(|&n| !(first == "value" && h.nodes.get(n).is_some_and(|x| x.kind == XfaKind::Draw)))
             .flat_map(|n| {
-                let named = h.nodes.get(n).is_some_and(|x| x.children.iter().any(|&c| h.nodes.get(c).is_some_and(|c| !c.gone && c.name == first)));
-                let children = if named { super::resolve_som(h, n, &rest) } else { Vec::new() };
-                if children.is_empty() {
-                    resolve(h, n, "", &rest).into_iter().map(|p| (n, p)).collect::<Vec<_>>()
+                let named = !by_class
+                    && h.nodes.get(n).is_some_and(|x| x.children.iter().any(|&c| h.nodes.get(c).is_some_and(|c| !c.gone && c.name == first)));
+                // The child shadows the property for the whole rest: what the child lacks names nothing
+                // here (a property of the child is found where the head names the child).
+                if named {
+                    super::resolve_som(h, n, &rest).into_iter().map(|c| (c, String::new())).collect()
                 } else {
-                    children.into_iter().map(|c| (c, String::new())).collect()
+                    resolve(h, n, "", &rest).into_iter().map(|p| (n, p)).collect::<Vec<_>>()
                 }
             })
             .take(MAX_RESOLVED)
@@ -1442,11 +1446,7 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
         let found = {
             let h = host(ctx)?.borrow();
             let named = |(n, p): &&(usize, String)| {
-                if p.is_empty() {
-                    h.nodes.get(*n).is_some_and(|x| x.name == name)
-                } else {
-                    template_prop(&h, *n, p).is_some_and(|e| e.attrs.iter().any(|(k, v)| k == "name" && *v == name))
-                }
+                if p.is_empty() { h.nodes.get(*n).is_some_and(|x| x.name == name) } else { attr(&h, *n, p, "name").is_some_and(|v| v == name) }
             };
             items.iter().find(named).or_else(|| items.iter().find(|(_, p)| !p.is_empty() && tag_of(p) == name)).cloned()
         };
