@@ -799,7 +799,8 @@ impl DocView {
         fresh.cover = self.cover;
         // Still presenting, with the display to go back to on leaving.
         fresh.presentation = self.presentation.take();
-        fresh.presenter = std::mem::take(&mut self.presenter);
+        // A new document: none of the old one's transition, page or timer carries over.
+        fresh.presenter = Default::default();
         fresh.back = std::mem::take(&mut self.back);
         fresh.forward = std::mem::take(&mut self.forward);
         fresh.find = self.find.take();
@@ -2091,12 +2092,17 @@ fn draw_pages(
         crate::calc_order_ui::paint_trace(ui, painter, visible, &view.calc_order, generation, selected);
     }
     // Full screen plays transitions over the page just drawn, and keeps time (#379).
+    let mut hide_pointer = false;
     if view.presentation.is_some() {
         let now = ui.input(|i| i.time);
-        presenter::frame(view, info, painter, ui.ctx(), now, animates, pointer);
+        hide_pointer = presenter::frame(view, info, painter, ui.ctx(), now, animates, pointer);
+    }
+    // A still pointer hides over a link too, and its tip with it: the top layer, which every tool reaches.
+    if hide_pointer {
+        view.cursor.claim(Layer::Drag, egui::CursorIcon::None);
     }
     // The pages' one cursor, from the claim on the highest layer the tool reaches, and the tip.
-    let hover_text = pointer.filter(|_| unobstructed).zip(view.cursor.resolve(ui.ctx(), tool));
+    let hover_text = pointer.filter(|_| unobstructed && !hide_pointer).zip(view.cursor.resolve(ui.ctx(), tool));
     // ScrollArea ignores the wheel while any widget is dragged, so a text-selection drag
     // scrolls the page itself (#721). After the page loop, so it keeps scrolling once the
     // pointer leaves the selection's page for the gap or the next page; over the whole

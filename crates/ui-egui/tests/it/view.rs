@@ -2480,3 +2480,37 @@ fn full_screen_shift_enter_goes_back_a_page() {
     h.run_steps(4);
     assert_eq!(h.state().views[0].current, 0, "Shift+Enter goes back");
 }
+
+/// A document replaced while full screen plays a transition (a reload) starts afresh: none of the
+/// old document's transition, page or timer carries over.
+#[test]
+fn full_screen_starts_afresh_when_the_document_is_replaced() {
+    let mut h = presenting(&[]);
+    h.key_press(Key::ArrowRight);
+    h.run_steps(1);
+    assert!(h.state().views[0].presenting_a_transition(), "page 2 comes in with its Wipe");
+    {
+        let app = h.state_mut();
+        let info = app.session.get(app.views[0].id).unwrap().info.clone();
+        app.views[0].document_replaced(&info);
+    }
+    assert!(!h.state().views[0].presenting_a_transition(), "the old transition is dropped");
+}
+
+/// A still pointer hides over a link too: the page's own cursor (the hand over a link) is chosen
+/// first, and full screen hides the pointer after it.
+#[test]
+fn full_screen_hides_a_still_pointer_over_a_link() {
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().full_screen);
+    // Page 1's link covers x 50–250, y 300–350 of the 300×400 pt page (from its bottom).
+    let r = rect(&h, 0).expect("page 1 on screen");
+    let on_link = egui::pos2(r.left() + r.width() * 150.0 / 300.0, r.top() + r.height() * 75.0 / 400.0);
+    h.hover_at(on_link);
+    h.run_steps(1);
+    assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "just moved, over the link");
+    h.run_steps(16);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "still for over three seconds");
+}

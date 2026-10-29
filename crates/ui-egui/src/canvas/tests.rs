@@ -2002,3 +2002,77 @@ fn a_moved_picture_is_drawn_from_the_fresh_raster_while_a_tile_is_still_stale() 
     h.state_mut().views[0].stale_tiles.clear();
     h.state_mut().views[0].tiles.clear();
 }
+
+/// Full screen's presenter for one frame of `ctx`, at time `now`: whether the frame asked to be
+/// drawn again at once.
+fn presenter_frame(ctx: &egui::Context, v: &mut DocView, info: &DocInfo, now: f64) -> bool {
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let painter = ui.ctx().layer_painter(egui::LayerId::background());
+        presenter::frame(v, info, &painter, ui.ctx(), now, true, None);
+    });
+    // No renderer here to upload textures: drop the frame's texture changes.
+    out.textures_delta.clear();
+    out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|o| o.repaint_delay.is_zero())
+}
+
+/// A transition into a page the renderer could not draw ends at once: the page before is not held
+/// on screen waiting for it, and the page's own time can start.
+#[test]
+fn a_transition_into_a_page_that_failed_to_render_ends_at_once() {
+    use pdfcraft_render::{PageTransition, TransitionStyle};
+    let page = pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 };
+    let wipe = PageTransition {
+        page: 1,
+        style: Some(TransitionStyle::Wipe),
+        duration: 1.0,
+        horizontal: false,
+        inward: false,
+        direction: Some(0),
+        scale: 1.0,
+        opaque: false,
+        display: None,
+    };
+    let info = DocInfo { pages: vec![page.clone(), page], transitions: vec![wipe], ..Default::default() };
+    let mut v = DocView::new(DocId(1), &info, ViewDefaults { layout: PageLayout::Single, continuous: false, ..Default::default() });
+    v.enter_presentation();
+    let ctx = egui::Context::default();
+    let tex = ctx.load_texture("page", egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), Default::default());
+    v.pages.insert(0, super::cache::PageTex { tag: 0, tex });
+    presenter_frame(&ctx, &mut v, &info, 0.0);
+    v.current = 1;
+    v.screen_rects = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(300.0, 400.0)))];
+    v.errors.insert(1, "the renderer failed".into());
+    presenter_frame(&ctx, &mut v, &info, 0.1);
+    assert!(!v.presenting_a_transition(), "no wait for a page that won't render");
+}
+
+/// A display time on the first page of the last two-page spread can't advance (there is no spread
+/// after it): the presenter then stays on it without asking for a frame after frame.
+#[test]
+fn a_display_time_on_the_last_spread_does_not_redraw_every_frame() {
+    use pdfcraft_render::PageTransition;
+    let page = pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 };
+    let timed = PageTransition {
+        page: 2,
+        style: None,
+        duration: 1.0,
+        horizontal: false,
+        inward: false,
+        direction: Some(0),
+        scale: 1.0,
+        opaque: false,
+        display: Some(1.0),
+    };
+    let info = DocInfo { pages: vec![page.clone(), page.clone(), page.clone(), page], transitions: vec![timed], ..Default::default() };
+    let mut v = DocView::new(DocId(1), &info, ViewDefaults { layout: PageLayout::TwoUp, continuous: false, ..Default::default() });
+    v.enter_presentation();
+    v.current = 2;
+    let ctx = egui::Context::default();
+    // egui asks for its first frames itself: past them, only the presenter asks.
+    for now in [0.0, 0.5, 0.6] {
+        presenter_frame(&ctx, &mut v, &info, now);
+    }
+    let again = presenter_frame(&ctx, &mut v, &info, 5.0);
+    assert_eq!(v.current, 2, "the last spread stays");
+    assert!(!again, "and asks for no frame after frame");
+}

@@ -7,7 +7,7 @@
 //! preference set to off change pages at once. Display times count from the end of the
 //! transition and stop at the last page.
 
-use egui::{Color32, CornerRadius, CursorIcon, Painter, Pos2, Rect, TextureHandle, pos2};
+use egui::{Color32, CornerRadius, Painter, Pos2, Rect, TextureHandle, pos2};
 use pdfcraft_render::transition::{self, Effect, Piece};
 use pdfcraft_render::{DocInfo, PageTransition};
 
@@ -97,9 +97,19 @@ fn paint(painter: &Painter, tex: &TextureHandle, page: Rect, pieces: &[Piece]) {
 }
 
 /// One frame of full screen for `view`, after its pages were drawn: start, paint or finish the
-/// current page's transition, advance a page whose display time is up, and hide a still pointer.
-/// `animates` is the Animation effects preference as it applies now.
-pub(super) fn frame(view: &mut DocView, info: &DocInfo, painter: &Painter, ctx: &egui::Context, now: f64, animates: bool, pointer: Option<Pos2>) {
+/// current page's transition, and advance a page whose display time is up. Returns whether the
+/// pointer has been still long enough to hide: the caller hides it once the page has chosen its
+/// cursor, which would otherwise show it again over a link. `animates` is the Animation effects
+/// preference as it applies now.
+pub(super) fn frame(
+    view: &mut DocView,
+    info: &DocInfo,
+    painter: &Painter,
+    ctx: &egui::Context,
+    now: f64,
+    animates: bool,
+    pointer: Option<Pos2>,
+) -> bool {
     let page = view.current;
     let showing = view.presenter.shown.map(|(p, _)| p);
     let arriving = view.presenter.turn.as_ref().map(|t| t.to_page);
@@ -116,7 +126,10 @@ pub(super) fn frame(view: &mut DocView, info: &DocInfo, painter: &Painter, ctx: 
     }
 
     if let Some(turn) = view.presenter.turn.as_mut() {
-        let to_rect = view.screen_rects.iter().find(|(i, _)| *i == turn.to_page).map(|&(_, r)| r);
+        // A page the renderer can't draw ends the turn: waiting for it would hold the page before
+        // forever, and its display time would never start.
+        let failed = view.errors.contains_key(&turn.to_page);
+        let to_rect = view.screen_rects.iter().find(|(i, _)| *i == turn.to_page).map(|&(_, r)| r).filter(|_| !failed);
         let incoming = view.pages.get(&turn.to_page).map(|p| p.tex.clone());
         match to_rect {
             None => {
@@ -160,8 +173,12 @@ pub(super) fn frame(view: &mut DocView, info: &DocInfo, painter: &Painter, ctx: 
     {
         let left = since + seconds.min(MAX_DISPLAY) - now;
         if left <= 0.0 {
+            // In two-page view the last spread can't advance: then there is nothing to redraw.
+            let before = view.current;
             view.step_page(true);
-            ctx.request_repaint();
+            if view.current != before {
+                ctx.request_repaint();
+            }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
         }
@@ -173,14 +190,12 @@ pub(super) fn frame(view: &mut DocView, info: &DocInfo, painter: &Painter, ctx: 
         Some(p) if view.presenter.pointer.map(|(q, _)| q) != Some(p) => view.presenter.pointer = Some((p, now)),
         Some(_) => {}
     }
-    if let Some((_, since)) = view.presenter.pointer {
-        let left = since + HIDE_POINTER_AFTER - now;
-        if left <= 0.0 {
-            ctx.set_cursor_icon(CursorIcon::None);
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
-        }
+    let Some((_, since)) = view.presenter.pointer else { return false };
+    let left = since + HIDE_POINTER_AFTER - now;
+    if left > 0.0 {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
     }
+    left <= 0.0
 }
 
 #[cfg(test)]
