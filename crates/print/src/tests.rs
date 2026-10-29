@@ -1169,7 +1169,7 @@ fn missing_print_dlls_are_named() {
 #[cfg(windows)]
 #[test]
 fn printing_without_the_print_dlls_is_refused_before_the_spooler() {
-    use crate::spool::{PRINT_DLLS, SYSTEM32_FOR_TEST, printers, submit, submit_with_progress};
+    use crate::spool::{PRINT_DLLS, PRINTER_BACKEND_CALLS, SYSTEM32_FOR_TEST, printers, submit, submit_with_progress};
     let dir = std::env::temp_dir().join(format!("pdfcraft-print-no-dlls-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1183,7 +1183,10 @@ fn printing_without_the_print_dlls_is_refused_before_the_spooler() {
     let mut called = false;
     assert!(named(submit_with_progress(b"not a PDF", &job, &mut |_, _| called = true)), "submit_with_progress names it");
     assert!(!called, "no sheet reached a spooler");
+    // Not only an empty list, which a machine without printers gives anyway: the backend wasn't asked.
+    PRINTER_BACKEND_CALLS.with(|c| c.set(0));
     assert!(printers().is_empty(), "no printers are listed");
+    assert_eq!(PRINTER_BACKEND_CALLS.with(|c| c.get()), 0, "the printer backend wasn't asked");
     SYSTEM32_FOR_TEST.with(|d| *d.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(&dir);
 }

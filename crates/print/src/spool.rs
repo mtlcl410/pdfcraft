@@ -24,6 +24,9 @@ thread_local! {
     /// Tests: the folder the print DLLs are looked for in, instead of the system's, so the
     /// public entry points can be checked against a Windows that lacks them.
     pub(crate) static SYSTEM32_FOR_TEST: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+    /// Tests: how many times [`printers`] asked the system's printer backend, so a test can tell
+    /// the guard answered without relying on the machine having no printers.
+    pub(crate) static PRINTER_BACKEND_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The first print DLL this Windows installation lacks. `None` when all are there, and when the
@@ -51,6 +54,8 @@ pub fn printers() -> Vec<Printer> {
     if missing_print_dll().is_some() {
         return Vec::new();
     }
+    #[cfg(all(windows, test))]
+    PRINTER_BACKEND_CALLS.with(|c| c.set(c.get().saturating_add(1)));
     craft_print::printers()
 }
 
