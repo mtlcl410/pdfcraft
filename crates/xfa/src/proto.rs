@@ -306,55 +306,14 @@ impl<'a, 'd> Writer<'a, 'd> {
         }
     }
 
-    /// Write the element that `stack` makes together: `stack[0]` over `stack[1]` over …, each
-    /// an element of the same class. `scope` holds the namespaces already declared around it.
-    fn element(&mut self, stack: &[Node<'a, 'd>], scope: &Scope<'a>, depth: usize) {
-        if self.failed.is_some() {
-            return;
-        }
-        if depth > MAX_DEPTH {
-            self.failed = Some(format!("nest deeper than {MAX_DEPTH} elements"));
-            return;
-        }
-        if self.out.len() > self.limit {
-            self.failed = Some(format!("would make it larger than {} MB", self.limit >> 20));
-            return;
-        }
-        // Every layer may itself inherit from a prototype.
-        let mut layers = Vec::new();
-        for l in stack {
-            self.chain(*l, &mut layers);
-            if layers.len() >= MAX_LAYERS {
-                break;
-            }
-        }
-        // Charge what merging looks at before looking: each layer's children (counted no
-        // further than the budget left), attributes and namespaces, and the scope around it.
-        let mut cost = scope.len().saturating_add(layers.len());
-        for l in &layers {
-            let children = l.children().take(self.work.saturating_add(1)).count();
-            cost = cost.saturating_add(children).saturating_add(l.attributes().len()).saturating_add(l.namespaces().len());
-        }
-        if self.failed.is_some() || !self.charge(cost) {
-            return;
-        }
-        let Some(&top) = layers.first() else { return };
-        for l in &layers {
-            *self.active.entry(l.id()).or_insert(0) += 1;
-        }
-        let tag = top.tag_name().name();
-        let prefix =
-            |n: Node, ns: Option<&str>| ns.and_then(|ns| n.lookup_prefix(ns)).filter(|p| !p.is_empty()).map(|p| format!("{p}:")).unwrap_or_default();
-        let qname = format!("{}{tag}", prefix(top, top.tag_name().namespace()));
-        self.out.push('<');
-        self.out.push_str(&qname);
-        // Namespace bindings the layers have that differ from those in scope around this
-        // element, by prefix: the nearest layer's binding of a prefix wins, and a prefix bound
-        // around this element to another URI is bound again here (an XHTML `body` inside a
-        // template whose default namespace is XFA's).
+    /// Write the namespace bindings `layers` have that differ from those in `scope` around their
+    /// element, by prefix, and return the scope inside it: the nearest layer's binding of a prefix
+    /// wins, and a prefix bound around the element to another URI is bound again here (an XHTML
+    /// `body` inside a template whose default namespace is XFA's).
+    fn namespaces(&mut self, layers: &[Node<'a, 'd>], scope: &Scope<'a>) -> Scope<'a> {
         let mut inner: Scope<'a> = scope.clone();
         let mut decided: HashSet<Option<&'a str>> = HashSet::new();
-        for layer in &layers {
+        for layer in layers {
             for ns in layer.namespaces() {
                 let (name, uri) = (ns.name(), ns.uri());
                 if name == Some("xml") || !decided.insert(name) || scope.get(&name) == Some(&uri) {
@@ -373,11 +332,11 @@ impl<'a, 'd> Writer<'a, 'd> {
                 inner.insert(name, uri);
             }
         }
-        // An element in no namespace inside a default namespace undeclares it.
-        if top.tag_name().namespace().is_none() && inner.get(&None).is_some_and(|u| !u.is_empty()) {
-            self.out.push_str(" xmlns=\"\"");
-            inner.insert(None, "");
-        }
+        inner
+    }
+
+    /// Write the attributes of the element `layers` make, inside the namespace scope `inner`.
+    fn attributes(&mut self, layers: &[Node<'a, 'd>], inner: &Scope<'a>) {
         // Attributes: the nearest layer that has one wins; `id` and `name` are not inherited.
         // Attributes are told apart by namespace URI and local name. One whose layer's prefix is
         // bound here to another URI (the nearest layer's binding won) is written with a fresh
@@ -430,6 +389,57 @@ impl<'a, 'd> Writer<'a, 'd> {
                 self.out.push('"');
             }
         }
+    }
+
+    /// Write the element that `stack` makes together: `stack[0]` over `stack[1]` over …, each
+    /// an element of the same class. `scope` holds the namespaces already declared around it.
+    fn element(&mut self, stack: &[Node<'a, 'd>], scope: &Scope<'a>, depth: usize) {
+        if self.failed.is_some() {
+            return;
+        }
+        if depth > MAX_DEPTH {
+            self.failed = Some(format!("nest deeper than {MAX_DEPTH} elements"));
+            return;
+        }
+        if self.out.len() > self.limit {
+            self.failed = Some(format!("would make it larger than {} MB", self.limit >> 20));
+            return;
+        }
+        // Every layer may itself inherit from a prototype.
+        let mut layers = Vec::new();
+        for l in stack {
+            self.chain(*l, &mut layers);
+            if layers.len() >= MAX_LAYERS {
+                break;
+            }
+        }
+        // Charge what merging looks at before looking: each layer's children (counted no
+        // further than the budget left), attributes and namespaces, and the scope around it.
+        let mut cost = scope.len().saturating_add(layers.len());
+        for l in &layers {
+            let children = l.children().take(self.work.saturating_add(1)).count();
+            cost = cost.saturating_add(children).saturating_add(l.attributes().len()).saturating_add(l.namespaces().len());
+        }
+        if self.failed.is_some() || !self.charge(cost) {
+            return;
+        }
+        let Some(&top) = layers.first() else { return };
+        for l in &layers {
+            *self.active.entry(l.id()).or_insert(0) += 1;
+        }
+        let tag = top.tag_name().name();
+        let prefix =
+            |n: Node, ns: Option<&str>| ns.and_then(|ns| n.lookup_prefix(ns)).filter(|p| !p.is_empty()).map(|p| format!("{p}:")).unwrap_or_default();
+        let qname = format!("{}{tag}", prefix(top, top.tag_name().namespace()));
+        self.out.push('<');
+        self.out.push_str(&qname);
+        let mut inner = self.namespaces(&layers, scope);
+        // An element in no namespace inside a default namespace undeclares it.
+        if top.tag_name().namespace().is_none() && inner.get(&None).is_some_and(|u| !u.is_empty()) {
+            self.out.push_str(" xmlns=\"\"");
+            inner.insert(None, "");
+        }
+        self.attributes(&layers, &inner);
         self.out.push('>');
         // Rich text is taken whole from the nearest layer that has any.
         let cut = if tag == "exData" { layers.iter().position(|l| has_content(l, true)).map_or(layers.len(), |i| i + 1) } else { layers.len() };
