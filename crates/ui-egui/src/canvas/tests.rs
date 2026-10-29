@@ -2046,6 +2046,41 @@ fn a_transition_into_a_page_that_failed_to_render_ends_at_once() {
     assert!(!v.presenting_a_transition(), "no wait for a page that won't render");
 }
 
+/// While the incoming page is still rendering, the presenter holds the page before without asking
+/// for a frame after frame: the render cache wakes the window while pages are queued.
+#[test]
+fn a_transition_waiting_for_its_page_does_not_redraw_every_frame() {
+    use pdfcraft_render::{PageTransition, TransitionStyle};
+    let page = pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 };
+    let wipe = PageTransition {
+        page: 1,
+        style: Some(TransitionStyle::Wipe),
+        duration: 1.0,
+        horizontal: false,
+        inward: false,
+        direction: Some(0),
+        scale: 1.0,
+        opaque: false,
+        display: None,
+    };
+    let info = DocInfo { pages: vec![page.clone(), page], transitions: vec![wipe], ..Default::default() };
+    let mut v = DocView::new(DocId(1), &info, ViewDefaults { layout: PageLayout::Single, continuous: false, ..Default::default() });
+    v.enter_presentation();
+    let ctx = egui::Context::default();
+    let tex = ctx.load_texture("page", egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), Default::default());
+    v.pages.insert(0, super::cache::PageTex { tag: 0, tex });
+    presenter_frame(&ctx, &mut v, &info, 0.0);
+    v.current = 1;
+    v.screen_rects = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(300.0, 400.0)))];
+    // egui asks for its first frames itself: past them, only the presenter asks.
+    for now in [0.1, 0.2, 0.3] {
+        presenter_frame(&ctx, &mut v, &info, now);
+    }
+    let again = presenter_frame(&ctx, &mut v, &info, 0.4);
+    assert!(v.presenting_a_transition(), "still waiting for page 2");
+    assert!(!again, "without asking for a frame after frame");
+}
+
 /// A display time on the first page of the last two-page spread can't advance (there is no spread
 /// after it): the presenter then stays on it without asking for a frame after frame.
 #[test]

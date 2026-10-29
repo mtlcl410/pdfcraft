@@ -2514,3 +2514,90 @@ fn full_screen_hides_a_still_pointer_over_a_link() {
     h.run_steps(16);
     assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "still for over three seconds");
 }
+
+/// A text field on page 1 of three.
+const FIELD_PAGES: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 300 400] >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Annots [6 0 R] >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R >> endobj
+5 0 obj << /Type /Page /Parent 2 0 R >> endobj
+6 0 obj << /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [50 100 250 140] /P 3 0 R /F 4 >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+/// Full screen keeps the pointer active "so that you can click links and open notes" (*Adobe
+/// Acrobat Help*, 2019, p. 65): a click on a form field opens it for typing rather than turning
+/// the page, and a click beside it still turns.
+#[test]
+fn full_screen_click_on_a_field_fills_it_and_turns_no_page() {
+    let mut h = harness(&[]);
+    h.state_mut().open_bytes("field.pdf", None, FIELD_PAGES.to_vec()).expect("opens");
+    h.run_steps(8);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    let n = h.state().views.len() - 1;
+    let r = h.state().views[n].page_screen_rect(0).expect("page 1 on screen");
+    let on_field = egui::pos2(r.left() + r.width() * 0.5, r.top() + r.height() * (400.0 - 120.0) / 400.0);
+    click_with(&mut h, on_field, Modifiers::NONE);
+    h.run_steps(8);
+    assert_eq!(h.state().views[n].current, 0, "no page turned");
+    assert!(h.ctx.egui_wants_keyboard_input(), "the field is open for typing");
+    click_with(&mut h, egui::pos2(r.center().x, r.top() + 20.0), Modifiers::NONE);
+    h.run_steps(4);
+    assert_eq!(h.state().views[n].current, 1, "a click beside the field turns the page");
+}
+
+/// Shift+Ctrl+Page Down or Down Arrow goes to the last page, and Shift+Ctrl+Page Up or Up Arrow
+/// to the first, as Home and End do (*Adobe Acrobat Help*, 2019, "Keys for navigating a PDF",
+/// p. 83), in full screen and out of it.
+#[test]
+fn shift_ctrl_page_keys_and_arrows_go_to_the_first_and_last_page() {
+    for full_screen in [false, true] {
+        let mut h = harness(&[("layout", "single")]);
+        if full_screen {
+            h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+            h.run_steps(6);
+        }
+        let both = Modifiers::COMMAND | Modifiers::SHIFT;
+        for (k, want) in [(Key::PageDown, 2), (Key::PageUp, 0), (Key::ArrowDown, 2), (Key::ArrowUp, 0)] {
+            h.key_press_modifiers(both, k);
+            h.run_steps(6);
+            assert_eq!(h.state().views[0].current, want, "{k:?}, full screen {full_screen}");
+        }
+    }
+}
+
+/// In full screen a double-click on a note opens it to edit, and turns no page: the pointer stays
+/// active "so that you can click links and open notes" (*Adobe Acrobat Help*, 2019, p. 65).
+#[test]
+fn full_screen_double_click_on_a_note_opens_it_and_turns_no_page() {
+    const NOTE: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 300 400] >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Annots [4 0 R] >> endobj
+4 0 obj << /Type /Annot /Subtype /Text /Rect [100 100 124 124] /Contents (Hello) /T (A) /F 4 >> endobj
+5 0 obj << /Type /Page /Parent 2 0 R >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+    let mut h = harness_stepping(1.0 / 60.0, &[]);
+    h.state_mut().open_bytes("note.pdf", None, NOTE.to_vec()).expect("opens");
+    h.run_steps(8);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    let n = h.state().views.len() - 1;
+    let r = h.state().views[n].page_screen_rect(0).expect("page 1 on screen");
+    let p = egui::pos2(r.left() + r.width() * 112.0 / 300.0, r.top() + r.height() * (400.0 - 112.0) / 400.0);
+    h.hover_at(p);
+    h.run_steps(2);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        h.step();
+    }
+    // Past the double-click time, when a turn would have come.
+    h.run_steps(30);
+    assert_eq!(h.state().views[n].current, 0, "no page turned");
+    assert!(h.ctx.egui_wants_keyboard_input(), "the note is open to edit");
+}

@@ -911,6 +911,9 @@ struct PageOut {
     open_signature: bool,
     open_table: Option<(usize, [f64; 4])>,
     primary_down: bool,
+    /// The pointer is over a link, comment, field or what is placed on the page: a click there is
+    /// for it, and turns no page in full screen.
+    on_object: bool,
     refused: Option<String>,
     stamp_placed: bool,
 }
@@ -2082,6 +2085,7 @@ fn draw_pages(
         open_signature,
         open_table,
         primary_down: _,
+        on_object: _,
         refused,
         stamp_placed,
     } = page_out;
@@ -2097,6 +2101,8 @@ fn draw_pages(
         let now = ui.input(|i| i.time);
         hide_pointer = presenter::frame(view, info, painter, ui.ctx(), now, animates, pointer);
     }
+    // Read before the claims are spent below, and before the pointer hides, which claims the top layer.
+    let on_object = view.cursor.over_object(tool);
     // A still pointer hides over a link too, and its tip with it: the top layer, which every tool reaches.
     if hide_pointer {
         view.cursor.claim(Layer::Drag, egui::CursorIcon::None);
@@ -2269,6 +2275,7 @@ fn draw_pages(
         open_signature,
         open_table,
         primary_down: ptr.primary_down,
+        on_object,
         refused,
         stamp_placed,
     };
@@ -2770,12 +2777,14 @@ fn frame_overlays(ui: &mut egui::Ui, view: &mut DocView, env: &PageEnv<'_>, prim
 /// Full screen: the click turns the page unless it did something else first. It waits out the
 /// double-click time: turning on the first click's release sent a double-click's second click,
 /// meant to select a word, to the next page (review on #2070). A selection cancels it, and so do a
-/// link followed meanwhile and leaving full screen; a double-click elsewhere still turns once.
+/// click on a link, field or comment (`clicked_object`) and leaving full screen: the pointer stays
+/// active "so that you can click links and open notes" (*Adobe Acrobat Help*, 2019, p. 65), and
+/// fields to fill. A double-click elsewhere still turns once.
 /// `click` is `Some(back)` on the frame of a click, `back` when it was a shift-click.
-fn schedule_presentation_turn(ui: &egui::Ui, view: &mut DocView, click: Option<bool>, link_followed: bool) {
+fn schedule_presentation_turn(ui: &egui::Ui, view: &mut DocView, click: Option<bool>, clicked_object: bool) {
     let now = ui.input(|i| i.time);
     if let Some(back) = click
-        && !link_followed
+        && !clicked_object
         && view.selection.is_none()
         && view.clicks < 2
     {
@@ -2783,7 +2792,7 @@ fn schedule_presentation_turn(ui: &egui::Ui, view: &mut DocView, click: Option<b
         view.present_turn = Some((now + delay, !back));
     }
     if let Some((due, forward)) = view.present_turn {
-        if link_followed || view.selection.is_some() || view.presentation.is_none() {
+        if clicked_object || view.selection.is_some() || view.presentation.is_none() {
             view.present_turn = None;
         } else if now >= due {
             view.present_turn = None;
@@ -3281,6 +3290,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         open_signature,
         open_table,
         primary_down,
+        on_object,
         mut refused,
         stamp_placed,
     } = page_out;
@@ -3354,7 +3364,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         Some(comments::CanvasAction::CopyImageFile(p, i)) => image_action = Some(crate::edit_text_ui::ImageAction::CopyFile(p, i)),
         None => {}
     }
-    schedule_presentation_turn(ui, view, present, clicked_link.is_some());
+    schedule_presentation_turn(ui, view, present, clicked_link.is_some() || on_object && present.is_some());
     let remote_open = follow_link(app, index, clicked_link);
     if tool == QuickTool::Crop && cropped {
         tool = QuickTool::Select;

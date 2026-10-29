@@ -158,8 +158,12 @@ pub(super) fn frame(
                     paint(painter, &turn.from, from_rect, &f.outgoing);
                     if let Some(tex) = &incoming {
                         paint(painter, tex, to_rect, &f.incoming);
+                        ctx.request_repaint();
+                    } else {
+                        // Nothing moves until the page arrives, and the render cache wakes the window
+                        // while pages are queued: look again now and then rather than every frame.
+                        ctx.request_repaint_after(std::time::Duration::from_millis(50));
                     }
-                    ctx.request_repaint();
                 }
             }
         }
