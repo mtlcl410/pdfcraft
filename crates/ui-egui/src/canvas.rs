@@ -3275,7 +3275,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         // below the window's top). Within a point, as for wheel paging, so layout rounding
         // can't hide an edge.
         let max_y = (out.content_size.y - out.inner_rect.height()).max(0.0);
-        (page, out.state.clamped_offset().y <= view.margin() - view.page_gap() + 1.0, out.state.clamped_offset().y >= max_y - 1.0)
+        // Going to a page clamps at 0, which is where a page sits with no margin (full screen).
+        (page, out.state.clamped_offset().y <= (view.margin() - view.page_gap()).max(0.0) + 1.0, out.state.clamped_offset().y >= max_y - 1.0)
     });
 
     view.viewport_screen = out.inner_rect;

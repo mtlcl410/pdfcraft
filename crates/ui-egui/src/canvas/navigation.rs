@@ -180,13 +180,16 @@ impl DocView {
         }
     }
 
-    /// Whether Esc has something on the page to close: the camera, a selection or the find bar
-    /// ([`shortcuts`] closes them in that order). Esc closes one thing at a time, so full screen
-    /// leaves only on an Esc that finds none of them (#5302). A search shown in the Search panel
-    /// isn't on the page: full screen hides the panel, and keeps its search.
+    /// Whether Esc has something on the page to close: the camera, a form field being filled (its
+    /// editor closes it), a selection or the find bar ([`shortcuts`] closes the others in that
+    /// order). Esc closes one thing at a time, so full screen leaves only on an Esc that finds none
+    /// of them (#5302): from a field, "Esc (press twice)" leaves (*Adobe Acrobat Help*, 2019,
+    /// p. 248). A search shown in the Search panel isn't on the page: full screen hides the panel,
+    /// and keeps its search.
     pub fn escape_closes_something(&self) -> bool {
         self.camera.is_some()
             || self.camera_done.is_some()
+            || self.forms.focus.is_some()
             || self.selection.is_some()
             || self.all_text
             || self.find.as_ref().is_some_and(|f| !f.in_panel)

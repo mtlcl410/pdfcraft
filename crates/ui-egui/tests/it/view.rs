@@ -2345,6 +2345,28 @@ fn full_screen_fills_the_screen_edge_to_edge() {
     assert!((r.center().x - vp.center().x).abs() <= 1.0, "centred across: {r:?} in {vp:?}");
 }
 
+/// With the page filling the screen there is no margin above it, and ↑ and the wheel still go
+/// back a page from its top, as ↓ and the wheel go forward from its bottom.
+#[test]
+fn full_screen_filling_the_screen_goes_back_with_up_and_the_wheel() {
+    let mut h = harness(&[]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    assert!(h.state().views[0].fills_screen());
+    h.key_press(Key::End);
+    h.run_steps(6);
+    assert_eq!(h.state().views[0].current, 2);
+    h.key_press(Key::ArrowUp);
+    h.run_steps(6);
+    assert_eq!(h.state().views[0].current, 1, "↑ goes back a page");
+    let vp = h.state().views[0].viewport_rect();
+    h.hover_at(vp.center());
+    h.run_steps(2);
+    h.event(wheel(MouseWheelUnit::Line, 1.0, TouchPhase::Move));
+    h.run_steps(6);
+    assert_eq!(h.state().views[0].current, 0, "the wheel goes back a page");
+}
+
 /// #4273: with the "Full screen fills the screen with one page at a time" preference off, full
 /// screen keeps the page display it was entered from (continuous scrolling here), and Esc
 /// brings the window's display back.
@@ -2462,6 +2484,37 @@ fn full_screen_stays_on_esc_when_esc_does_not_leave_it() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::L);
     h.run_steps(4);
     assert!(!h.state().full_screen, "Ctrl+L / ⌘L leaves it");
+}
+
+/// From a form field being filled, the first Esc closes the field and the second leaves full
+/// screen: "Esc (press twice)" (*Adobe Acrobat Help*, 2019, "Options for moving among form
+/// fields", p. 248).
+#[test]
+fn full_screen_esc_from_a_field_closes_the_field_first() {
+    const FIELD: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Annots [4 0 R] >> endobj
+4 0 obj << /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [50 100 250 140] /P 3 0 R /F 4 >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+    let mut h = harness(&[]);
+    h.state_mut().open_bytes("field.pdf", None, FIELD.to_vec()).expect("opens");
+    h.run_steps(8);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(6);
+    let n = h.state().views.len() - 1;
+    let r = h.state().views[n].page_screen_rect(0).expect("page 1 on screen");
+    // One page only: the click can't turn away from the field.
+    click_with(&mut h, egui::pos2(r.left() + r.width() * 0.5, r.top() + r.height() * (400.0 - 120.0) / 400.0), Modifiers::NONE);
+    assert!(h.ctx.egui_wants_keyboard_input(), "the field is open for typing");
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    assert!(h.state().full_screen, "the first Esc closes the field only");
+    assert!(!h.ctx.egui_wants_keyboard_input(), "the field is closed");
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    assert!(!h.state().full_screen, "the second Esc leaves full screen");
 }
 
 /// Full screen shows no notice bar above the page (a form's "interactive form fields" notice, here),
