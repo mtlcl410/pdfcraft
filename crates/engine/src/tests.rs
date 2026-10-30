@@ -9502,3 +9502,45 @@ fn master_round_trip_review_template() -> String {
 <xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><master><shared>GLOBAL_VALUE</shared></master></xfa:data></xfa:datasets></xdp:xdp>"#
     )
 }
+
+/// Hiding the first, middle, last or every page-master widget keeps every master
+/// instance addressable, live and after save and reopen (wireless89, #5368).
+#[test]
+fn xfa_hidden_master_instances_remain_addressable_across_reopen_matrix() {
+    let mut failures = Vec::new();
+    for targets in [vec![0usize], vec![1], vec![2], vec![0, 1, 2]] {
+        let hide =
+            targets.iter().map(|page| format!("xfa.resolveNode('master[{page}].PrintButton1').presence = 'hidden';")).collect::<Vec<_>>().join(" ");
+        let restore =
+            targets.iter().map(|page| format!("xfa.resolveNode('master[{page}].PrintButton1').presence = 'visible';")).collect::<Vec<_>>().join(" ");
+        let template = pdfcraft_xfa::fixtures::repeated_print_button_template().replace(
+            r#"xfa.host.print(1, "0", (xfa.host.numPages -1).toString(), 0, 0, 0, 0, 0);"#, &hide,
+        ).replace("</subform></template>", &format!(r#"<field name="restore" w="100pt" h="25pt"><ui><button/></ui><event activity="click"><script contentType="application/x-javascript">{restore}</script></event></field></subform></template>"#));
+        let (tpl, _) = pdfcraft_xfa::parse(&template).unwrap();
+        let mut s = Session::new().with_clock(|| 1_700_000_000).with_xfa_time_scale(100);
+        let id = s.open("hidden.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&template)), None).unwrap();
+        assert_eq!(s.run_javascript(id, "", Some("PrintButton1")).unwrap().error, None);
+        s.undo(id).unwrap();
+        assert_eq!(
+            pdfcraft_xfa::fields_by_som(&s.get(id).unwrap().editor.as_ref().unwrap().cos).keys().filter(|name| name.contains("PrintButton1")).count(),
+            3
+        );
+        s.redo(id).unwrap();
+        let saved = s.save_bytes(id).unwrap();
+        for (stage, current) in [("live", id), ("reopened", s.open("saved.pdf", None, saved, None).unwrap())] {
+            let cos = &s.get(current).unwrap().editor.as_ref().unwrap().cos;
+            assert_eq!(pdfcraft_organize::page_count(cos).unwrap(), 3);
+            let count = pdfcraft_xfa::page_area_uses(cos, &tpl).get("master").copied();
+            let error = s.run_javascript(current, "", Some("restore")).unwrap().error;
+            let restored = targets.iter().all(|page| {
+                pdfcraft_xfa::fields_by_som(&s.get(current).unwrap().editor.as_ref().unwrap().cos)
+                    .contains_key(&format!("master[{page}].PrintButton1[0]"))
+            });
+            eprintln!("targets={targets:?} stage={stage} count={count:?} error={error:?} restored={restored}");
+            if count != Some(3) || error.is_some() || !restored {
+                failures.push(format!("{targets:?}/{stage}: count={count:?}, error={error:?}, restored={restored}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

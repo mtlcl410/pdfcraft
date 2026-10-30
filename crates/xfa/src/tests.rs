@@ -4224,3 +4224,34 @@ fn a_script_hiding_master_content_on_one_page_hides_it_there_only() {
     let has: Vec<bool> = form.pages.iter().map(|p| widgets(p).iter().any(|w| w.som.contains("pageNo"))).collect();
     assert_eq!(has, [true, false, true], "hidden on the second page only");
 }
+
+/// Hidden master widgets still count their page area, and removed pages leave no
+/// stale count when a page set has several page areas (wireless89, #5368).
+#[test]
+fn page_area_uses_follow_hidden_masters_and_shrink_with_multiple_areas() {
+    let xml = fixtures::repeated_print_button_template()
+        .replace(
+            "<pageSet><pageArea name=\"master\"><occur max=\"-1\"/>",
+            r#"<pageSet><pageArea name="Cover"><occur max="1"/><contentArea w="540pt" h="648pt"/><medium short="612pt" long="792pt"/>
+<field name="hidden" presence="hidden"><ui><textEdit/></ui></field></pageArea><pageArea name="master"><occur max="-1"/>"#,
+        )
+        .replace("<occur max=\"-1\"/>", "<occur min=\"0\" max=\"-1\"/>")
+        .replace("name=\"PrintButton1\"", "name=\"PrintButton1\" presence=\"hidden\"");
+    let (tpl, _) = parse(&xml).unwrap();
+    let mut doc = Document::open(Arc::new(shell(&xml))).unwrap();
+    render_into(&mut doc).unwrap();
+    let uses = page_area_uses(&doc, &tpl);
+    assert_eq!(uses.get("Cover"), Some(&1));
+    assert_eq!(uses.get("master"), Some(&2));
+    let mut ov = Overrides::default();
+    ov.presence.insert("form[0].page3[0]".into(), "hidden".into());
+    set_overrides(&mut doc, &ov).unwrap();
+    rerender(&mut doc, &tpl).unwrap();
+    assert_eq!(page_area_uses(&doc, &tpl).get("master"), Some(&1));
+    ov.presence.insert("form[0].page2[0]".into(), "hidden".into());
+    set_overrides(&mut doc, &ov).unwrap();
+    rerender(&mut doc, &tpl).unwrap();
+    let uses = page_area_uses(&doc, &tpl);
+    assert_eq!(uses.get("Cover"), Some(&1));
+    assert!(!uses.contains_key("master"), "removed pages leave no stale occurrence metadata: {uses:?}");
+}
