@@ -105,9 +105,16 @@ impl Automation {
                     (LinkAction::Uri(u), _) => {
                         v["url"] = json!(u);
                         // A relative address, resolved against the catalog's /URI /Base
-                        // (ISO 32000-2 Table 211): what the viewer offers to open.
-                        if let Some(resolved) = pdfcraft_render::resolve_uri(doc.info.uri_base.as_deref(), u) {
-                            v["resolved_url"] = json!(resolved);
+                        // (ISO 32000-2 Table 211): what the viewer offers to open. That is the
+                        // address inspection kept, which stays raw once its text budget is spent;
+                        // resolve afresh only for a link inspection did not list.
+                        let opened = match link.map(|t| &t.target) {
+                            Some(LinkTarget::Uri(kept)) => Some(kept.clone()),
+                            Some(_) => None,
+                            None => pdfcraft_render::resolve_uri(doc.info.uri_base.as_deref(), u),
+                        };
+                        if let Some(opened) = opened.filter(|o| o != u) {
+                            v["resolved_url"] = json!(opened);
                         }
                     }
                     (action, Some((page, view))) => {

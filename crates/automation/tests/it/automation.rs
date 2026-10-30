@@ -2095,6 +2095,47 @@ fn links_resolve_relative_addresses_and_report_their_quad_points() {
     assert_eq!(info["links"][0]["target"]["uri"], "https://example.com/base/page.html", "{info}");
 }
 
+/// Once inspection's text budget is spent, a relative address stays raw, and the viewer opens it
+/// as written: `link_list` reports that address, not a second resolution against `/URI /Base`.
+#[test]
+fn link_list_reports_the_address_the_viewer_opens_past_the_text_budget() {
+    let dir = workdir("link-base-budget");
+    // Each link spends what the base adds to its address; well past 16 MiB of it in all.
+    let base = format!("https://example.com/{}/", "b".repeat(8000));
+    let count = (16 << 20) / base.len() + 20;
+    let annots = "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Border [0 0 0] /A 4 0 R >> ".repeat(count);
+    let catalog = format!("<< /Type /Catalog /Pages 2 0 R /URI << /Base ({base}) >> >>");
+    let page = format!("<< /Type /Page /Parent 2 0 R /Annots [{annots}] >>");
+    let objs = [catalog.as_str(), "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>", page.as_str(), "<< /S /URI /URI (p.html) >>"];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    std::fs::write(dir.join("links.pdf"), pdf).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "links.pdf" }))["doc"].as_u64().unwrap();
+    let listed = ok(&mut a, "link_list", json!({ "doc": doc }));
+    let links = listed["links"].as_array().unwrap();
+    assert_eq!(links.len(), count);
+    let info = ok(&mut a, "doc_info", json!({ "doc": doc }));
+    let opened = info["links"].as_array().unwrap();
+    assert_eq!(opened.len(), count);
+    let resolved = format!("{base}p.html");
+    assert_eq!(links[0]["resolved_url"], json!(resolved), "the first links resolve");
+    assert_eq!(opened[0]["target"]["uri"], json!(resolved));
+    // Past the budget the viewer keeps (and opens) the raw address; the listing says so.
+    let last = count - 1;
+    assert_eq!(opened[last]["target"]["uri"], json!("p.html"));
+    assert_eq!((links[last]["url"].clone(), links[last].get("resolved_url")), (json!("p.html"), None));
+}
 #[test]
 fn bookmarks_from_structure_through_tools() {
     let dir = workdir("bookmarks-structure");
