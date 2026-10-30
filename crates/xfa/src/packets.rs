@@ -5,8 +5,9 @@ use pdfcraft_cos::{Document, Object};
 
 use crate::XfaError;
 
-/// Most decoded packet bytes read in total.
-const MAX_XDP: usize = 64 << 20;
+/// Most decoded packet bytes read in total; a template handed to [`crate::parse`] directly is held
+/// to the same.
+pub(crate) const MAX_XDP: usize = 64 << 20;
 
 /// What was found in the XFA entry.
 #[derive(Clone, Debug, Default, PartialEq)]
