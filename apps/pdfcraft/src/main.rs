@@ -512,7 +512,9 @@ fn open_control_channel(file: &str, endpoint: std::io::Result<pdfcraft_ui_egui::
             Ok(())
         }
         Err(e) => {
-            let message = format!("--control {file}: {e}. Use a control file in a folder only you can write, such as ~/.pdfcraft-control.json");
+            // cmd.exe doesn't expand `~` (#3922).
+            let example = if cfg!(windows) { r"%USERPROFILE%\.pdfcraft-control.json" } else { "~/.pdfcraft-control.json" };
+            let message = format!("--control {file}: {e}. Use a control file in a folder only you can write, such as {example}");
             log::error!("{message}");
             Err(message)
         }
@@ -521,7 +523,8 @@ fn open_control_channel(file: &str, endpoint: std::io::Result<pdfcraft_ui_egui::
 
 /// Write the control endpoint so that only the current user can read the token.
 ///
-/// The JSON goes to a new file next to `path`, created fresh (owner-only on Unix), which then
+/// The JSON goes to a new file next to `path`, created fresh and owner-only (mode 0600 on Unix, an
+/// access list of this user and SYSTEM on Windows), which then
 /// replaces `path`. Opening `path` itself would follow a link planted there and truncate whatever
 /// it points at; a rename replaces the link and leaves its target alone. A reader polling for the
 /// file also never sees it half-written.
@@ -553,6 +556,15 @@ fn write_control_file(path: &str, port: u16, token: &str) -> std::io::Result<()>
             Err(e) if e.kind() == ErrorKind::PermissionDenied && staged.symlink_metadata().is_ok() => continue,
             Err(e) => return Err(e),
         };
+        // Windows: the new file inherited its folder's access list, which may let other users read
+        // it. It gets a list of its own with only this user and SYSTEM on it before the token is
+        // written, and nothing is written if that fails (#3922). Unix has mode 0600 above.
+        #[cfg(windows)]
+        if let Err(e) = pdfcraft_platform::owner_only::restrict_to_owner(&staged) {
+            drop(file);
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
         // The block closes the file before it is renamed.
         let written = {
             let mut file = file;
