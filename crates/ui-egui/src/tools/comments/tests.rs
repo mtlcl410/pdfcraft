@@ -24,6 +24,20 @@ fn a_moved_or_reshaped_line_is_drawn_at_its_new_points() {
     assert_eq!(changing_points(None, None, (0, 3), &line, to_user, to, straight), None, "not changing");
 }
 
+/// Review on #4094: a callout's text box being resized, and the resize just released, draw its
+/// leader line too (to the box where it is going): its points are changing, though they stay.
+#[test]
+fn a_callout_being_resized_draws_its_leader_line() {
+    let lead = [[10.0, 10.0], [40.0, 30.0]];
+    let to_user = |p: Pos2| [f64::from(p.x), f64::from(p.y)];
+    let resizing = Gesture::Resize { page: 0, index: 3, handle: (1, 1), from: pos2(80.0, 60.0), aspect_ratio: None };
+    let at = Some(pos2(95.0, 70.0));
+    assert_eq!(changing_points(Some(&resizing), None, (0, 3), &lead, to_user, at, straight), Some(lead.to_vec()));
+    assert_eq!(changing_points(Some(&resizing), None, (0, 4), &lead, to_user, at, straight), None, "another comment's resize");
+    let released = Edit::ResizeAnnotation { page: 0, index: 3, rect: [50.0, 20.0, 110.0, 70.0] };
+    assert_eq!(changing_points(None, Some(&released), (0, 3), &lead, to_user, None, straight), Some(lead.to_vec()));
+}
+
 /// A sticky note on a page turned a quarter is drawn upright beside its `/Rect`: an edit
 /// composer stays open while the drawn note is partly in view, even with `/Rect` out of it.
 #[test]

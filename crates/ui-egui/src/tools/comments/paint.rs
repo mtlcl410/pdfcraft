@@ -100,6 +100,10 @@ pub(super) fn changing_points(
         }),
         (_, Some(Edit::ReshapeAnnotation { page: p, index: i, points: to })) if (*p, *i) == (page, index) => Some(to.clone()),
         (_, Some(Edit::MoveAnnotation { page: p, index: i, dx, dy })) if (*p, *i) == (page, index) => Some(shifted(*dx, *dy)),
+        // A callout's text box resized (or moved alone): its points stay, and its line is drawn to
+        // the box where it is going (see `paint_points`).
+        (Some(Gesture::Resize { page: p, index: i, .. }), _) if (*p, *i) == (page, index) => pointer.map(|_| points.to_vec()),
+        (_, Some(Edit::ResizeAnnotation { page: p, index: i, .. })) if (*p, *i) == (page, index) => Some(points.to_vec()),
         _ => None,
     }
 }
@@ -118,6 +122,19 @@ fn paint_points(painter: &egui::Painter, cx: &PageCx<'_>, view: &DocView, a: &An
         && let Some(p) = points.first_mut()
     {
         *p = [f64::from(first[0]), f64::from(first[1])];
+    }
+    // A callout's box moved alone and released: its knee came along, as while it was dragged.
+    if let (Some(Edit::ResizeAnnotation { page, index, rect }), Some(tb)) = (view.pending_edit.as_ref(), a.text_box.filter(|_| is_callout(a)))
+        && (*page, *index) == (cx.page, a.index)
+    {
+        let tb = tb.map(f64::from);
+        let same = |a: f64, b: f64| (a - b).abs() < 0.01;
+        if same(rect[2] - rect[0], tb[2] - tb[0]) && same(rect[3] - rect[1], tb[3] - tb[1]) {
+            let (dx, dy) = (rect[0] - tb[0], rect[1] - tb[1]);
+            for q in points.iter_mut().skip(1) {
+                *q = [q[0] + dx, q[1] + dy];
+            }
+        }
     }
     let screen: Vec<Pos2> = points.iter().map(|q| cx.to_screen(*q)).collect();
     if changed {
