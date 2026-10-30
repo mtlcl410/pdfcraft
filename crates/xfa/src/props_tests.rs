@@ -222,15 +222,21 @@ fn a_caption_s_rich_text_and_a_list_s_items_are_kept() {
     assert_eq!(f.items.len(), 400, "the list shows the same entries");
 }
 
-/// A template handed to `parse` directly is held to the bytes a document's packets may hold: one
-/// past them is refused before any of it is parsed, so the item lists a field and its properties
-/// keep of it can't grow past a few times that.
+/// A template handed to `parse` directly is held to what a document's packets may come to as text:
+/// one byte past it is refused before any of it is parsed (the error giving its size in bytes), and
+/// a template of exactly that size, as a UTF-16 packet the reader accepted can become, is parsed.
 #[test]
 fn a_template_past_the_packet_limit_is_refused_before_parsing() {
-    let limit = crate::packets::MAX_XDP;
+    let limit = crate::packets::MAX_TEMPLATE_TEXT;
+    assert!(limit > crate::packets::MAX_XDP, "room for a UTF-16 packet grown into UTF-8");
     let head = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form"><field name="f"><items><text>"#;
     let tail = "</text></items></field></subform></template>";
     let xml = format!("{head}{}{tail}", "a".repeat(limit + 1 - head.len() - tail.len()));
     assert_eq!(xml.len(), limit + 1);
-    assert!(matches!(crate::parse(&xml), Err(crate::XfaError::TooLarge(_))));
+    match crate::parse(&xml) {
+        Err(crate::XfaError::TooLarge(m)) => assert!(m.contains(&format!("{} bytes", limit + 1)), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    let at = format!("{head}{}{tail}", "a".repeat(limit - head.len() - tail.len()));
+    assert!(crate::parse(&at).is_ok(), "a template at the limit is parsed");
 }

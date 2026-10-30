@@ -969,15 +969,12 @@ fn collect_page_roles(nodes: &[Node], out: &mut Vec<(String, PageRole)>, depth: 
 
 /// Parse a template packet. Returns the template and the warnings met on the way.
 pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
-    // As read from a document ([`crate::read_packets`]): a template parsed directly is no bigger,
-    // so what parsing keeps of it (item lists are held by the field and its properties) stays
-    // within a few times that.
-    if xml.len() > crate::packets::MAX_XDP {
-        return Err(XfaError::TooLarge(format!(
-            "the template is {} MiB, past the {} MiB the reader accepts",
-            xml.len() >> 20,
-            crate::packets::MAX_XDP >> 20
-        )));
+    // No bigger than a packet the reader accepts can come to as text ([`crate::read_packets`]), so
+    // what parsing keeps of it (item lists are held by the field and its properties) stays within
+    // a few times that, whoever calls it.
+    let limit = crate::packets::MAX_TEMPLATE_TEXT;
+    if xml.len() > limit {
+        return Err(XfaError::TooLarge(format!("the template is {} bytes, past the {limit} bytes the reader accepts", xml.len())));
     }
     let depth = crate::xml_nesting_depth(xml);
     if depth > crate::MAX_XML_DEPTH {

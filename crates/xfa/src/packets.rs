@@ -5,9 +5,13 @@ use pdfcraft_cos::{Document, Object};
 
 use crate::XfaError;
 
-/// Most decoded packet bytes read in total; a template handed to [`crate::parse`] directly is held
-/// to the same.
+/// Most decoded packet bytes read in total.
 pub(crate) const MAX_XDP: usize = 64 << 20;
+
+/// Most bytes of a template [`crate::parse`] takes: the most a packet within [`MAX_XDP`] can come
+/// to as UTF-8 text. A UTF-16 packet grows by at most half going over (a two-byte unit becomes at
+/// most three bytes; a four-byte pair stays four), so a packet the reader accepts always parses.
+pub(crate) const MAX_TEMPLATE_TEXT: usize = MAX_XDP / 2 * 3;
 
 /// What was found in the XFA entry.
 #[derive(Clone, Debug, Default, PartialEq)]
