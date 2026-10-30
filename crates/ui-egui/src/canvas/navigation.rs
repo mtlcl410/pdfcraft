@@ -399,6 +399,9 @@ pub fn shortcuts(view: &mut DocView, ctx: &egui::Context, speed: crate::scroll_s
     if key(Key::Escape) && !egui::Popup::is_any_open(ctx) {
         if view.camera.is_some() || view.camera_done.is_some() {
             view.pending_action = Some(ViewAction::CancelCamera);
+        } else if view.forms.focus.is_some() {
+            // A form field being filled takes this Esc: its editor closes it, and nothing else on
+            // the page closes with it (a selection stays for the next Esc).
         } else if view.selection.is_some() || view.all_text {
             view.selection = None;
             view.all_text = false;

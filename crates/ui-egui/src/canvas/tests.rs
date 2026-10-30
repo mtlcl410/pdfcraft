@@ -2007,3 +2007,40 @@ fn a_moved_picture_is_drawn_from_the_fresh_raster_while_a_tile_is_still_stale() 
     h.state_mut().views[0].stale_tiles.clear();
     h.state_mut().views[0].tiles.clear();
 }
+
+/// Review on #5325: one Esc closes one thing. With a form field being filled (a check box that
+/// has the focus) and text selected, the page leaves the selection for the next Esc: the field's
+/// editor takes this one.
+#[test]
+fn esc_with_a_field_being_filled_leaves_the_selection() {
+    let mut v = view(3, PageLayout::Single, true);
+    v.all_text = true;
+    v.forms.focus = Some(crate::forms_ui::Focus {
+        name: "agree".into(),
+        widget: 0,
+        text: String::new(),
+        picked: Vec::new(),
+        request_focus: false,
+        select_all: false,
+        press: None,
+        calendar: None,
+        calendar_rect: None,
+        calendar_text: None,
+        had_focus: true,
+    });
+    let ctx = egui::Context::default();
+    ctx.input_mut(|i| {
+        i.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    shortcuts(&mut v, &ctx, Default::default());
+    assert!(v.all_text, "the selection stays while the field takes Esc");
+    v.forms.focus = None;
+    shortcuts(&mut v, &ctx, Default::default());
+    assert!(!v.all_text, "with no field being filled, Esc clears the selection");
+}
