@@ -352,14 +352,15 @@ impl Layouter<'_> {
             }
             let span = k.common().col_span.max(1);
             let w = if col < cols.len() { cols.iter().skip(col).take(span).sum::<f64>() } else { k.common().w.unwrap_or((inner_w - x).max(1.0)) };
-            let (cw, ch) = self.size_of(k, w, &ctx, depth + 1);
+            let (_, ch) = self.size_of(k, w, &ctx, depth + 1);
             // A flowed subform in a cell is as tall as its content even when it gives a height:
             // other viewers (Adobe Acrobat, PDF-XChange Editor) lay a section of a table row out
             // that way, though a height makes a container fixed (XFA 3.3 p. 276).
             let ch = match k {
                 Node::Subform(s) if s.common.h.is_some() && matches!(s.layout, Layout::Tb | Layout::LrTb | Layout::RlTb | Layout::Table) => {
                     let own = ctx.with_som(&s.common, 0);
-                    let inner = (cw - s.common.margin.horizontal()).max(1.0);
+                    // At the width it is drawn at: the column's, not the cell's own.
+                    let inner = (w - s.common.margin.horizontal()).max(1.0);
                     clamp_opt(self.content_height(k, inner, &own, &own.som, depth + 1) + s.common.margin.vertical(), None, s.common.max_h)
                 }
                 _ => ch,

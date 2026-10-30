@@ -4173,4 +4173,17 @@ fn a_flowed_subform_in_a_table_cell_is_as_tall_as_its_content() {
         widgets(&form.pages[0]).iter().find(|w| w.name == "after").map(|w| w.rect.y).unwrap()
     };
     assert!((outside - (36.0 + 360.0)).abs() < 0.5, "a flowed subform outside a table keeps h: {outside}");
+    // Measured at the column's width, where it is drawn, not its own: in a 1in column, two 0.8in
+    // fields of a 5in-wide lr-tb cell go on two lines (43.2pt), not one.
+    let narrow = {
+        let two =
+            r#"<field name="a" w="0.8in" h="0.3in"><ui><textEdit/></ui></field><field name="b" w="0.8in" h="0.3in"><ui><textEdit/></ui></field>"#;
+        let body = format!(
+            r#"<subform name="t" layout="table" columnWidths="1in"><subform name="r" layout="row"><subform name="c" layout="lr-tb" w="5in" h="5in">{two}</subform></subform></subform>
+<field name="after" w="2in" h="0.3in"><ui><textEdit/></ui></field>"#
+        );
+        let form = layout_xml(&one_area_form(r#"layout="tb""#, &body)).unwrap();
+        widgets(&form.pages[0]).iter().find(|w| w.name == "after").map(|w| w.rect.y).unwrap()
+    };
+    assert!((narrow - (36.0 + 43.2)).abs() < 0.5, "measured at the column's width: the next object at {narrow}");
 }
