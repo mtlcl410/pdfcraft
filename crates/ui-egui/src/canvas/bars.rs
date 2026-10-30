@@ -172,6 +172,25 @@ pub(super) fn notices(
             tl!("XFA form: its fields and its XFA data are kept in step, so other viewers show what you fill in.").to_string(),
             true,
         ))
+    } else if let Some(&first) = view.cut_pages.iter().next() {
+        // Content cut at the renderer's limits (#623): what is missing is not visible, so the
+        // page is named rather than left looking complete.
+        let page = (first + 1).to_string();
+        let n = view.cut_pages.len();
+        let text = if n == 1 {
+            crate::i18n::fmt(
+                tl!("Page {page} holds more content than PdfCraft can read: part of it isn't drawn, and its text can't be found or copied."),
+                &[("page", &page)],
+            )
+        } else {
+            crate::i18n::fmt(
+                tl!(
+                    "{n} pages hold more content than PdfCraft can read, page {page} first: parts of them aren't drawn, and their text can't be found or copied."
+                ),
+                &[("n", &n.to_string()), ("page", &page)],
+            )
+        };
+        Some(("triangle-alert", text, false))
     } else if info.fields.iter().any(|f| f.kind != pdfcraft_render::FieldKind::PushButton) {
         // Push buttons alone (LaTeX `animate` frames, navigation buttons) leave nothing to fill in.
         Some((
