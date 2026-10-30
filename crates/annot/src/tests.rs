@@ -2354,3 +2354,42 @@ fn a_reshaped_polygon_pads_its_rect_only_for_a_drawn_cloud() {
     let cloudy = reshaped(Some(Some(1)));
     assert!(cloudy[0] < plain[0] && cloudy[2] > plain[2], "room for the bumps: {cloudy:?} around {plain:?}");
 }
+
+/// Review on #4195: a reshaped polygon whose cloud has intensity 2 gets room for its bumps at
+/// that intensity. With room only for intensity 1, the bumps on a 200 pt edge reached past
+/// `/Rect` and the appearance's `/BBox` clipped them.
+#[test]
+fn a_reshaped_intensity_two_cloud_stays_inside_its_rect() {
+    let mut doc = fixture();
+    let shape = Shape::Polygon { vertices: vec![[100.0, 100.0], [200.0, 100.0], [150.0, 200.0]], cloud: true };
+    let i = add_annotation(&mut doc, &new(0, shape), &meta("p")).unwrap();
+    let (_, r) = annot_ref(&mut doc, 0, i).unwrap();
+    let mut be = pdfcraft_cos::Dict::new();
+    be.set(b"S".to_vec(), Object::name("C"));
+    be.set(b"I".to_vec(), Object::Int(2));
+    doc.update_dict(r, |d| d.set(b"BE".to_vec(), Object::Dict(be))).unwrap();
+    set_points(&mut doc, 0, i, &[[100.0, 100.0], [300.0, 100.0], [200.0, 250.0]], &meta("")).unwrap();
+    let d = &list(&doc, 0)[i];
+    let bbox = rect(d);
+    // Every point along the drawn bumps, with half the 2 pt line, is inside `/Rect`.
+    let content = ap_content(&doc, d);
+    let (mut at, mut lowest, mut leftmost) = ((0.0, 0.0), f64::MAX, f64::MAX);
+    for line in content.lines() {
+        let v: Vec<f64> = line.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+        if line.ends_with(" m") && v.len() == 2 {
+            at = (v[0], v[1]);
+        } else if line.ends_with(" c") && v.len() == 6 {
+            for step in 0..=20 {
+                let t = f64::from(step) / 20.0;
+                let u = 1.0 - t;
+                let (a, b, c, e) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                lowest = lowest.min(a * at.1 + b * v[1] + c * v[3] + e * v[5]);
+                leftmost = leftmost.min(a * at.0 + b * v[0] + c * v[2] + e * v[4]);
+            }
+            at = (v[4], v[5]);
+        }
+    }
+    assert!(lowest < 100.0 - 8.0, "the bumps bulge below the bottom edge: {lowest}");
+    assert!(lowest - 1.0 >= bbox[1], "the bottom bumps ({lowest}) and the line fit in /Rect {bbox:?}");
+    assert!(leftmost - 1.0 >= bbox[0], "the left bumps ({leftmost}) and the line fit in /Rect {bbox:?}");
+}

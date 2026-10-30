@@ -143,8 +143,15 @@ pub(crate) fn cloud_intensity(d: &Dict) -> Option<f64> {
 }
 
 /// The bump radius for a cloudy border of width `w` at `intensity` (0–2].
-fn cloud_bump(w: f64, intensity: f64) -> f64 {
+pub(crate) fn cloud_bump(w: f64, intensity: f64) -> f64 {
     cloud_radius(w) * intensity.clamp(0.5, 2.0)
+}
+
+/// How far past its outline a cloud with bumps of radius `bump` around an outline `perimeter`
+/// long can reach. `cloud_path` rounds each edge to whole bumps, so one may span up to three
+/// radii and bulge 1.5 radii; it also grows the radius to keep within its bump budget.
+pub(crate) fn cloud_reach(perimeter: f64, bump: f64) -> f64 {
+    1.5 * bump.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64))
 }
 
 /// `/RD` when it is four finite, non-negative numbers (Tables 170 and 180).
@@ -172,11 +179,10 @@ fn rect_less_rd(d: &Dict, rect: [f64; 4]) -> Option<[f64; 4]> {
 /// those of the square or circle, respectively"), but at least the bumps' greatest reach and half
 /// the line from each side, so they stay inside `/Rect`; without a usable `/RD`, that margin.
 fn cloud_inner(d: &Dict, rect: [f64; 4], bump: f64, w: f64) -> Option<[f64; 4]> {
-    // `cloud_path` rounds each edge to whole bumps, so one may span up to three radii and bulge
-    // 1.5 radii; it also grows the radius to keep within its bump budget. That much margin keeps
-    // the cloud inside `/Rect`; an `/RD` leaving more is followed, one leaving less is not.
+    // The cloud's reach and half the line keep it inside `/Rect`; an `/RD` leaving more is
+    // followed, one leaving less is not.
     let perimeter = 2.0 * ((rect[2] - rect[0]) + (rect[3] - rect[1]));
-    let m = 1.5 * bump.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64)) + w / 2.0;
+    let m = cloud_reach(perimeter, bump) + w / 2.0;
     let safe = [rect[0] + m, rect[1] + m, rect[2] - m, rect[3] - m];
     let inner = match rd_of(d) {
         Some(rd) => {
