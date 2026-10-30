@@ -4246,3 +4246,24 @@ fn a_linked_picture_used_in_many_places_counts_each_place() {
     assert_eq!(filled, (1 << 10) / one, "as many places as the total holds");
     assert!(warnings.iter().any(|w| w.contains("too much memory")), "{warnings:?}");
 }
+
+/// Pictures read from the file and kept for reuse count against the total too (small in tests):
+/// a tree with many names, each read once, holds no more than the total, however many names
+/// there are; past it a name is neither read nor kept.
+#[test]
+fn pictures_kept_for_reuse_stay_under_the_total_whatever_the_number_of_names() {
+    let names: String = (0..30).map(|i| format!("(n{i}) 8 0 R ")).collect();
+    let kid = format!("<< /Names [{names}] >>");
+    let doc = Document::open(Arc::new(crate::fixtures::linked_image_shell_with(b"<< /Kids [7 0 R] >>", kid.as_bytes()))).unwrap();
+    let draws: String =
+        (0..30).map(|i| format!(r#"<draw name="d{i}" w="1in" h="1in"><value><image contentType="image/png" href="n{i}"/></value></draw>"#)).collect();
+    let xml = format!(
+        r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ {draws}</subform></template>"#
+    );
+    let (mut tpl, _) = crate::parse(&xml).unwrap();
+    let (warnings, kept) = crate::linked_images::resolve_keeping(&mut tpl, &doc);
+    assert!(kept <= 1 << 10, "kept {kept} bytes");
+    assert!(warnings.iter().any(|w| w.contains("too much memory")), "{warnings:?}");
+}

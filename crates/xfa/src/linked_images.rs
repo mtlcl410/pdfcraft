@@ -77,25 +77,55 @@ struct Found<'a> {
     doc: &'a Document,
     names: HashMap<String, Object>,
     read: HashMap<String, Option<Vec<u8>>>,
+    /// Bytes of the pictures in `read`, and of the copies put in places: each at most
+    /// [`MAX_TOTAL`], however many names the tree holds.
+    kept: usize,
     total: usize,
     warnings: Vec<String>,
 }
 
 impl Found<'_> {
     /// A copy of the picture linked as `href` for one more place, when the file holds it and the
-    /// copies so far leave room for it under [`MAX_TOTAL`].
+    /// pictures kept and the copies so far leave room for it under [`MAX_TOTAL`].
     fn get(&mut self, href: &str) -> Option<Vec<u8>> {
         if !self.read.contains_key(href) {
-            let data = self.load(href);
+            // Past the total, a picture not read yet is neither read nor kept.
+            let data = if self.kept >= MAX_TOTAL { None } else { self.load(href) };
+            let data = match data {
+                Some(d) if self.kept.saturating_add(d.len()) > MAX_TOTAL => {
+                    self.over_total();
+                    None
+                }
+                Some(d) => {
+                    self.kept = self.kept.saturating_add(d.len());
+                    Some(d)
+                }
+                None => {
+                    if self.kept >= MAX_TOTAL && self.names.contains_key(href) {
+                        self.over_total();
+                    }
+                    None
+                }
+            };
             self.read.insert(href.to_string(), data);
         }
         let len = self.read.get(href).and_then(Option::as_ref).map(Vec::len)?;
         if self.total.saturating_add(len) > MAX_TOTAL {
-            self.warnings.push("the pictures the form keeps in the file take too much memory in all; the rest are left out".into());
+            self.over_total();
             return None;
         }
         self.total = self.total.saturating_add(len);
         self.read.get(href).cloned().flatten()
+    }
+
+    fn over_total(&mut self) {
+        self.warnings.push("the pictures the form keeps in the file take too much memory in all; the rest are left out".into());
+    }
+
+    /// Bytes of the pictures read so far and kept for reuse.
+    #[cfg(test)]
+    fn kept(&self) -> usize {
+        self.read.values().flatten().map(Vec::len).sum()
     }
 
     fn load(&mut self, href: &str) -> Option<Vec<u8>> {
@@ -156,12 +186,22 @@ impl Found<'_> {
 /// Give the pictures `tpl` links to (and doesn't embed) the data `doc` keeps for them. A link
 /// the file holds nothing for stays empty. What couldn't be read is returned as warnings.
 pub fn resolve(tpl: &mut Template, doc: &Document) -> Vec<String> {
+    resolve_found(tpl, doc).map(|f| f.warnings).unwrap_or_default()
+}
+
+fn resolve_found<'a>(tpl: &mut Template, doc: &'a Document) -> Option<Found<'a>> {
     let names = names(doc);
     if names.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let mut found = Found { doc, names, read: HashMap::new(), total: 0, warnings: Vec::new() };
+    let mut found = Found { doc, names, read: HashMap::new(), kept: 0, total: 0, warnings: Vec::new() };
     found.subform(&mut tpl.root, 0);
     found.warnings.dedup();
-    found.warnings
+    Some(found)
+}
+
+/// [`resolve`], and the bytes of pictures it held for reuse at the end.
+#[cfg(test)]
+pub(crate) fn resolve_keeping(tpl: &mut Template, doc: &Document) -> (Vec<String>, usize) {
+    resolve_found(tpl, doc).map_or((Vec::new(), 0), |f| (f.warnings.clone(), f.kept()))
 }
