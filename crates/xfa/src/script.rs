@@ -594,17 +594,32 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
     out
 }
 
-/// How many pages the layout made from each named page area of `tpl`, as the generated fields
-/// of `doc` show it: the master content of the n-th page from area `master` is `master[n-1]`.
-/// Areas no generated field names are left out (one page's worth, to [`form_tree_paged`]).
+/// How many pages the layout made from each named page area of `tpl`: the master content of the
+/// n-th page from area `master` is `master[n-1]`. Each page the layout wrote names its area
+/// ([`crate::AREA_KEY`]), so a page whose master fields are all hidden still counts; a file laid
+/// out before pages were named shows it by its generated fields. Areas neither shows are left out
+/// (one page's worth, to [`form_tree_paged`]).
 pub fn page_area_uses(doc: &Document, tpl: &Template) -> HashMap<String, usize> {
     let mut out: HashMap<String, usize> = HashMap::new();
     let Some(ps) = &tpl.root.page_set else { return out };
+    let is_area = |name: &str| tpl.root.common.name.as_deref() != Some(name) && ps.areas.iter().any(|a| a.name.as_deref() == Some(name));
+    // The flat page list laying the form out writes.
+    let pages = doc.root().and_then(|r| doc.get(r).as_dict().and_then(|c| c.get(b"Pages")).map(|p| doc.resolve(p)));
+    let kids =
+        pages.and_then(|p| p.as_dict().and_then(|d| d.get(b"Kids")).map(|k| doc.resolve(k))).and_then(|k| k.as_array().cloned()).unwrap_or_default();
+    for page in kids.iter().filter_map(Object::as_ref).take(crate::layout::MAX_PAGES) {
+        let page = doc.get(page);
+        let Some(name) = page.as_dict().and_then(|d| d.get(crate::AREA_KEY)).and_then(Object::as_string).map(PdfString::to_text) else { continue };
+        if is_area(&name) {
+            let pages = out.entry(name).or_insert(0);
+            *pages = pages.saturating_add(1).min(crate::layout::MAX_PAGES);
+        }
+    }
     for som in fields_by_som(doc).keys() {
         let first = som.split('.').next().unwrap_or_default();
         let Some((name, rest)) = first.split_once('[') else { continue };
         let Some(index) = rest.strip_suffix(']').and_then(|i| i.parse::<usize>().ok()) else { continue };
-        if tpl.root.common.name.as_deref() == Some(name) || !ps.areas.iter().any(|a| a.name.as_deref() == Some(name)) {
+        if !is_area(name) {
             continue;
         }
         let pages = out.entry(name.to_string()).or_insert(1);

@@ -9386,3 +9386,119 @@ fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes()
     s.apply(rewritten, Edit::RemoveMarks { kind: MarkKind::Background }).unwrap();
     black(&s, rewritten);
 }
+
+/// A page still exists after its only master widget is hidden: its master nodes stay in the
+/// script model, so a later script can address them again (test from wireless89's review of
+/// #5368).
+#[test]
+fn xfa_page_master_instance_survives_hiding_its_last_widget() {
+    let template = pdfcraft_xfa::fixtures::repeated_print_button_template()
+        .replace(r#"xfa.host.print(1, "0", (xfa.host.numPages -1).toString(), 0, 0, 0, 0, 0);"#, r#"this.presence = "hidden";"#)
+        .replace(
+            "</subform></template>",
+            r#"<field name="restore" w="100pt" h="25pt"><ui><button/></ui>
+<event activity="click"><script contentType="application/x-javascript">xfa.resolveNode("master[2].PrintButton1").presence = "visible";</script></event></field></subform></template>"#,
+        );
+    let (tpl, _) = pdfcraft_xfa::parse(&template).unwrap();
+    let mut s = Session::new().with_clock(|| 1_700_000_000).with_xfa_time_scale(100);
+    let id = s.open("hidden-master.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&template)), None).unwrap();
+    let out = s.run_javascript(id, "", Some("PrintButton1_3")).unwrap();
+    assert_eq!(out.error, None, "{out:?}");
+    let cos = &s.get(id).unwrap().editor.as_ref().unwrap().cos;
+    assert_eq!(pdfcraft_organize::page_count(cos).unwrap(), 3, "the body still fills three pages");
+    assert!(!s.get(id).unwrap().form.iter().any(|f| f.name == "PrintButton1_3"));
+    let uses = pdfcraft_xfa::page_area_uses(cos, &tpl);
+    let restored = s.run_javascript(id, "", Some("restore")).unwrap();
+    assert_eq!((uses.get("master").copied(), restored.error), (Some(3), None), "the third page master remains addressable by scripts");
+}
+
+/// Page-local values and a globally bound control survive relayout, disappearing and
+/// reappearing pages, incremental saves and vector printing (test from wireless89's review of #5368).
+#[test]
+fn xfa_master_values_survive_page_changes_save_reopen_and_print() {
+    fn name(s: &Session, id: DocId, som: &str) -> String {
+        let d = s.get(id).unwrap();
+        pdfcraft_xfa::fields_by_som(&d.editor.as_ref().unwrap().cos).get(som).unwrap_or_else(|| panic!("missing {som}")).clone()
+    }
+    fn set(s: &mut Session, id: DocId, som: &str, text: &str) {
+        let n = name(s, id, som);
+        s.apply(id, Edit::SetFieldValue { name: n, value: FieldValue::Text(text.into()) }).unwrap();
+    }
+    fn check(s: &Session, id: DocId, expected: &[&str]) {
+        let d = s.get(id).unwrap();
+        // Inspect the actual PDF tree: refreshing the cached view after XFA relayout is
+        // a separate issue (#4604), not part of this master-value regression.
+        assert_eq!(pdfcraft_organize::page_count(&d.editor.as_ref().unwrap().cos).unwrap(), expected.len());
+        let by_som = pdfcraft_xfa::fields_by_som(&d.editor.as_ref().unwrap().cos);
+        assert_eq!(by_som.keys().filter(|som| som.ends_with(".stamp[0]")).count(), expected.len());
+        for (page, value) in expected.iter().enumerate() {
+            for (field, expected) in [("stamp", *value), ("shared", "GLOBAL_VALUE")] {
+                let n = name(s, id, &format!("master[{page}].{field}[0]"));
+                assert_eq!(d.form.iter().find(|f| f.name == n).unwrap().value, [expected], "page {page}: {field}");
+            }
+        }
+    }
+    let template = master_round_trip_review_template();
+    let mut s = Session::new().with_clock(|| 1_700_000_000).with_xfa_time_scale(100);
+    let mut id = s.open("masters.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&template)), None).unwrap();
+    assert_eq!(s.get(id).unwrap().info.pages.len(), 3);
+    for (page, value) in ["MASTER_A", "MASTER_B", "MASTER_C"].iter().enumerate() {
+        set(&mut s, id, &format!("master[{page}].stamp[0]"), value);
+    }
+    check(&s, id, &["MASTER_A", "MASTER_B", "MASTER_C"]);
+    let mark = name(&s, id, "master[1].mark[0]");
+    let out = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some(&mark)).unwrap();
+    assert_eq!(out.error, None, "{out:?}");
+    check(&s, id, &["MASTER_A", "MASTER_B_CLICK", "MASTER_C"]);
+    let more = name(&s, id, "form[0].page1[0].more[0]");
+    s.apply(id, Edit::SetFieldValue { name: more.clone(), value: FieldValue::Check(false) }).unwrap();
+    assert!(s.take_js_output(id).errors.is_empty());
+    check(&s, id, &["MASTER_A", "MASTER_B_CLICK"]);
+    s.undo(id).unwrap();
+    check(&s, id, &["MASTER_A", "MASTER_B_CLICK", "MASTER_C"]);
+    s.redo(id).unwrap();
+    check(&s, id, &["MASTER_A", "MASTER_B_CLICK"]);
+    s.apply(id, Edit::SetFieldValue { name: more, value: FieldValue::Check(true) }).unwrap();
+    check(&s, id, &["MASTER_A", "MASTER_B_CLICK", "MASTER_C"]);
+    for cycle in 0..3 {
+        let saved = s.save_bytes(id).unwrap();
+        let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
+        let data = pdfcraft_xfa::data_of(&cos).unwrap();
+        for (page, value) in ["MASTER_A", "MASTER_B_CLICK", "MASTER_C"].iter().enumerate() {
+            assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path(&format!("master[{page}].stamp[0]"))), Some(*value), "cycle {cycle}: page {page}");
+        }
+        assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("master[0].shared[0]")), Some("GLOBAL_VALUE"));
+        id = s.open("again.pdf", None, saved, None).unwrap();
+        assert!(s.take_js_output(id).errors.is_empty());
+        check(&s, id, &["MASTER_A", "MASTER_B_CLICK", "MASTER_C"]);
+    }
+    let printed = s.print_pdf(id, &print::Settings { pages: vec![0, 1, 2], ..Default::default() }).unwrap();
+    let pid = s.open("printed.pdf", None, Arc::new(printed), None).unwrap();
+    let texts = page_texts(&s, pid);
+    assert_eq!(texts.len(), 3);
+    for (page, value) in ["MASTER_A", "MASTER_B_CLICK", "MASTER_C"].iter().enumerate() {
+        assert!(texts[page].contains(value) && texts[page].contains("GLOBAL_VALUE"), "page {page}: {:?}", texts[page]);
+        for other in ["MASTER_A", "MASTER_B_CLICK", "MASTER_C"].iter().filter(|other| *other != value) {
+            assert!(!texts[page].contains(other), "page {page} contains another page's value: {other}");
+        }
+    }
+}
+fn master_round_trip_review_template() -> String {
+    let template = pdfcraft_xfa::fixtures::repeated_print_button_template()
+        .replace(r#"name="PrintButton1" x="36pt""#, r#"name="PrintButton1" x="480pt""#)
+        .replace("</pageArea>", r#"
+  <field name="stamp" x="36pt" y="24pt" w="160pt" h="25pt"><ui><textEdit/></ui></field>
+  <field name="shared" x="200pt" y="24pt" w="150pt" h="25pt"><ui><textEdit/></ui><bind match="global"/></field>
+  <field name="mark" x="360pt" y="24pt" w="80pt" h="25pt"><ui><button/></ui>
+   <event activity="click"><script contentType="application/x-javascript">stamp.rawValue = "MASTER_B_CLICK";</script></event>
+  </field>
+ </pageArea>"#)
+        .replace(r#"<subform name="page1" layout="tb">"#, r#"<subform name="page1" layout="tb">
+ <field name="more" w="20pt" h="20pt"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><value><integer>1</integer></value>
+  <event activity="change"><script contentType="application/x-javascript">xfa.resolveNode("form.page3").presence = this.rawValue == 1 ? "visible" : "hidden";</script></event>
+ </field>"#);
+    format!(
+        r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">{template}
+<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><master><shared>GLOBAL_VALUE</shared></master></xfa:data></xfa:datasets></xdp:xdp>"#
+    )
+}

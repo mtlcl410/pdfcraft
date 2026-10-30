@@ -97,7 +97,7 @@ impl Layouter<'_> {
         if let Some(u) = self.uses.get_mut(idx) {
             *u += 1;
         }
-        self.pages.push(Page { width: area.width, height: area.height, items: Vec::new() });
+        self.pages.push(Page { width: area.width, height: area.height, items: Vec::new(), area: area.name.clone() });
         let content = area.content.first().copied().unwrap_or(Rect::new(0.0, 0.0, area.width, area.height));
         self.cur = Some(Cursor { area: idx, content: 0, rect: content, y: content.y, placed: false });
         // Master page content: positioned draws and fields. The page area's own SOM index counts
