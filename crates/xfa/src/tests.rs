@@ -4145,3 +4145,60 @@ fn clear_password_values_clears_static_xfa_password_fields() {
     let packets = read_packets(&doc).unwrap().unwrap();
     assert!(!packets.xdp.contains("hunter2"), "{}", packets.xdp);
 }
+
+/// A picture the template links (`href`) is drawn from the `XFAImages` name tree the PDF keeps
+/// it in (XFA 3.3 pp. 257–258), through the tree's `Kids`. A link the file holds nothing for
+/// stays out, as before, and is never looked for outside the file.
+#[test]
+fn a_linked_picture_is_drawn_from_the_pdfs_xfa_images() {
+    let mut doc = Document::open(Arc::new(crate::fixtures::linked_image_shell())).unwrap();
+    let mut tpl = crate::script::template_of(&doc).unwrap();
+    let mut pictures = Vec::new();
+    let mut walk = |nodes: &[Node]| {
+        for n in nodes {
+            if let Node::Subform(s) = n {
+                for c in &s.children {
+                    if let Node::Draw(d) = c
+                        && let Value::Image { data, href, .. } = &d.value
+                    {
+                        pictures.push((href.clone(), data.len()));
+                    }
+                }
+            }
+        }
+    };
+    walk(&tpl.root.children);
+    assert_eq!(pictures, vec![(Some(r".\logo.png".into()), crate::fixtures::tiny_png().len()), (Some(r".\missing.png".into()), 0)]);
+    assert!(crate::linked_images::resolve(&mut tpl, &doc).is_empty(), "nothing to say of a link the file doesn't hold");
+    let report = render_into(&mut doc).unwrap();
+    let doc = Document::open(Arc::new(write_incremental(&doc, &SaveOptions::default()).unwrap())).unwrap();
+    let images = doc
+        .object_numbers()
+        .into_iter()
+        .filter(
+            |n| matches!(&*doc.get(pdfcraft_cos::ObjRef { num: *n, generation: 0 }), Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image")),
+        )
+        .count();
+    assert_eq!(images, 2, "the linked PNG and its soft mask");
+    assert_eq!(report.warnings.iter().filter(|w| w.contains("not a JPEG, PNG")).count(), 1, "only the missing one: {:?}", report.warnings);
+}
+
+/// A hostile `XFAImages` tree neither hangs nor panics: `Kids` that lead back to themselves, a
+/// name that isn't a string, and a name for something that isn't a stream. The picture is then
+/// left out, as a link the file holds nothing for.
+#[test]
+fn a_hostile_xfa_images_tree_is_walked_once_and_gives_nothing() {
+    for (root, kid) in [
+        (&b"<< /Kids [6 0 R 7 0 R] >>"[..], &b"<< /Kids [6 0 R 7 0 R] /Names [42 8 0 R] >>"[..]),
+        (&b"<< /Names [(.\\logo.png) 7 0 R] >>"[..], &b"<< /Kids [6 0 R] >>"[..]),
+        (&b"<< /Kids 7 0 R >>"[..], &b"[6 0 R]"[..]),
+    ] {
+        let mut doc = Document::open(Arc::new(crate::fixtures::linked_image_shell_with(root, kid))).unwrap();
+        let mut tpl = crate::script::template_of(&doc).unwrap();
+        assert!(crate::linked_images::resolve(&mut tpl, &doc).is_empty());
+        let report = render_into(&mut doc).unwrap();
+        assert!(report.warnings.iter().any(|w| w.contains("not a JPEG, PNG")), "{:?}", report.warnings);
+        let images = doc.object_numbers().into_iter().filter(|n| matches!(&*doc.get(pdfcraft_cos::ObjRef { num: *n, generation: 0 }), Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image"))).count();
+        assert_eq!(images, 0, "no picture drawn");
+    }
+}
