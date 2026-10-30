@@ -2855,6 +2855,49 @@ fn replacing_one_row_of_a_sequence_keeps_the_other_rows() {
     }
 }
 
+/// Review on #2955: a row inside a shared `/PCEdLine` sequence that starts with a substitute run
+/// has the substitute's font in effect at its first operator. Replaced by text the row's own font
+/// shows, it must set that font again, or the new text is drawn in the substitute.
+#[test]
+fn a_row_replaced_inside_a_shared_sequence_starts_in_its_own_font() {
+    // A real two-font line, starting with the substitute run, then a second row put inside its
+    // sequence, as a paragraph rewrite that keeps the delimiters can leave it.
+    let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");
+    text::replace_line(&mut doc, 0, 0, "  cab ab").unwrap();
+    let doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("/PCEdLine") && content.contains("(  cab) Tj"), "{content}");
+    let mut doc = doc;
+    let shared = content.replacen("EMC", "0 -20 Td (ba) Tj EMC", 1);
+    let stream = Object::Ref(doc.add(Object::Stream(Stream::from_raw(Dict::new(), shared.into_bytes()))));
+    set_page_contents(&mut doc, stream, None);
+    let rows = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(rows.iter().map(|l| (l.text.trim(), l.font.as_str())).collect::<Vec<_>>(), [("cab ab", "F2"), ("ba", "F2")]);
+    text::replace_line(&mut doc, 0, 0, "ab").unwrap();
+    let doc = reopen(&doc);
+    let after = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(after.iter().map(|l| (l.text.trim(), l.font.as_str())).collect::<Vec<_>>(), [("ab", "F2"), ("ba", "F2")]);
+}
+
+/// Review on #2955: a sequence holding one row can also hold that row's positioning and text
+/// state, as a paragraph rewrite writes it inside kept delimiters. Replacing the row drops the
+/// delimiters, fonts and text, not the `Tm` that places it.
+#[test]
+fn replacing_the_only_row_of_a_sequence_keeps_its_position() {
+    let content = "BT /F2 10 Tf /PCEdLine BMC 1 0 0 1 72 600 Tm /F2 10 Tf (ab) Tj /F1 10 Tf ( cab) Tj EMC ET";
+    let mut doc = text_page(content);
+    let before = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(before.iter().map(|l| l.text.trim()).collect::<Vec<_>>(), ["ab cab"]);
+    text::replace_line(&mut doc, 0, 0, "ab").unwrap();
+    let doc = reopen(&doc);
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(!content.contains("PCEdLine") && !content.contains("cab"), "{content}");
+    let after = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(after.len(), 1, "{content}");
+    let (was, now) = (before[0].rect, after[0].rect);
+    assert!((was[0] - now[0]).abs() < 0.01 && (was[1] - now[1]).abs() < 0.01, "moved from {was:?} to {now:?}: {content}");
+}
+
 #[test]
 fn missing_glyphs_substitute_helvetica_and_impossible_text_is_refused() {
     let mut doc = text_page("BT /F2 10 Tf 72 600 Td (ab) Tj ET");

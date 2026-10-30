@@ -169,7 +169,7 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
     }
     // Rebuild: the line's first operator becomes the replacement, its others go.
     // A line an earlier replacement wrote in two fonts is in a `/PCEdLine` sequence of its own,
-    // with its fonts and the moves standing in for spaces the source font lacks: all of it goes
+    // with its fonts and the moves standing in for spaces the source font lacks: those go
     // with the line, or each edit would nest one more (review on #2955). The line then starts in
     // its own font, set again where the sequence was.
     if let Some((open, close)) = target.edited.and_then(|open| Some((open, matching_emc(&ops, open)?))) {
@@ -178,11 +178,23 @@ pub(crate) fn replace_line_with_limit(doc: &mut Document, page: usize, line: usi
         // as it is, since it is also what reads its own two-font line back as one, and only
         // this line's operators go.
         let others_inside = lines.iter().any(|l| l.ops.iter().any(|o| (open..=close).contains(o) && !drops.contains(o)));
+        // Either way the replacement starts in the line's own font: inside the sequence the font
+        // in effect at the line's first operator can be the substitute's, which a replacement
+        // the line's font shows by itself would otherwise inherit (review on #2955).
+        let size = font_size_before(&ops, first).unwrap_or(target.size);
+        replacement.insert(0, Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
         if !others_inside {
-            drops.extend(open..=close);
-            let size = font_size_before(&ops, first).unwrap_or(target.size);
+            // What goes is what the replacement stands in for: the marked-content delimiters
+            // (nested ones too, which come in pairs), the fonts and the text-showing operators
+            // (the line's runs and the moves between them). A paragraph rewrite can also write a
+            // row's positioning and text state (`Tm`, `Td`, `Tw`, ...), a `q`/`Q` or a `BT`/`ET`
+            // inside kept delimiters; those stay, or the replacement loses its place and the
+            // content its balance (review on #2955).
+            drops.extend(
+                (open..=close)
+                    .filter(|&i| ops.get(i).is_some_and(|o| [b"BMC".as_slice(), b"BDC", b"EMC", b"Tf", b"Tj", b"TJ"].contains(&o.op.as_slice()))),
+            );
             let own_font = |i: usize| ops.get(i).is_some_and(|o| o.is("Tf") && o.name(0) == Some(target.font.as_bytes()) && o.num(1) == Some(size));
-            replacement.insert(0, Op::new("Tf", vec![Object::name(&target.font), pdfcraft_content::num(size)]));
             // The same font set just before the sequence (by the last edit) is set again here.
             if let Some(i) = open.checked_sub(1).filter(|&i| own_font(i)) {
                 drops.insert(i);
