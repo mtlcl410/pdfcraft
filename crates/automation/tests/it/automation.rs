@@ -9441,10 +9441,20 @@ fn a_custom_stamp_line_is_filled_in_when_placed() {
     // The stamp stays within the natural 200 pt. Its line, at its usual size, is wider than the
     // picture, so the stamp is wider than the picture's shape with the band added.
     assert!(lw / lh > pw / ph * (1.0 - 0.22) + 0.01, "widened for the line: {pw}x{ph} vs {lw}x{lh}");
-    // A line past the limit is cut, not refused.
-    let long = "x".repeat(500);
+    // A template within the schema's 200 characters whose filled-in line runs past the limit
+    // (33 times of 8 characters) is cut to exactly 200, not refused.
+    let long = "{time}".repeat(33);
+    assert!(long.chars().count() <= 200);
     ok(&mut a, "stamp_custom", json!({ "doc": doc, "page": 3, "path": "b.pdf", "file_page": 2, "at": [100, 150], "line": long }));
-    assert!(page_text(&mut a, doc)[2].matches('x').count() <= 200);
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "stamped.pdf" }));
+    let saved = pdfcraft_cos::Document::open(std::sync::Arc::new(std::fs::read(dir.join("stamped.pdf")).unwrap())).unwrap();
+    let lines: Vec<String> = saved
+        .scan_objects()
+        .filter_map(|(_, o)| o.as_dict()?.get(b"PCByLine")?.as_string().map(pdfcraft_cos::PdfString::to_text))
+        .filter(|l| l.starts_with("10:13 pm"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].chars().count(), 200, "{:?}", lines[0]);
 }
 
 /// Three paragraphs: Alpha (two rows), Bravo (one row) and Charlie (two rows), at the leading
