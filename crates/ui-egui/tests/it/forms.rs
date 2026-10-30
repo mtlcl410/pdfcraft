@@ -1668,3 +1668,86 @@ fn a_form_button_shows_and_hides_the_attachments_panel() {
     h.run_steps(2);
     assert_eq!(h.state().right, None);
 }
+
+/// Click at `p` with `modifiers` held.
+fn click_with(h: &mut Harness<'static, PdfCraftApp>, p: egui::Pos2, modifiers: egui::Modifiers) {
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.hover_at(p);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers });
+        h.run_steps(1);
+    }
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(3);
+}
+
+/// A list box opened at 100% zoom on its own page, and its rectangle on screen.
+fn list_box(objects: &[&str], name: &str) -> (Harness<'static, PdfCraftApp>, egui::Rect) {
+    let bytes = pdf_from_objects(objects);
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("list.pdf", None, bytes).unwrap();
+        app.set_option("left", "closed").unwrap();
+        app.set_option("zoom", "100").unwrap();
+        app
+    });
+    h.run_steps(4);
+    let r = {
+        let s = h.state();
+        let doc = s.session.get(s.views[0].id).unwrap();
+        let f = doc.form.iter().find(|f| f.name == name).unwrap();
+        pdfcraft_ui_egui::forms_ui::field_screen_rect(&s.views[0], &doc.info, f, 0).expect("on screen")
+    };
+    (h, r)
+}
+
+/// A Shift-click picks the rows from the one clicked last: after Ctrl-clicking row 3 and then
+/// row 1, Shift on row 4 picks rows 1 to 4, not 3 to 4. The rows share one export value, so the
+/// value can't say which came last, and `/I` lists them in ascending order.
+#[test]
+fn a_shift_click_in_a_list_box_extends_from_the_row_clicked_last() {
+    let (mut h, r) = list_box(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /NeedAppearances true /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 400 400] >>",
+            "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Ch /T (days) /Ff 2097152 /Opt [[(x) (Mon)] [(x) (Tue)] [(x) (Wed)] [(x) (Thu)] [(x) (Fri)] [(x) (Sat)]] /Rect [50 220 200 320] /P 3 0 R /F 4 >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        ],
+        "days",
+    );
+    let zoom = r.height() / 100.0;
+    let row = |k: f32| egui::pos2(r.center().x, r.min.y + (8.0 + 11.5 * k) * zoom);
+    click_with(&mut h, row(3.0), egui::Modifiers::COMMAND);
+    click_with(&mut h, row(1.0), egui::Modifiers::COMMAND);
+    assert_eq!(selected(&h, "days"), [1, 3]);
+    click_with(&mut h, row(4.0), egui::Modifiers::SHIFT);
+    assert_eq!(selected(&h, "days"), [1, 2, 3, 4], "from row 1, the one clicked last");
+}
+
+/// A single-select list box holding an array `/V` is written as one value when its shown row is
+/// clicked again, not left as an array because the row was already selected.
+#[test]
+fn clicking_the_shown_row_of_a_single_select_list_holding_an_array_writes_one_value() {
+    let (mut h, r) = list_box(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /NeedAppearances true /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 400 400] >>",
+            "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Ch /T (pair) /Opt [[(TW) (Taiwan)] [(JP) (Japan)] [(US) (United States)]] /V [(TW) (JP)] /Rect [50 250 200 320] /P 3 0 R /F 4 >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        ],
+        "pair",
+    );
+    let field = |h: &Harness<'static, PdfCraftApp>| {
+        let s = h.state();
+        s.session.get(s.views[0].id).unwrap().form.iter().find(|f| f.name == "pair").unwrap().clone()
+    };
+    assert!(field(&h).single_value_is_array, "loaded from an array");
+    let zoom = r.height() / 70.0;
+    click_at(&mut h, egui::pos2(r.center().x, r.min.y + 8.0 * zoom));
+    let f = field(&h);
+    assert_eq!((f.value, f.selected, f.single_value_is_array), (vec!["TW".to_string()], vec![0], false), "Taiwan, now one value");
+}

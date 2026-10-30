@@ -5709,3 +5709,52 @@ fn picking_in_a_single_select_list_given_several_values_writes_one() {
     let pair = field(&fields(&doc), "pair").clone();
     assert_eq!((pair.value, pair.selected), (vec!["JP".to_string()], vec![1]));
 }
+
+/// A position picked twice is written once in both `/V` and `/I`, so they still match item for
+/// item and the option picked (the second of two sharing an export value) comes back on reopen.
+#[test]
+fn a_position_picked_twice_is_written_once_in_v_and_i() {
+    let mut doc = duplicate_exports(1 << 21, "");
+    set_value(&mut doc, "dup", &FieldValue::ChoiceIndices(vec![1, 1])).unwrap();
+    let dup = field(&fields(&doc), "dup").clone();
+    let d = doc.get(dup.obj).as_dict().cloned().unwrap();
+    let v: Vec<String> = match d.get(b"V") {
+        Some(Object::Array(a)) => a.iter().filter_map(|o| o.as_string().map(|s| s.to_text())).collect(),
+        Some(o) => o.as_string().map(|s| vec![s.to_text()]).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let i: Vec<i64> = d.get(b"I").and_then(|i| i.as_array()).map(|a| a.iter().filter_map(Object::as_int).collect()).unwrap_or_default();
+    assert_eq!((v, i), (vec!["1".to_string()], vec![1]), "one entry each");
+    assert_eq!(dup.selected, [1], "One-B, not One-A");
+}
+
+/// A same-name twin listing the options sharing an export value in another order is given the
+/// option picked, not the one at the same position: `/I` is mapped to the twin's own options.
+#[test]
+fn a_twin_with_options_in_another_order_gets_the_option_picked() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R] >>".into(),
+        "<< /Fields [6 0 R 7 0 R] /NeedAppearances true /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (dup) /Ff 0 /Opt [[(1) (One-A)] [(1) (One-B)] [(2) (Two)]] /Rect [50 700 200 746] /P 3 0 R >>"
+            .into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (dup) /Ff 0 /Opt [[(1) (One-B)] [(1) (One-A)] [(2) (Two)]] /Rect [50 600 200 646] /P 3 0 R >>"
+            .into(),
+    ];
+    let mut doc = document(&objs);
+    set_value(&mut doc, "dup", &FieldValue::ChoiceIndices(vec![1])).unwrap();
+    let all = fields(&doc);
+    let twin = all.iter().find(|f| f.obj == pdfcraft_cos::ObjRef::new(7, 0)).unwrap();
+    let i: Vec<i64> = doc
+        .get(twin.obj)
+        .as_dict()
+        .and_then(|d| d.get(b"I").and_then(|i| i.as_array().cloned()))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Object::as_int)
+        .collect();
+    assert_eq!(i, [0], "One-B is first in the twin's options");
+    assert_eq!(twin.selected, [0]);
+}

@@ -614,6 +614,7 @@ fn walk(
     // value only, and shows and resets to it; the file keeps its entries until the field is filled.
     let mut default = values_of(doc, inh.dv.as_ref());
     let single = kind == FieldKind::List && ff & flags::MULTI_SELECT == 0;
+    let single_value_is_array = single && inh.v.as_ref().is_some_and(|v| doc.resolve(v).as_array().is_some());
     if single {
         value.truncate(1);
         default.truncate(1);
@@ -635,6 +636,7 @@ fn walk(
         max_len: inh.max_len,
         options,
         selected,
+        single_value_is_array,
         da: inh.da.clone().unwrap_or_else(|| "/Helv 0 Tf 0 g".into()),
         quadding: inh.q.unwrap_or(0),
         tooltip: d.get(b"TU").and_then(|o| text_of(&doc.resolve(o))),

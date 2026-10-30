@@ -164,6 +164,10 @@ pub struct Field {
     /// [`selected_options`]). Two options can share an export value, so `value` alone can't say
     /// which of them is selected. Empty for other kinds.
     pub selected: Vec<usize>,
+    /// A list box without MultiSelect whose `/V` is an array (a value of one option is a string,
+    /// ISO 32000-2 Table 233): `value` holds its first entry only, and picking that option again
+    /// writes the value as one string rather than leaving the array.
+    pub single_value_is_array: bool,
     /// Default appearance string (`/DA`, inherited from the form if absent).
     pub da: String,
     /// Quadding: 0 left, 1 centred, 2 right.

@@ -102,15 +102,21 @@ fn fill(doc: &mut Document, all: &[Field], named: &[usize], name: &str, value: &
     if !twins.is_empty() {
         let taken = fields(doc).into_iter().find(|x| x.obj == f.obj).map(|x| x.value).unwrap_or_default();
         for t in twins {
-            share_value(doc, f.obj, t, &taken, scripts)?;
+            share_value(doc, (f.obj, &f.options), t, &taken, scripts)?;
         }
     }
     Ok(())
 }
 
-/// Give `twin` the value `source` holds: its `/V` (and a choice's `/I`), drawn in the twin's own
-/// widgets.
-fn share_value(doc: &mut Document, source: ObjRef, twin: &Field, value: &[String], scripts: &mut dyn Scripts) -> Result<(), FormError> {
+/// Give `twin` the value `source` (a field and its options) holds: its `/V`, and a choice's `/I`
+/// mapped to the twin's own options, drawn in the twin's own widgets.
+fn share_value(
+    doc: &mut Document,
+    (source, source_options): (ObjRef, &[(String, String)]),
+    twin: &Field,
+    value: &[String],
+    scripts: &mut dyn Scripts,
+) -> Result<(), FormError> {
     match twin.kind {
         FieldKind::CheckBox => {
             let state = twin.widgets.iter().find_map(|w| w.on_state.clone()).unwrap_or_else(|| "Yes".into());
@@ -122,22 +128,35 @@ fn share_value(doc: &mut Document, source: ObjRef, twin: &Field, value: &[String
         }
         FieldKind::Text | FieldKind::Combo | FieldKind::List => {
             let src = doc.get(source).as_dict().cloned().unwrap_or_default();
+            // `/I` holds positions in the source's options: each goes to the twin's first unused option
+            // with the same export value and text, its options perhaps in another order. One with no
+            // match leaves the twin no `/I` (its `/V` picks), never part of one.
+            let positions = match twin.kind {
+                FieldKind::Combo | FieldKind::List => {
+                    listed_indices(doc, &src, source_options.len()).and_then(|picked| twin_positions(&picked, source_options, &twin.options))
+                }
+                _ => None,
+            };
             doc.update_dict(twin.obj, |d| {
-                for key in [&b"V"[..], b"I"] {
-                    match src.get(key) {
-                        Some(v) => d.set(key.to_vec(), v.clone()),
-                        None => {
-                            d.remove(key);
-                        }
+                match src.get(b"V") {
+                    Some(v) => d.set(b"V".to_vec(), v.clone()),
+                    None => {
+                        d.remove(b"V");
+                    }
+                }
+                match &positions {
+                    Some(p) => d.set(b"I".to_vec(), Object::Array(p.iter().map(|&i| Object::Int(i64::try_from(i).unwrap_or(i64::MAX))).collect())),
+                    None => {
+                        d.remove(b"I");
                     }
                 }
                 d.remove(b"RV");
             })?;
-            // Drawn with the options the copied `/I` selects, not only the export values.
+            // Drawn with the options that `/I` selects, not only the export values.
             let mut shown = twin.clone();
             shown.value = value.to_vec();
             if matches!(twin.kind, FieldKind::Combo | FieldKind::List) {
-                shown.selected = selected_options(&twin.options, value, listed_indices(doc, &src, twin.options.len()).as_deref());
+                shown.selected = selected_options(&twin.options, value, positions.as_deref());
             }
             redraw(doc, &shown, value, scripts)
         }
@@ -282,14 +301,19 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
             // which one is picked (ISO 32000-2 Table 234).
             let mut exports = Vec::new();
             let mut picked: Vec<usize> = Vec::new();
+            // Each option once in both `/V` and `/I`: a reader that finds them differ (a repeat in one)
+            // goes by the export values alone and may pick another option sharing one.
+            let mut seen = vec![false; f.options.len()];
             match value {
                 FieldValue::ChoiceIndices(positions) => {
                     for &i in positions {
                         let Some((e, _)) = f.options.get(i) else {
                             return invalid(format!("{:?} has no option {} (it has {})", f.name, i.saturating_add(1), f.options.len()));
                         };
-                        exports.push(e.clone());
-                        picked.push(i);
+                        if first_pick(&mut seen, i) {
+                            exports.push(e.clone());
+                            picked.push(i);
+                        }
                     }
                 }
                 _ => {
@@ -303,8 +327,10 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
                     for v in &vals {
                         match f.options.iter().position(|(e, d)| e == v || d == v) {
                             Some(i) => {
-                                exports.push(f.options.get(i).map(|(e, _)| e.clone()).unwrap_or_else(|| v.clone()));
-                                picked.push(i);
+                                if first_pick(&mut seen, i) {
+                                    exports.push(f.options.get(i).map(|(e, _)| e.clone()).unwrap_or_else(|| v.clone()));
+                                    picked.push(i);
+                                }
                             }
                             None if f.kind == FieldKind::Combo && f.has(flags::EDIT) => exports.push(v.clone()),
                             None if f.options.is_empty() => exports.push(v.clone()),
@@ -688,4 +714,31 @@ pub fn reset(doc: &mut Document, names: Option<&[String]>) -> Result<usize, Form
     }
     recalculate(doc)?;
     Ok(changed)
+}
+
+/// Marks option `i` picked; false when it already was, or there is no such option.
+fn first_pick(seen: &mut [bool], i: usize) -> bool {
+    match seen.get_mut(i) {
+        Some(taken) if !*taken => {
+            *taken = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The twin's positions for the source's picked positions `picked`: each picked option goes to
+/// the twin's first not yet taken option with the same export value and text. `None` when one
+/// has no such option there. The positions come back in ascending order, as `/I` lists them.
+fn twin_positions(picked: &[usize], source: &[(String, String)], twin: &[(String, String)]) -> Option<Vec<usize>> {
+    let mut free: std::collections::HashMap<(&str, &str), std::collections::VecDeque<usize>> = std::collections::HashMap::new();
+    for (i, (e, d)) in twin.iter().enumerate() {
+        free.entry((e.as_str(), d.as_str())).or_default().push_back(i);
+    }
+    let mut out = picked
+        .iter()
+        .map(|&p| source.get(p).and_then(|(e, d)| free.get_mut(&(e.as_str(), d.as_str()))).and_then(|q| q.pop_front()))
+        .collect::<Option<Vec<usize>>>()?;
+    out.sort_unstable();
+    Some(out)
 }

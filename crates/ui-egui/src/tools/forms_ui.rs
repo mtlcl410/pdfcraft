@@ -73,6 +73,10 @@ pub struct FormView {
     /// The widget holding egui's keyboard focus for the focused check box or radio button, and
     /// whether it takes the arrows (radio buttons). The page keys still work around it.
     pub(crate) keys: Option<(egui::Id, bool)>,
+    /// The list box row clicked last, without Shift: (its field name, the row). A Shift-click picks
+    /// the rows from it to the one clicked; the field's value can't say which row came last when
+    /// rows share an export value, and `/I` lists them in ascending order.
+    pub(crate) list_anchor: Option<(String, usize)>,
 }
 
 /// A form message for the app to show, with document data kept separate so the visible
@@ -277,14 +281,20 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, form: &[FormField], allowed: b
                     picked
                 } else if multi
                     && shift
-                    && let Some(&anchor) = in_order.last()
+                    && let Some(anchor) =
+                        view.forms.list_anchor.as_ref().filter(|(name, _)| *name == f.name).map(|(_, row)| *row).or_else(|| in_order.last().copied())
                 {
                     let (min, max) = (anchor.min(opt_idx), anchor.max(opt_idx));
                     (min..=max).collect()
                 } else {
                     vec![opt_idx]
                 };
-                if picked != in_order {
+                if !(multi && shift) {
+                    view.forms.list_anchor = Some((f.name.clone(), opt_idx));
+                }
+                // A single-select list holding an array is written as one value even when its shown
+                // row is clicked again.
+                if picked != in_order || f.single_value_is_array {
                     view.pending_edit = Some(Edit::SetFieldValue { name: f.name.clone(), value: FieldValue::ChoiceIndices(picked) });
                 }
             }
