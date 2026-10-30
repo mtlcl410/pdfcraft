@@ -475,81 +475,84 @@ pub fn has_scripts(tpl: &Template) -> bool {
     any(&tpl.root.scripts) || walk(&tpl.root.children, 1) || tpl.root.page_set.as_ref().is_some_and(|ps| ps.areas.iter().any(|a| walk(&a.items, 1)))
 }
 
-/// The template with `ov` applied to its objects (instance 0 of each; scripts that hide one
-/// instance of a repeating subform hide them all).
-pub fn apply_overrides(tpl: &Template, ov: &Overrides) -> Template {
-    /// Set the presence `ov` gives each of `nodes` (children of `parent_som`) and their descendants,
-    /// down to [`MAX_DEPTH`], and the access it gives a field outside an exclusion group. An unnamed
-    /// draw, area or subform shares its parent's SOM path, so it takes no override of its own.
-    fn walk(nodes: &mut [Node], parent_som: &str, ov: &Overrides, depth: usize) {
-        if depth > MAX_DEPTH {
-            return;
-        }
-        let sibs = SomIndices::of(nodes);
-        for (i, n) in nodes.iter_mut().enumerate() {
-            let sib = sibs.at(i);
-            let name_default = match n {
-                Node::Field(_) => Some("field"),
-                Node::ExclGroup(_) => Some("group"),
-                _ => None,
-            };
-            let name = n.common().name.as_deref().or(name_default);
-            let som = child_som(parent_som, name, sib);
-            // An unnamed draw, area or subform has no SOM name: `som` is its parent's, and so are
-            // the overrides under it.
-            let presence = name.and_then(|_| ov.presence.get(&som)).map(|p| Presence::parse(Some(p)));
-            let access = name.and_then(|_| ov.access.get(&som)).cloned();
-            match n {
-                Node::Subform(s) => {
-                    if let Some(p) = presence {
-                        s.common.presence = p;
-                    }
-                    walk(&mut s.children, &som, ov, depth + 1);
+/// Set the presence `ov` gives each of `nodes` (children of `parent_som`) and their descendants,
+/// down to [`MAX_DEPTH`], and the access it gives a field outside an exclusion group. An unnamed
+/// draw, area or subform shares its parent's SOM path, so it takes no override of its own.
+pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Overrides, depth: usize) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let sibs = SomIndices::of(nodes);
+    for (i, n) in nodes.iter_mut().enumerate() {
+        let sib = sibs.at(i);
+        let name_default = match n {
+            Node::Field(_) => Some("field"),
+            Node::ExclGroup(_) => Some("group"),
+            _ => None,
+        };
+        let name = n.common().name.as_deref().or(name_default);
+        let som = child_som(parent_som, name, sib);
+        // An unnamed draw, area or subform has no SOM name: `som` is its parent's, and so are
+        // the overrides under it.
+        let presence = name.and_then(|_| ov.presence.get(&som)).map(|p| Presence::parse(Some(p)));
+        let access = name.and_then(|_| ov.access.get(&som)).cloned();
+        match n {
+            Node::Subform(s) => {
+                if let Some(p) = presence {
+                    s.common.presence = p;
                 }
-                Node::Area(a) => {
-                    if let Some(p) = presence {
-                        a.common.presence = p;
-                    }
-                    walk(&mut a.children, &som, ov, depth + 1);
+                apply_overrides_to(&mut s.children, &som, ov, depth + 1);
+            }
+            Node::Area(a) => {
+                if let Some(p) = presence {
+                    a.common.presence = p;
                 }
-                Node::Field(f) => {
-                    if let Some(p) = presence {
-                        f.common.presence = p;
-                    }
-                    if let Some(a) = access {
-                        f.access = match a.as_str() {
-                            "readOnly" => Access::ReadOnly,
-                            "protected" => Access::Protected,
-                            "nonInteractive" => Access::NonInteractive,
-                            _ => Access::Open,
-                        };
-                    }
+                apply_overrides_to(&mut a.children, &som, ov, depth + 1);
+            }
+            Node::Field(f) => {
+                if let Some(p) = presence {
+                    f.common.presence = p;
                 }
-                Node::Draw(d) => {
-                    if let Some(p) = presence {
-                        d.common.presence = p;
-                    }
+                if let Some(a) = access {
+                    f.access = match a.as_str() {
+                        "readOnly" => Access::ReadOnly,
+                        "protected" => Access::Protected,
+                        "nonInteractive" => Access::NonInteractive,
+                        _ => Access::Open,
+                    };
                 }
-                Node::ExclGroup(g) => {
-                    if let Some(p) = presence {
-                        g.common.presence = p;
-                    }
-                    let fields: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
-                    let fsibs = SomIndices::of(&fields);
-                    for (fi, f) in g.fields.iter_mut().enumerate() {
-                        let fsom = child_som(&som, f.common.name.as_deref().or(Some("field")), fsibs.at(fi));
-                        if let Some(p) = ov.presence.get(&fsom) {
-                            f.common.presence = Presence::parse(Some(p));
-                        }
+            }
+            Node::Draw(d) => {
+                if let Some(p) = presence {
+                    d.common.presence = p;
+                }
+            }
+            Node::ExclGroup(g) => {
+                if let Some(p) = presence {
+                    g.common.presence = p;
+                }
+                let fields: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
+                let fsibs = SomIndices::of(&fields);
+                for (fi, f) in g.fields.iter_mut().enumerate() {
+                    let fsom = child_som(&som, f.common.name.as_deref().or(Some("field")), fsibs.at(fi));
+                    if let Some(p) = ov.presence.get(&fsom) {
+                        f.common.presence = Presence::parse(Some(p));
                     }
                 }
             }
         }
     }
+}
+
+/// The template with `ov` applied to its objects (instance 0 of each; scripts that hide one
+/// instance of a repeating subform hide them all). Page-master content is left as it is: a page
+/// area makes many pages, each with its own SOM path, so `ov` is applied to it page by page as
+/// the pages are laid out ([`crate::layout::layout_with_overrides`]).
+pub fn apply_overrides(tpl: &Template, ov: &Overrides) -> Template {
     let mut t = tpl.clone();
     if !ov.is_empty() {
         let mut root = vec![Node::Subform(Box::new(t.root.clone()))];
-        walk(&mut root, "", ov, 0);
+        apply_overrides_to(&mut root, "", ov, 0);
         if let Some(Node::Subform(r)) = root.pop() {
             t.root = *r;
         }
@@ -617,7 +620,7 @@ pub fn rerender(doc: &mut Document, tpl: &Template) -> Result<Report, XfaError> 
     let data = parse_datasets(&packets.xdp);
     let ov = overrides(doc);
     let laid = apply_overrides(tpl, &ov);
-    let form = crate::layout(&laid, data.as_ref())?;
+    let form = crate::layout::layout_with_overrides(&laid, data.as_ref(), &ov)?;
     if form.pages.is_empty() {
         return Err(XfaError::Malformed("the template laid out to no pages".into()));
     }

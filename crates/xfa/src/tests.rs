@@ -4186,3 +4186,41 @@ fn clear_password_values_clears_static_xfa_password_fields() {
     let packets = read_packets(&doc).unwrap().unwrap();
     assert!(!packets.xdp.contains("hunter2"), "{}", packets.xdp);
 }
+
+/// What a script sets on page-master content (a field hidden on the second page made from a
+/// page area) is applied to that page's copy only, when the form is laid out again: the other
+/// pages keep the field.
+#[test]
+fn a_script_hiding_master_content_on_one_page_hides_it_there_only() {
+    let section = |n: u32| {
+        format!(
+            r#"<subform name="s{n}" layout="tb"><breakBefore targetType="pageArea" startNew="1"/><field name="f{n}" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>"#
+        )
+    };
+    let xdp = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet>
+  <pageArea name="Body"><contentArea x="0.5in" y="0.5in" w="7.5in" h="2in"/><medium short="8.5in" long="11in"/>
+   <field name="pageNo" x="7in" y="10in" w="1in" h="0.3in"><ui><textEdit/></ui></field>
+  </pageArea>
+ </pageSet>
+ {}{}{}
+</subform>
+</template>
+</xdp:xdp>
+"##,
+        section(1),
+        section(2),
+        section(3)
+    );
+    let (tpl, _) = crate::parse(&xdp).unwrap();
+    let mut ov = Overrides::default();
+    ov.presence.insert("Body[1].pageNo[0]".into(), "hidden".into());
+    let laid = apply_overrides(&tpl, &ov);
+    let form = crate::layout::layout_with_overrides(&laid, None, &ov).unwrap();
+    let has: Vec<bool> = form.pages.iter().map(|p| widgets(p).iter().any(|w| w.som.contains("pageNo"))).collect();
+    assert_eq!(has, [true, false, true], "hidden on the second page only");
+}

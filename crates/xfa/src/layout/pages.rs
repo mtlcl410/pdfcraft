@@ -2,7 +2,7 @@
 use super::EMBED_COPIED;
 use super::items::{Item, Page, UNDERLINE_DROP};
 use super::{
-    Block, Border, Ctx, Cursor, FlowMark, Font, Frame, Layouter, MAX_ITEMS, MAX_MEASURES, MAX_PAGES, PAGE_COUNT_MARK, PageRole, Para, Rc, Rect,
+    Block, Border, Ctx, Cursor, FlowMark, Font, Frame, Layouter, MAX_ITEMS, MAX_MEASURES, MAX_PAGES, Node, PAGE_COUNT_MARK, PageRole, Para, Rc, Rect,
     SomIndices, XfaError, text,
 };
 
@@ -107,8 +107,20 @@ impl Layouter<'_> {
         let ctx =
             Ctx { font: Font::default(), para: Para::default(), som: area.name.clone().map(|n| format!("{n}[{instance}]")).unwrap_or_default() };
         let page_rect = Rect::new(0.0, 0.0, area.width, area.height);
-        let sibs = SomIndices::of(&area.items);
-        for (i, item) in area.items.iter().enumerate() {
+        // What scripts set on this page's master content (a button hidden on this page only) goes
+        // on a copy of it for this page; other pages keep the template's.
+        let prefix = format!("{}.", ctx.som);
+        let copy =
+            self.overrides.filter(|ov| !ctx.som.is_empty() && ov.presence.keys().chain(ov.access.keys()).any(|k| k.starts_with(&prefix))).map(|ov| {
+                let mut copy = area.items.clone();
+                crate::script::apply_overrides_to(&mut copy, &ctx.som, ov, 1);
+                let copy = Rc::new(copy);
+                self.master_copies.push(Rc::clone(&copy));
+                copy
+            });
+        let items: &[Node] = copy.as_deref().map_or(&area.items, Vec::as_slice);
+        let sibs = SomIndices::of(items);
+        for (i, item) in items.iter().enumerate() {
             self.draw_positioned_child(item, page_rect, &ctx, 1, sibs.at(i))?;
         }
         Ok(())
