@@ -590,7 +590,34 @@ impl<'a, 'b> Runner<'a, 'b> {
         } else {
             Some(by_som.iter().filter(|(som, _)| names.iter().any(|n| som_matches(som, n))).map(|(_, f)| f.clone()).collect())
         };
+        // Fields of the live form with no widget yet (a row an opening script added, before the
+        // form is laid out again): their data goes back to the template's default too, or the
+        // value would stay and be laid out and saved.
+        let unshown: Vec<String> = {
+            let live = self.live();
+            let mut out = Vec::new();
+            let mut stack: Vec<&pdfcraft_xfa::FormNode> = vec![&live.root];
+            while let Some(n) = stack.pop() {
+                if n.kind == Some(pdfcraft_xfa::NodeKind::Field)
+                    && !by_som.contains_key(&n.som)
+                    && (names.is_empty() || names.iter().any(|name| som_matches(&n.som, name)))
+                {
+                    out.push(n.som.clone());
+                }
+                stack.extend(n.children.iter());
+            }
+            out
+        };
+        for som in unshown {
+            let Some(text) = pdfcraft_xfa::reset_default(self.tpl, &som) else { continue };
+            let path = pdfcraft_xfa::data_path(self.tpl, &som);
+            if self.data.as_ref().and_then(|d| d.text_at(&path)).unwrap_or("") != text {
+                self.data_op(pdfcraft_xfa::DataOp::Value { path, text });
+                self.changes.values += 1;
+            }
+        }
         if listed.as_ref().is_some_and(Vec::is_empty) {
+            self.invalidate();
             return Ok(());
         }
         pdfcraft_forms::reset(self.doc, listed.as_deref()).map_err(|e| e.to_string())?;

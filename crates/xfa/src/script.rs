@@ -575,6 +575,17 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
     out
 }
 
+/// What a reset gives the field at `som` in the data: its template default, or nothing when it has
+/// none. `None` for an object a reset restores no value of: not a field of the template, or a
+/// button, signature or picture field.
+pub fn reset_default(tpl: &Template, som: &str) -> Option<String> {
+    let f = crate::data::template_field(tpl, som)?;
+    if matches!(f.ui, crate::model::Ui::Button | crate::model::Ui::Signature | crate::model::Ui::ImageEdit) {
+        return None;
+    }
+    Some(f.value.plain().unwrap_or_default())
+}
+
 /// Lay the form out again from its template, data and overrides, replacing the pages and the
 /// generated fields (a script added a row or hid a subform).
 pub fn rerender(doc: &mut Document, tpl: &Template) -> Result<Report, XfaError> {

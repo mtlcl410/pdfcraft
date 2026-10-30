@@ -9507,3 +9507,26 @@ fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes()
     s.apply(rewritten, Edit::RemoveMarks { kind: MarkKind::Background }).unwrap();
     black(&s, rewritten);
 }
+
+/// A reset in an opening script reaches a field of a row an earlier opening script added, before
+/// the form is laid out again with the row's widgets: its data goes back to its default and stays
+/// so when the form is saved.
+#[test]
+fn an_opening_reset_reaches_a_row_added_while_opening() {
+    let tpl = pdfcraft_xfa::fixtures::scripted_template().replace(
+        "if (qty.rawValue === null) qty.rawValue = 2;",
+        r#"if (qty.rawValue === null) qty.rawValue = 2; table._row.addInstance(1);"#,
+    )
+    .replace(
+        r#"<field name="grand" w="2in" h="0.3in" access="readOnly">"#,
+        r#"<field name="grand" w="2in" h="0.3in" access="readOnly"><event activity="initialize"><script contentType="application/x-javascript">xfa.resolveNode("form.page1.table.row[1].item").rawValue = "X"; xfa.host.resetData("form.page1.table.row[1].item");</script></event>"#,
+    );
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("rows.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&tpl)), None).unwrap();
+    let out = s.take_js_output(id);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let cos = pdfcraft_cos::Document::open(s.save_bytes(id).unwrap()).unwrap();
+    let data = pdfcraft_xfa::data_of(&cos).unwrap();
+    assert_eq!(data.count(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0]"), "row"), 2, "the row was added");
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0].row[1].item[0]")).unwrap_or(""), "", "reset in the data");
+}
