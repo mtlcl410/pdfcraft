@@ -9455,3 +9455,48 @@ fn a_custom_stamp_line_keeps_accented_letters() {
     });
     assert!(found, "the line's letters are WinAnsi bytes in the appearance");
 }
+
+/// A custom stamp with a line keeps its picture's shape over the line on a turned page: it is
+/// laid out in the displayed box, then turned into `/Rect`. Laid out in user space, a quarter
+/// turn squashed the picture into a narrow strip and stretched the band.
+#[test]
+fn a_lined_custom_stamp_keeps_its_layout_on_turned_pages() {
+    let colours = [[240, 20, 20, 255], [20, 180, 20, 255], [20, 20, 240, 255], [230, 180, 20, 255]];
+    let image = image::RgbaImage::from_fn(80, 40, |x, y| image::Rgba(colours[usize::from(y >= 20) * 2 + usize::from(x >= 40)]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let bytes = Arc::new(png.into_inner());
+    // A short line: the stamp is the picture's 80 pt wide, 40 / 0.78 pt tall with its band.
+    let (w, h) = pdfcraft_annot::custom_stamp_size((80.0, 40.0), Some("OK"));
+    assert_eq!(w, 80.0);
+    let top = 100.0 - h / 2.0;
+    for degrees in [0, 90, 180, 270] {
+        let (mut session, id) = session_with(1);
+        session.apply(id, Edit::RotatePages { pages: vec![0], degrees }).unwrap();
+        let at = session.get(id).unwrap().info.pages[0].view_to_user(100.0, 100.0).map(f64::from);
+        let edit = Edit::AddCustomStamp {
+            page: 0,
+            rect: [at[0], at[1], at[0], at[1]],
+            name: "Quadrants".into(),
+            file: MarkFile { name: "quadrants.png".into(), bytes: bytes.clone(), page: 0 },
+            author: "Test".into(),
+            line: Some("OK".into()),
+        };
+        session.apply(id, edit).unwrap();
+        let doc = session.get(id).unwrap();
+        let mut renderer = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), doc.config.clone());
+        let rendered = renderer.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(rendered.error.is_none(), "{:?}", rendered.error);
+        let pixel = |x: f64, y: f64| {
+            let offset = ((y as u32 * rendered.width + x as u32) * 4) as usize;
+            rendered.rgba[offset..offset + 4].to_vec()
+        };
+        // The picture fills the top 80 x 40 pt of the displayed box, its quadrants in place.
+        let points = [(70.0, top + 5.0), (130.0, top + 5.0), (70.0, top + 35.0), (130.0, top + 35.0)];
+        for ((x, y), colour) in points.into_iter().zip(colours) {
+            assert_eq!(pixel(x, y), colour, "page rotation {degrees}; displayed point ({x}, {y})");
+        }
+        // The band under it holds no picture.
+        assert_eq!(pixel(64.0, top + h - 3.0), [255, 255, 255, 255], "page rotation {degrees}: the band");
+    }
+}

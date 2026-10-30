@@ -780,16 +780,23 @@ fn draw_stamp(context: &AppearanceContext<'_>, mut drawing: AppearanceDrawing) -
         return Some(form(rect, c.as_bytes(), res));
     }
     // A custom stamp: its picture (an image, or a form mapped to /PCPictureSize) fills
-    // the rectangle. An image signature added to a turned page (`/PCPictureRotate`) gets
+    // the rectangle. An image signature or a stamp with a line added to a turned page
+    // (`/PCPictureRotate`) gets
     // the standard counter-rotation as its form `/Matrix`: viewers fit the turned
     // bounding box to `/Rect` (ISO 32000-2 §12.5.5), so it reads upright as displayed.
     if let Some(pic) = d.get(b"PCPicture").and_then(Object::as_ref) {
-        let [x0, y0, x1, y1] = rect;
         let image = matches!(d.get(b"PCPictureImage"), Some(Object::Bool(true)));
         let size = nums(d, b"PCPictureSize").filter(|s| s.len() == 2 && s[0] > 0.0 && s[1] > 0.0);
         // A text line (#1741) takes the bottom of the rectangle, and the picture keeps its
         // shape, centred above it. Without one the picture fills the rectangle.
         let line = d.get(b"PCByLine").and_then(Object::as_string).map(PdfString::to_text).filter(|l| !l.trim().is_empty());
+        let turn = picture_turn(d);
+        // A lined stamp on a quarter-turned page is laid out in its displayed box (the
+        // rectangle with its sides swapped) and turned into `/Rect` by the `/Matrix` below.
+        // Laid out in user space, the viewer's fit of the turned box to `/Rect` would scale
+        // the two displayed axes differently and squash the picture and its line.
+        let bbox = if line.is_some() && matches!(turn, 90 | 270) { [0.0, 0.0, rect[3] - rect[1], rect[2] - rect[0]] } else { rect };
+        let [x0, y0, x1, y1] = bbox;
         let band = if line.is_some() { (y1 - y0) * crate::CUSTOM_LINE_BAND } else { 0.0 };
         let (w, h) = (x1 - x0, y1 - y0 - band);
         let place = match (&line, &size) {
@@ -836,9 +843,8 @@ fn draw_stamp(context: &AppearanceContext<'_>, mut drawing: AppearanceDrawing) -
         let mut xo = Dict::new();
         xo.set(b"Pic".to_vec(), Object::Ref(pic));
         res.set(b"XObject".to_vec(), Object::Dict(xo));
-        let mut stream = form(rect, &content, res);
-        let turn = picture_turn(d);
-        if image && turn != 0 {
+        let mut stream = form(bbox, &content, res);
+        if (image || line.is_some()) && turn != 0 {
             // The page's view matrix without its offset: display axes in user space.
             let m = pdfcraft_model::view_matrix_for(turn, [0.0; 4]);
             let matrix = [m[0], m[1], m[2], m[3], 0.0, 0.0];

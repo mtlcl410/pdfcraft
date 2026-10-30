@@ -283,12 +283,14 @@ pub fn add_annotation(doc: &mut Document, new: &NewAnnotation, meta: &Meta) -> R
             d.set(b"PCPicture".to_vec(), Object::Ref(*picture));
             d.set(b"PCPictureImage".to_vec(), Object::Bool(*image));
             d.set(b"PCPictureSize".to_vec(), num_array(&[size.0, size.1]));
-            if let Some(l) = line.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            let lined = line.as_deref().map(str::trim).filter(|l| !l.is_empty());
+            if let Some(l) = lined {
                 d.set(b"PCByLine".to_vec(), PdfString::text(l));
             }
             // An image signature's rectangle is in user space; on a turned page its appearance is
-            // turned back (see `appearance::build`), so it reads upright as displayed.
-            if *image && matches!(clean.as_str(), "Signature" | "Initials") {
+            // turned back (see `appearance::build`), so it reads upright as displayed. A stamp
+            // with a line is laid out in the displayed box, so it needs the turn too.
+            if lined.is_some() || (*image && matches!(clean.as_str(), "Signature" | "Initials")) {
                 let turn = pdfcraft_model::pages(doc).get(new.page).map_or(0, |p| p.rotation(doc));
                 if turn != 0 {
                     d.set(b"PCPictureRotate".to_vec(), Object::Int(turn));
