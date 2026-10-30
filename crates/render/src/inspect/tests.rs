@@ -1293,6 +1293,28 @@ fn links_read_named_hide_and_reset_form_actions() {
     assert!(info.links.iter().all(|l| l.next.is_empty()));
 }
 
+/// A hide action naming more fields than one action reads is not run, as an oversized
+/// reset-form one isn't, rather than hiding only the first of them.
+#[test]
+fn links_refuse_hide_actions_naming_too_many_fields() {
+    let names = |n: usize| (0..n).map(|k| format!("(f{k})")).collect::<Vec<_>>().join(" ");
+    let pdf = format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj\n\
+         3 0 obj << /Type /Page /Parent 2 0 R /Annots [30 0 R 31 0 R] >> endobj\n\
+         30 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /Hide /T [{}] >> >> endobj\n\
+         31 0 obj << /Type /Annot /Subtype /Link /Rect [0 20 10 30] /A << /S /Hide /T [{}] /H false >> >> endobj\n\
+         trailer << /Root 1 0 R >>\n%%EOF",
+        names(1024),
+        names(1025)
+    );
+    let info = inspect(Arc::new(pdf.into_bytes()), None).expect("opens");
+    let targets: Vec<_> = info.links.iter().map(|l| l.target.clone()).collect();
+    assert_eq!(targets.len(), 2);
+    assert!(matches!(&targets[0], LinkTarget::Hide { fields, hide: true } if fields.len() == 1024), "{:?}", targets[0]);
+    assert_eq!(targets[1], LinkTarget::Other("Hide".into()), "one field past the cap: not run");
+}
+
 /// A reset-form `/Fields` reference names its field by the fully qualified name (§12.7.4.2),
 /// and a `/Fields` that is present but not an array (Table 241) is not run: read as "the
 /// whole form", it would reset every field.

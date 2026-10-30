@@ -311,7 +311,8 @@ impl<'a> Inspector<'a> {
 
     /// A hide action (§12.6.4.11). An annotation reference that belongs to no form field is not
     /// run (only fields can be hidden yet); when nothing is left, the action reads as one
-    /// PdfCraft doesn't run.
+    /// PdfCraft doesn't run. So does a `/T` array longer than [`MAX_ACTION_FIELDS`], rather than
+    /// hiding only its first fields.
     fn hide(&self, a: &Dictionary, text_budget: &mut usize) -> LinkTarget {
         let mut fields = Vec::new();
         let target = |o: &Object, budget: &mut usize| match o {
@@ -323,7 +324,10 @@ impl<'a> Inspector<'a> {
         };
         if let Ok(t) = a.get(b"T") {
             match self.resolve(t) {
-                Object::Array(items) => fields.extend(items.iter().take(MAX_ACTION_FIELDS).filter_map(|o| target(o, text_budget))),
+                Object::Array(items) if items.len() <= MAX_ACTION_FIELDS => fields.extend(items.iter().filter_map(|o| target(o, text_budget))),
+                // Past the cap the action is not run, as an oversized reset-form one isn't:
+                // hiding only the first fields would leave the rest showing.
+                Object::Array(_) => return LinkTarget::Other("Hide".into()),
                 _ => fields.extend(target(t, text_budget)),
             }
         }
