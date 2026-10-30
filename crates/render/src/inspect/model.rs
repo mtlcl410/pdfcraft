@@ -386,11 +386,12 @@ pub fn fill_group_text(all: &mut [Annotation]) {
     }
     let primaries = group_primaries(all);
     let lacks_text = |p: usize| all.get(p).is_some_and(|a| a.subtype == "StrikeOut" && a.contents.as_deref().is_none_or(str::is_empty));
-    // Keyed by the primary's position: the first caret per primary wins, and each primary is
-    // written once, so the order of the map does not matter.
+    // Keyed by the primary's position: the first caret with text per primary wins (an empty one
+    // lends nothing), and each primary is written once, so the order of the map does not matter.
     let mut texts: HashMap<usize, String> = HashMap::new();
     for (a, p) in all.iter().zip(&primaries) {
         if let (Some(p), Some(text), "Caret") = (*p, a.contents.as_ref(), a.subtype.as_str())
+            && !text.is_empty()
             && lacks_text(p)
         {
             texts.entry(p).or_insert_with(|| text.clone());

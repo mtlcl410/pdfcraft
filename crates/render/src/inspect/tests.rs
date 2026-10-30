@@ -1978,6 +1978,19 @@ mod group_tests {
         );
     }
 
+    /// Review on #4358: an empty caret ahead of one with text lends nothing, so the primary lists
+    /// the replacement rather than nothing.
+    #[test]
+    fn an_empty_caret_does_not_hide_the_next_carets_text() {
+        let mut all = listed(vec![
+            with(annot(0, None, false), "StrikeOut", None),
+            with(annot(1, Some(0), true), "Caret", Some("")),
+            with(annot(2, Some(0), true), "Caret", Some("new words")),
+        ]);
+        super::fill_group_text(&mut all);
+        assert_eq!(all[0].contents.as_deref(), Some("new words"));
+    }
+
     /// Many groups each get their own caret's text (one map lookup per caret, not a scan of the
     /// groups seen so far).
     #[test]
