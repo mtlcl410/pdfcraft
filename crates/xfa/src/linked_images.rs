@@ -26,50 +26,87 @@ const MAX_TOTAL: usize = 1 << 10;
 /// Deepest the template is walked.
 const MAX_TEMPLATE_DEPTH: usize = 256;
 
+/// `f` of `o`, a reference followed. A direct object is lent as it is, not copied: a tree's
+/// arrays can be as long as the file allows.
+fn with_resolved<R>(doc: &Document, o: &Object, f: impl FnOnce(&Object) -> R) -> R {
+    match o {
+        Object::Ref(r) => f(&doc.get(*r)),
+        other => f(other),
+    }
+}
+
 /// The `XFAImages` name tree: each name, as text, and the object it names.
 fn names(doc: &Document) -> HashMap<String, Object> {
-    let mut out = HashMap::new();
-    let Some(root) = doc.root() else { return out };
+    let mut walk = Walk { doc, out: HashMap::new(), seen: HashSet::new(), visited: 0 };
+    let Some(root) = doc.root() else { return walk.out };
     let catalog = doc.get(root);
-    let tree =
-        catalog.as_dict().and_then(|c| c.get(b"Names")).map(|n| doc.resolve(n)).and_then(|n| n.as_dict().and_then(|d| d.get(b"XFAImages")).cloned());
-    let Some(tree) = tree else { return out };
-    let mut seen: HashSet<ObjRef> = HashSet::new();
-    let mut visited = 0usize;
-    let mut stack = vec![(tree, 0usize)];
-    while let Some((node, depth)) = stack.pop() {
-        if visited >= MAX_TREE_NODES || out.len() >= MAX_NAMES {
-            break;
-        }
+    if let Some(names) = catalog.as_dict().and_then(|c| c.get(b"Names")) {
+        with_resolved(doc, names, |n| {
+            if let Some(tree) = n.as_dict().and_then(|d| d.get(b"XFAImages")) {
+                walk.node(tree, 0);
+            }
+        });
+    }
+    walk.out
+}
+
+/// A walk of the name tree, borrowing each node from its resolved owner: nothing of the tree
+/// is copied but the names kept, and only the branch being walked is held.
+struct Walk<'a> {
+    doc: &'a Document,
+    out: HashMap<String, Object>,
+    seen: HashSet<ObjRef>,
+    visited: usize,
+}
+
+impl Walk<'_> {
+    fn full(&self) -> bool {
+        self.visited >= MAX_TREE_NODES || self.out.len() >= MAX_NAMES
+    }
+
+    fn node(&mut self, node: &Object, depth: usize) {
         // Too deep: this branch is left, the others are still walked.
-        if depth > MAX_DEPTH {
-            continue;
+        if self.full() || depth > MAX_DEPTH {
+            return;
         }
-        visited += 1;
+        self.visited += 1;
         if let Some(r) = node.as_ref()
-            && !seen.insert(r)
+            && !self.seen.insert(r)
         {
-            continue;
+            return;
         }
-        let node = doc.resolve(&node);
-        let Some(d) = node.as_dict() else { continue };
-        if let Some(pairs) = d.get(b"Names").map(|n| doc.resolve(n)).and_then(|n| n.as_array().cloned()) {
-            for pair in pairs.chunks(2) {
-                if let [key, value] = pair
-                    && let Some(key) = doc.resolve(key).as_string()
-                {
-                    out.entry(key.to_text()).or_insert_with(|| value.clone());
-                    if out.len() >= MAX_NAMES {
-                        break;
+        let doc = self.doc;
+        with_resolved(doc, node, |node| {
+            let Some(d) = node.as_dict() else { return };
+            if let Some(pairs) = d.get(b"Names") {
+                with_resolved(doc, pairs, |pairs| self.pairs(pairs));
+            }
+            if let Some(kids) = d.get(b"Kids") {
+                with_resolved(doc, kids, |kids| {
+                    for kid in kids.as_array().map(Vec::as_slice).unwrap_or_default() {
+                        if self.full() {
+                            break;
+                        }
+                        self.node(kid, depth + 1);
                     }
-                }
+                });
+            }
+        });
+    }
+
+    fn pairs(&mut self, pairs: &Object) {
+        let doc = self.doc;
+        for pair in pairs.as_array().map(Vec::as_slice).unwrap_or_default().chunks(2) {
+            if self.out.len() >= MAX_NAMES {
+                break;
+            }
+            if let [key, value] = pair
+                && let Some(key) = with_resolved(doc, key, |k| k.as_string().map(|s| s.to_text()))
+            {
+                self.out.entry(key).or_insert_with(|| value.clone());
             }
         }
-        if let Some(kids) = d.get(b"Kids").map(|k| doc.resolve(k)).and_then(|k| k.as_array().cloned()) {
-            stack.extend(kids.into_iter().map(|k| (k, depth + 1)));
-        }
     }
-    out
 }
 
 /// Pictures found so far by their link, read from the file once each.

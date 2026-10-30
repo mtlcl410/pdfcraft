@@ -4211,8 +4211,8 @@ fn an_over_deep_xfa_images_branch_does_not_stop_the_walk() {
     for _ in 0..40 {
         deep = format!("<< /Kids [{deep}] >>");
     }
-    // The deep branch is listed last, so it is walked first.
-    let root = format!("<< /Kids [7 0 R {deep}] >>");
+    // The deep branch is listed first, so it is walked first.
+    let root = format!("<< /Kids [{deep} 7 0 R] >>");
     let doc = Document::open(Arc::new(crate::fixtures::linked_image_shell_with(root.as_bytes(), br"<< /Names [(.\\logo.png) 8 0 R] >>"))).unwrap();
     let tpl = crate::script::template_of(&doc).unwrap();
     let logo = tpl.root.children.iter().find_map(|n| match n {
@@ -4223,6 +4223,23 @@ fn an_over_deep_xfa_images_branch_does_not_stop_the_walk() {
         _ => None,
     });
     assert!(matches!(logo, Some(Value::Image { data, .. }) if !data.is_empty()), "the logo is found beside the deep branch");
+}
+
+/// A `Kids` array far longer than the nodes walked is walked in order, up to the limit, and not
+/// held whole: the picture its first kid names is found, however many kids follow.
+#[test]
+fn a_wide_xfa_images_kids_array_is_walked_in_order_within_the_limit() {
+    let root = format!("<< /Kids [7 0 R {}] >>", "<< >> ".repeat(10_000));
+    let doc = Document::open(Arc::new(crate::fixtures::linked_image_shell_with(root.as_bytes(), br"<< /Names [(.\\logo.png) 8 0 R] >>"))).unwrap();
+    let tpl = crate::script::template_of(&doc).unwrap();
+    let logo = tpl.root.children.iter().find_map(|n| match n {
+        Node::Subform(s) => s.children.iter().find_map(|c| match c {
+            Node::Draw(d) if d.common.name.as_deref() == Some("logo") => Some(d.value.clone()),
+            _ => None,
+        }),
+        _ => None,
+    });
+    assert!(matches!(logo, Some(Value::Image { data, .. }) if !data.is_empty()), "the first kid's logo is found");
 }
 
 /// A picture used in many places is held once per place, so every place counts against the
