@@ -3,7 +3,7 @@ use crate::context::{Context, path_as_rect};
 use crate::device::Device;
 use crate::util::{BezPathExt, Float32Ext};
 use crate::{FillRule, Paint, PathDrawMode, StrokeProps};
-use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape, Vec2};
+use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Vec2};
 use smallvec::smallvec;
 
 pub(crate) fn fill_path<'a>(
@@ -47,7 +47,7 @@ pub(crate) fn apply_pending_clip<'a>(context: &mut Context<'a>, device: &mut imp
         // PdfCraft patch (65): a clip that encloses no area keeps the pixels a fill of it marks
         // (see `degenerate_fill_area`), as ISO 32000-2 §10.7.4 says of clipping: "the clipping
         // region consists of the set of pixels that would be included by a fill operation".
-        match degenerate_fill_area(context.path().fast_bounding_box(), ctm) {
+        match degenerate_fill_area(context.path(), ctm) {
             Some(area) => context.push_clip_path(area, FillRule::NonZero, device),
             None => {
                 let clip_path = ctm * context.path().clone();
@@ -57,14 +57,63 @@ pub(crate) fn apply_pending_clip<'a>(context: &mut Context<'a>, device: &mut imp
     }
 }
 
-/// PdfCraft patch (65): the device-space area a fill marks for a path whose bounding box `bbox`
-/// (user space) has exactly no width or exactly no height, but not both, under `ctm`.
-/// ISO 32000-2 §10.7.4 paints "any pixel whose half-open square region intersects the shape, no
-/// matter how small the intersection is", and its example says "A zero-width or zero-height
-/// rectangle paints a line 1 pixel wide". Such a path encloses no area, so the rasteriser marks
-/// nothing: the fill used to fall back to a thinnest-line stroke along the box (half-covering two
-/// rows when the line fell on a pixel boundary), and a clip of it hid everything painted after it.
-/// A box with area, however thin, is not one of these: scaled up it can cover many pixels.
+/// PdfCraft patch (65): the device-space area a fill marks for a path whose bounding box (user
+/// space) has exactly no width or exactly no height, but not both, under `ctm`: one area per
+/// subpath (see `degenerate_line_area`), kept as separate subpaths of one path, so a gap between
+/// two subpaths on the same line stays unpainted (ISO 32000-2 §10.7.4 marks only the pixels the
+/// shape touches). Every area winds the same way, so the non-zero rule paints their union. `None`
+/// for a path with area, a path that is a point, or one none of whose subpaths is a line: those
+/// paint as before.
+pub(crate) fn degenerate_fill_area(path: &BezPath, ctm: Affine) -> Option<BezPath> {
+    let bbox = path.fast_bounding_box();
+    if (bbox.width() == 0.0) == (bbox.height() == 0.0) {
+        return None;
+    }
+    let mut area = BezPath::new();
+    let mut add = |subpath: &BezPath| {
+        if subpath.elements().is_empty() {
+            return;
+        }
+        let Some(mut corners) = degenerate_line_area(subpath.fast_bounding_box(), ctm) else {
+            return;
+        };
+        // Shoelace: wind every area the same way, so overlapping ones add up under non-zero.
+        let twice_area: f64 = (0..4)
+            .map(|i| {
+                let (p, q) = (corners[i], corners[(i + 1) % 4]);
+                p.x * q.y - q.x * p.y
+            })
+            .sum();
+        if twice_area < 0.0 {
+            corners.reverse();
+        }
+        area.move_to(corners[0]);
+        for corner in &corners[1..] {
+            area.line_to(*corner);
+        }
+        area.close_path();
+    };
+    let mut subpath = BezPath::new();
+    for el in path.elements() {
+        if matches!(el, PathEl::MoveTo(_)) {
+            add(&subpath);
+            subpath.truncate(0);
+        }
+        subpath.push(*el);
+    }
+    add(&subpath);
+    (!area.elements().is_empty()).then_some(area)
+}
+
+/// PdfCraft patch (65): the corners of the device-space area a fill marks for one subpath whose
+/// bounding box `bbox` (user space) has exactly no width or exactly no height, but not both,
+/// under `ctm`. ISO 32000-2 §10.7.4 paints "any pixel whose half-open square region intersects
+/// the shape, no matter how small the intersection is", and its example says "A zero-width or
+/// zero-height rectangle paints a line 1 pixel wide". Such a path encloses no area, so the
+/// rasteriser marks nothing: the fill used to fall back to a thinnest-line stroke along the box
+/// (half-covering two rows when the line fell on a pixel boundary), and a clip of it hid
+/// everything painted after it. A box with area, however thin, is not one of these: scaled up it
+/// can cover many pixels.
 ///
 /// When the line stays within one device row or column (counting a line less than 1/256 of a
 /// pixel across as lying exactly along the axis, at its middle), the area is the run of whole
@@ -73,8 +122,8 @@ pub(crate) fn apply_pending_clip<'a>(context: &mut Context<'a>, device: &mut imp
 /// rows and columns) it is a band one device pixel wide centred on the line, like the thinnest
 /// line of §8.4.3.2, so each row or column is marked only where the line runs through it. `None`
 /// for a box with area, a point (both sides zero), a non-finite box, or a `ctm` that collapses
-/// the line to a point: those paint as before.
-pub(crate) fn degenerate_fill_area(bbox: Rect, ctm: Affine) -> Option<BezPath> {
+/// the line to a point.
+fn degenerate_line_area(bbox: Rect, ctm: Affine) -> Option<[Point; 4]> {
     let flat_x = bbox.width() == 0.0;
     let flat_y = bbox.height() == 0.0;
     if flat_x == flat_y {
@@ -94,16 +143,10 @@ pub(crate) fn degenerate_fill_area(bbox: Rect, ctm: Affine) -> Option<BezPath> {
     let (x0, x1) = touched_pixels(device.x0, device.x1);
     let (y0, y1) = touched_pixels(device.y0, device.y1);
     if x1 - x0 <= 1.0 || y1 - y0 <= 1.0 {
-        return Some(Rect::new(x0, y0, x1, y1).to_path(0.1));
+        return Some([Point::new(x0, y0), Point::new(x1, y0), Point::new(x1, y1), Point::new(x0, y1)]);
     }
     let half = Vec2::new(-along.y, along.x) * (0.5 / length);
-    let mut band = BezPath::new();
-    band.move_to(a + half);
-    band.line_to(b + half);
-    band.line_to(b - half);
-    band.line_to(a - half);
-    band.close_path();
-    Some(band)
+    Some([a + half, b + half, b - half, a - half])
 }
 
 /// PdfCraft patch (65): the device pixel boundaries `(first, end)` of the pixels a span `lo..=hi`
@@ -154,7 +197,7 @@ pub(crate) fn fill_path_impl<'a>(
 
         // PdfCraft patch (65): see `degenerate_fill_area`. Painted with the non-zero rule: the
         // area is one simple shape, whatever rule the path was filled with.
-        if let Some(area) = degenerate_fill_area(bbox, base_transform) {
+        if let Some(area) = degenerate_fill_area(path, base_transform) {
             let draw_mode = PathDrawMode::Fill(FillRule::NonZero);
             if let Some(rect) = path_as_rect(&area) {
                 device.draw_rect(&rect, Affine::IDENTITY, &paint, &draw_mode);

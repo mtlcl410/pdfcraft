@@ -232,3 +232,22 @@ fn a_slanted_zero_height_line_crossing_a_row_marks_each_row_only_where_it_runs()
         assert!((90.0..=110.0).contains(&ink), "{what}: ink {ink}");
     }
 }
+
+#[test]
+fn disconnected_subpaths_on_one_line_leave_the_gap_between_them_unpainted() {
+    // Two zero-height subpaths on user y = 50 (device row 150), x 10..30 and 60..90: the fill
+    // and the clip mark the pixels each subpath touches, not the gap between them.
+    let mut expected = Vec::new();
+    for x in (10..30).chain(60..90) {
+        expected.push((x, 150));
+    }
+    let fill = render("1 0 0 rg 10 50 m 30 50 l 60 50 m 90 50 l f");
+    let clip = render(&format!("q 10 50 m 30 50 l 60 50 m 90 50 l W n {FLOOD} Q"));
+    for (rgba, what) in [(&fill, "fill"), (&clip, "clip")] {
+        assert_eq!(red_pixels(rgba), expected, "{what}: the red pixels");
+        assert_eq!(tinted_pixels(rgba), 0, "{what}: partly covered pixels");
+    }
+    // Overlapping subpaths drawn in opposite directions still paint their union under either rule.
+    let fill = render("1 0 0 rg 10 50 m 60 50 l 90 50 m 40 50 l f*");
+    assert_only_red_run(&fill, (10, 90), (150, 151), "overlapping subpaths");
+}
