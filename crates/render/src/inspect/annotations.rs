@@ -15,11 +15,13 @@ const MAX_REMOTE_DESTINATION_NAME_BYTES: usize = 1024;
 /// are not listed: real comments stay far below, many small ones sharing one long string do not.
 pub(super) const MAX_ANNOTATION_BYTES: usize = 64 << 20;
 
-/// Web-address text the link listing, and name, description and embedded-file key text the
-/// attachment listing, keep together. Many links or attachments can share one long string, which
-/// each would otherwise copy. Past it, a link to a web address lists as a URI action without its
-/// address, an attachment under its generic name without a description, and an embedded file whose
-/// key does not fit is not listed.
+/// Web-address text and `/QuadPoints` geometry the link listing, and name, description and
+/// embedded-file key text the attachment listing, keep together. Many links or attachments can
+/// share one long string or array, which each would otherwise copy. Past it, a link to a web
+/// address lists as a URI action without its address (or keeps a relative address unresolved
+/// against the document's base), a link is active over its whole `/Rect`, an attachment is listed
+/// under its generic name without a description, and an embedded file whose key does not fit is
+/// not listed.
 pub(super) const MAX_LINK_ATTACHMENT_TEXT_BYTES: usize = 16 << 20;
 
 /// The bytes a listed annotation keeps.
@@ -101,7 +103,7 @@ impl<'a> Inspector<'a> {
                 info.attachments.push(self.attachment(fs, AttachmentSource::Annotation { page, index }, text_budget, fallback));
             }
             if subtype == "Link" {
-                if let Some(link) = self.link(page, index, d, text_budget) {
+                if let Some(link) = self.link(page, index, d, info.uri_base.as_deref(), text_budget) {
                     if matches!(&link.target, LinkTarget::Other(s) if s == "JavaScript") {
                         info.has_javascript = true;
                     }
@@ -192,7 +194,8 @@ impl<'a> Inspector<'a> {
         link_replies(&mut info.annotations);
     }
 
-    fn link(&self, page: usize, index: usize, d: &Dictionary, text_budget: &mut usize) -> Option<Link> {
+    /// `base` is the catalog's `/URI /Base`, which relative URI actions are resolved against.
+    fn link(&self, page: usize, index: usize, d: &Dictionary, base: Option<&str>, text_budget: &mut usize) -> Option<Link> {
         let rect = rect4(self.resolve(d.get(b"Rect").ok()?));
         let target = if let Ok(dest) = d.get(b"Dest") {
             let (page, view) = self.dest(dest, 0)?;
@@ -207,7 +210,15 @@ impl<'a> Inspector<'a> {
                 Some("URI") => {
                     let uri = a.get(b"URI").ok().and_then(|u| self.resolve(u).as_str().ok())?;
                     match spend(uri, text_budget, |b| String::from_utf8_lossy(b).into_owned()) {
-                        Some(uri) => LinkTarget::Uri(uri),
+                        Some(uri) => match crate::resolve_uri(base, &uri) {
+                            // The raw address is spent already. What the base adds is spent too, or
+                            // the link keeps the raw address.
+                            Some(resolved) if resolved.len().saturating_sub(uri.len()) <= *text_budget => {
+                                *text_budget = text_budget.saturating_sub(resolved.len().saturating_sub(uri.len()));
+                                LinkTarget::Uri(resolved)
+                            }
+                            _ => LinkTarget::Uri(uri),
+                        },
                         None => LinkTarget::Other("URI".into()),
                     }
                 }
@@ -218,7 +229,24 @@ impl<'a> Inspector<'a> {
                 None => return None,
             }
         };
-        Some(Link { page, index, rect, target })
+        let quads = match d.get(b"QuadPoints").map(|o| self.resolve(o)) {
+            // Read no further than one value past the cap: a longer array isn't used.
+            Ok(Object::Array(q)) if q.len() <= crate::MAX_LINK_QUADS.saturating_mul(8) => {
+                let values: Vec<Option<f32>> = q.iter().map(|o| self.resolve(o).as_float().ok()).collect();
+                let quads = crate::link_quads(&values, rect);
+                // Many links can share one long array, which each would otherwise copy. Past the
+                // budget a link is active over its whole `/Rect`.
+                let bytes = std::mem::size_of_val(quads.as_slice());
+                if bytes <= *text_budget {
+                    *text_budget = text_budget.saturating_sub(bytes);
+                    quads
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
+        Some(Link { page, index, rect, quads, target })
     }
 
     fn remote_go_to(&self, action: &Dictionary) -> Option<LinkTarget> {
