@@ -395,10 +395,21 @@ impl PdfCraftApp {
     /// tab all the same.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn combine_paths(&mut self, paths: &[String]) {
-        // A file still opening from before (another launch's Open) opens in the background, so
-        // finishing doesn't hide the tab shown here; a later Open still comes to the front.
+        // A file still opening from before (another launch's Open), or waiting for its password,
+        // opens in the background, so finishing doesn't hide the tab shown here; a later Open
+        // still comes to the front. An open that something waits on keeps its focus: a chosen
+        // tool, a link's destination or a recovery runs on the document once it is in front.
         for pending in &mut self.pending_opens {
-            pending.activate = false;
+            if pending.then.is_none() && pending.after_open.is_none() && pending.recovered.is_none() {
+                pending.activate = false;
+            }
+        }
+        if let Some(prompt) = self.password_prompt.as_mut()
+            && prompt.then.is_none()
+            && prompt.after_open.is_none()
+            && prompt.recovered.is_none()
+        {
+            prompt.activate = false;
         }
         self.open_combine_tab();
         let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
