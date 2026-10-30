@@ -108,10 +108,25 @@ impl Layouter<'_> {
                         // A repeating subform here (rows of fields under a heading) gets its
                         // instances, as in the other layouts.
                         let (placed, _) = self.pack_instances(&s.children, inner.w, &ctx, depth, &ctx.som);
-                        for (i, instance, r) in placed {
-                            if let Some(k) = s.children.get(i) {
+                        for (at, r) in placed {
+                            // Down the steps: a member of a `subformSet` takes the set's SOM path.
+                            let (mut nodes, mut node_ctx, mut node_depth) = (s.children.as_slice(), ctx.clone(), depth + 1);
+                            let mut target = None;
+                            for (step, &(i, instance)) in at.iter().enumerate() {
+                                let Some(k) = nodes.get(i) else { break };
+                                let sib = SomIndices::of(nodes).at(i) + instance;
+                                match k {
+                                    Node::Subform(set) if set.set && step + 1 < at.len() => {
+                                        node_ctx = node_ctx.with_som(&set.common, sib);
+                                        nodes = &set.children;
+                                        node_depth += 1;
+                                    }
+                                    _ => target = Some((k, sib)),
+                                }
+                            }
+                            if let Some((k, sib)) = target {
                                 let x = if s.layout == Layout::RlTb { inner.right() - r.x - r.w } else { inner.x + r.x };
-                                self.draw_node(k, Rect::new(x, inner.y + r.y, r.w, r.h), &ctx, depth + 1, sibs.at(i) + instance)?;
+                                self.draw_node(k, Rect::new(x, inner.y + r.y, r.w, r.h), &node_ctx, node_depth, sib)?;
                             }
                         }
                     }

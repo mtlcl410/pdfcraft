@@ -646,6 +646,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
         break_before_page: break_to_page("breakBefore")
             || child(n, "break").is_some_and(|b| b.attribute("before").is_some_and(|v| v == "pageArea" || v == "contentArea")),
         break_after_page: break_to_page("breakAfter"),
+        set: false,
         column_widths,
         overflow_leader: child(n, "overflow").and_then(|o| o.attribute("leader")).map(str::to_string).filter(|s| !s.is_empty()),
     }
@@ -663,7 +664,9 @@ fn parse_node(c: XmlNode, warnings: &mut Vec<String>, depth: usize, parent: Layo
         // table or a row they go one under another.
         "subformSet" => {
             let layout = if matches!(parent, Layout::Table | Layout::Row) { Layout::Tb } else { parent };
-            Node::Subform(Box::new(parse_subform(c, warnings, depth, Some(layout))))
+            let mut set = parse_subform(c, warnings, depth, Some(layout));
+            set.set = true;
+            Node::Subform(Box::new(set))
         }
         "area" => Node::Area(Box::new(Area {
             common: parse_common(c),
