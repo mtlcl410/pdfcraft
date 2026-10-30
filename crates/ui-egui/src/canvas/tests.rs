@@ -1724,6 +1724,20 @@ fn full_screen_two_page_view_fits_the_spread_it_shows() {
     v.fit_zoom(&info);
     let mixed_fit = ((v.viewport_w - v.page_gap()) / (900.0 * PT)).min(v.viewport_h / (800.0 * PT));
     assert!((v.zoom - mixed_fit).abs() < 1e-4 && v.zoom > edge_to_edge, "page 2 shares a spread with the large page 3: {} vs {mixed_fit}", v.zoom);
+    // And the content is as wide as that spread, so the spread is centred on the screen: room for
+    // twice the larger page would centre it past the screen's right edge.
+    let content_w = v.content_width(&info, v.viewport_w);
+    let rects = v.layout(&info, content_w, 1.0);
+    let (left, right) = (rects[1].min.x, rects[2].max.x);
+    assert!(content_w <= v.viewport_w + 0.5, "the spread needs no scrolling: {content_w}");
+    assert!(left >= -0.5 && right <= v.viewport_w + 0.5, "the spread is on the screen: {left}..{right}");
+    assert!((left - (v.viewport_w - right)).abs() < 1.0, "and centred: {left}..{right}");
+    // The cover alone keeps its spread's blank slot, and is on the screen too.
+    v.current = 0;
+    v.fit_zoom(&info);
+    let content_w = v.content_width(&info, v.viewport_w);
+    let cover = v.layout(&info, content_w, 1.0)[0];
+    assert!(cover.min.x >= v.viewport_w / 2.0 && cover.max.x <= v.viewport_w + 0.5, "the cover sits on the right: {cover:?}");
     // Scrolling while in full screen fits the document, as scrolling does in the window.
     (v.continuous, v.current) = (true, 0);
     v.fit_zoom(&info);

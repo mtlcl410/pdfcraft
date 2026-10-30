@@ -290,6 +290,17 @@ impl DocView {
         if self.cover { c.saturating_sub((c + 1) % 2) } else { c - c % 2 }
     }
 
+    /// The display sizes of the spread full screen shows in two-page view (one spread at a time):
+    /// its two pages, or one alone. `None` in every other display.
+    fn full_screen_spread(&self, info: &DocInfo) -> Option<Vec<(f32, f32)>> {
+        if self.presentation.is_none() || self.layout != PageLayout::TwoUp || self.continuous {
+            return None;
+        }
+        let first = self.spread_first(self.current);
+        let last = if self.cover && first == 0 { 0 } else { first.saturating_add(1) };
+        Some(info.pages.iter().skip(first).take(last - first + 1).map(|p| self.display_size(p)).collect())
+    }
+
     pub(super) fn fit_zoom(&mut self, info: &DocInfo) {
         let largest = |side: fn((f32, f32)) -> f32| info.pages.iter().map(|p| side(self.display_size(p))).fold(1.0, f32::max);
         let max_w = largest(|s| s.0);
@@ -301,10 +312,7 @@ impl DocView {
         let mut spread_w = None;
         let (w, h) = if self.layout == PageLayout::Single && !self.continuous {
             info.pages.get(self.current).map_or_else(|| (max_w, largest(|s| s.1)), |p| self.display_size(p))
-        } else if self.presentation.is_some() && self.layout == PageLayout::TwoUp && !self.continuous {
-            let first = self.spread_first(self.current);
-            let last = if self.cover && first == 0 { 0 } else { first.saturating_add(1) };
-            let spread: Vec<(f32, f32)> = info.pages.iter().skip(first).take(last - first + 1).map(|p| self.display_size(p)).collect();
+        } else if let Some(spread) = self.full_screen_spread(info) {
             if spread.is_empty() {
                 (max_w, largest(|s| s.1))
             } else {
@@ -334,6 +342,18 @@ impl DocView {
     /// Width of the scroll content. Single-page view sizes it to the page it shows, so a
     /// wider page elsewhere in the document can't push the shown one off-centre.
     pub(super) fn content_width(&self, info: &DocInfo, avail_w: f32) -> f32 {
+        // Full screen in two-page view is as wide as the spread it shows, as `fit_zoom` sized it:
+        // two pages side by side, or a page alone with the room of a spread (a cover keeps its
+        // blank slot). Room for twice the document's widest page would centre a narrower spread
+        // past the screen's edge.
+        if let Some(spread) = self.full_screen_spread(info).filter(|s| !s.is_empty()) {
+            let s = self.zoom * PT;
+            let w = match spread.as_slice() {
+                [a, b] => (a.0 + b.0) * s,
+                _ => spread.iter().map(|p| p.0).fold(0.0, f32::max) * s * 2.0,
+            };
+            return (w + self.page_gap() + 2.0 * self.side()).max(avail_w);
+        }
         let single = (self.layout == PageLayout::Single && !self.continuous).then(|| self.current.min(info.pages.len().saturating_sub(1)));
         let shown = info.pages.iter().enumerate().filter(|&(i, _)| single.is_none_or(|c| c == i));
         let max_w = shown.map(|(_, p)| self.display_size(p).0).fold(0.0, f32::max);
