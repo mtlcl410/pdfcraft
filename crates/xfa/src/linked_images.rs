@@ -17,8 +17,12 @@ const MAX_NAMES: usize = 4096;
 const MAX_DEPTH: usize = 32;
 /// Largest picture taken from the file, as for a picture written into the template.
 const MAX_IMAGE: usize = 32 << 20;
-/// Most bytes of pictures taken from the file in all.
+/// Most bytes of pictures taken from the file in all, each place a picture is used counted (a
+/// picture is held once per place). Small in tests, so a test can reach it.
+#[cfg(not(test))]
 const MAX_TOTAL: usize = 128 << 20;
+#[cfg(test)]
+const MAX_TOTAL: usize = 1 << 10;
 /// Deepest the template is walked.
 const MAX_TEMPLATE_DEPTH: usize = 256;
 
@@ -34,8 +38,12 @@ fn names(doc: &Document) -> HashMap<String, Object> {
     let mut visited = 0usize;
     let mut stack = vec![(tree, 0usize)];
     while let Some((node, depth)) = stack.pop() {
-        if depth > MAX_DEPTH || visited >= MAX_TREE_NODES || out.len() >= MAX_NAMES {
+        if visited >= MAX_TREE_NODES || out.len() >= MAX_NAMES {
             break;
+        }
+        // Too deep: this branch is left, the others are still walked.
+        if depth > MAX_DEPTH {
+            continue;
         }
         visited += 1;
         if let Some(r) = node.as_ref()
@@ -74,14 +82,20 @@ struct Found<'a> {
 }
 
 impl Found<'_> {
-    /// The bytes of the picture linked as `href`, when the file holds it.
+    /// A copy of the picture linked as `href` for one more place, when the file holds it and the
+    /// copies so far leave room for it under [`MAX_TOTAL`].
     fn get(&mut self, href: &str) -> Option<Vec<u8>> {
-        if let Some(data) = self.read.get(href) {
-            return data.clone();
+        if !self.read.contains_key(href) {
+            let data = self.load(href);
+            self.read.insert(href.to_string(), data);
         }
-        let data = self.load(href);
-        self.read.insert(href.to_string(), data.clone());
-        data
+        let len = self.read.get(href).and_then(Option::as_ref).map(Vec::len)?;
+        if self.total.saturating_add(len) > MAX_TOTAL {
+            self.warnings.push("the pictures the form keeps in the file take too much memory in all; the rest are left out".into());
+            return None;
+        }
+        self.total = self.total.saturating_add(len);
+        self.read.get(href).cloned().flatten()
     }
 
     fn load(&mut self, href: &str) -> Option<Vec<u8>> {
@@ -95,11 +109,6 @@ impl Found<'_> {
                 return None;
             }
         };
-        if self.total.saturating_add(data.len()) > MAX_TOTAL {
-            self.warnings.push("the pictures the form keeps in the file are larger than 128 MB in all; the rest are left out".into());
-            return None;
-        }
-        self.total = self.total.saturating_add(data.len());
         Some(data)
     }
 

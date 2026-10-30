@@ -4202,3 +4202,47 @@ fn a_hostile_xfa_images_tree_is_walked_once_and_gives_nothing() {
         assert_eq!(images, 0, "no picture drawn");
     }
 }
+
+/// An over-deep branch of the `XFAImages` tree is left on its own: the walk goes on to the
+/// branches beside it, and the picture one of them holds is found.
+#[test]
+fn an_over_deep_xfa_images_branch_does_not_stop_the_walk() {
+    let mut deep = String::from("<< /Names [(x) 8 0 R] >>");
+    for _ in 0..40 {
+        deep = format!("<< /Kids [{deep}] >>");
+    }
+    // The deep branch is listed last, so it is walked first.
+    let root = format!("<< /Kids [7 0 R {deep}] >>");
+    let doc = Document::open(Arc::new(crate::fixtures::linked_image_shell_with(root.as_bytes(), br"<< /Names [(.\\logo.png) 8 0 R] >>"))).unwrap();
+    let tpl = crate::script::template_of(&doc).unwrap();
+    let logo = tpl.root.children.iter().find_map(|n| match n {
+        Node::Subform(s) => s.children.iter().find_map(|c| match c {
+            Node::Draw(d) if d.common.name.as_deref() == Some("logo") => Some(d.value.clone()),
+            _ => None,
+        }),
+        _ => None,
+    });
+    assert!(matches!(logo, Some(Value::Image { data, .. }) if !data.is_empty()), "the logo is found beside the deep branch");
+}
+
+/// A picture used in many places is held once per place, so every place counts against the
+/// pictures' total (small in tests): past it the rest are left out, with a warning.
+#[test]
+fn a_linked_picture_used_in_many_places_counts_each_place() {
+    let doc = Document::open(Arc::new(crate::fixtures::linked_image_shell())).unwrap();
+    let draws: String = (0..30)
+        .map(|i| format!(r#"<draw name="d{i}" w="1in" h="1in"><value><image contentType="image/png" href=".\logo.png"/></value></draw>"#))
+        .collect();
+    let xml = format!(
+        r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+ <pageSet><pageArea name="p"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ {draws}</subform></template>"#
+    );
+    let (mut tpl, _) = crate::parse(&xml).unwrap();
+    let warnings = crate::linked_images::resolve(&mut tpl, &doc);
+    let filled =
+        tpl.root.children.iter().filter(|n| matches!(n, Node::Draw(d) if matches!(&d.value, Value::Image { data, .. } if !data.is_empty()))).count();
+    let one = crate::fixtures::tiny_png().len();
+    assert_eq!(filled, (1 << 10) / one, "as many places as the total holds");
+    assert!(warnings.iter().any(|w| w.contains("too much memory")), "{warnings:?}");
+}
