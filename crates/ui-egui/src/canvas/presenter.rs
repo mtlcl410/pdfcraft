@@ -121,7 +121,10 @@ pub(super) fn frame(
             let from = view.pages.get(&from_page)?.tex.clone();
             Some(Turn { from_page, from, to_page: page, effect, seconds, started: None })
         });
-        view.presenter.shown = if turn.is_some() { None } else { Some((page, now)) };
+        // Its display time starts once the page is on screen, not while it still says Rendering…
+        // (or at once for a page the renderer can't draw, which never will be).
+        let ready = view.pages.contains_key(&page) || view.errors.contains_key(&page);
+        view.presenter.shown = if turn.is_some() || !ready { None } else { Some((page, now)) };
         view.presenter.turn = turn;
     }
 

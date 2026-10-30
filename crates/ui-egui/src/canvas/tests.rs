@@ -2103,6 +2103,8 @@ fn a_display_time_on_the_last_spread_does_not_redraw_every_frame() {
     v.enter_presentation();
     v.current = 2;
     let ctx = egui::Context::default();
+    let tex = ctx.load_texture("page", egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), Default::default());
+    v.pages.insert(2, super::cache::PageTex { tag: 0, tex });
     // egui asks for its first frames itself: past them, only the presenter asks.
     for now in [0.0, 0.5, 0.6] {
         presenter_frame(&ctx, &mut v, &info, now);
@@ -2110,4 +2112,38 @@ fn a_display_time_on_the_last_spread_does_not_redraw_every_frame() {
     let again = presenter_frame(&ctx, &mut v, &info, 5.0);
     assert_eq!(v.current, 2, "the last spread stays");
     assert!(!again, "and asks for no frame after frame");
+}
+
+/// A page's display time (ISO 32000-2 §12.4.4.1, `/Dur`) counts from when the page is on screen:
+/// a slow render that still shows Rendering… does not use it up.
+#[test]
+fn a_display_time_starts_once_the_page_has_rendered() {
+    use pdfcraft_render::PageTransition;
+    let page = pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 };
+    let timed = PageTransition {
+        page: 0,
+        style: None,
+        duration: 1.0,
+        horizontal: false,
+        inward: false,
+        direction: Some(0),
+        scale: 1.0,
+        opaque: false,
+        display: Some(1.0),
+    };
+    let info = DocInfo { pages: vec![page.clone(), page], transitions: vec![timed], ..Default::default() };
+    let mut v = DocView::new(DocId(1), &info, ViewDefaults { layout: PageLayout::Single, continuous: false, ..Default::default() });
+    v.enter_presentation();
+    let ctx = egui::Context::default();
+    for now in [0.0, 1.0, 2.0, 5.0] {
+        presenter_frame(&ctx, &mut v, &info, now);
+    }
+    assert_eq!(v.current, 0, "page 1 is still rendering: its second has not started");
+    let tex = ctx.load_texture("page", egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), Default::default());
+    v.pages.insert(0, super::cache::PageTex { tag: 0, tex });
+    presenter_frame(&ctx, &mut v, &info, 5.5);
+    presenter_frame(&ctx, &mut v, &info, 6.0);
+    assert_eq!(v.current, 0, "half of its second on screen");
+    presenter_frame(&ctx, &mut v, &info, 6.6);
+    assert_eq!(v.current, 1, "its second on screen is up");
 }

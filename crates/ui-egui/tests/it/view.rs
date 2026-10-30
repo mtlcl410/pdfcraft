@@ -2398,7 +2398,30 @@ fn full_screen_plays_a_page_transition_and_honours_the_display_time() {
     h.run_steps(1);
     assert_eq!(h.state().views[0].current, 1);
     assert!(h.state().views[0].presenting_a_transition(), "page 2 comes in with its Wipe");
-    let frames = frames_until(&mut h, |a| !a.views[0].presenting_a_transition());
+    // The Wipe is painted, not only timed: once page 2 has rendered, a frame shows a strip of it as
+    // tall as the page and only part of its width.
+    let wipe_strip = |h: &Harness<'static, PdfCraftApp>| {
+        h.state().views[0].page_screen_rect(1).is_some_and(|page| {
+            h.output().shapes.iter().any(|clipped| {
+                let egui::Shape::Mesh(mesh) = &clipped.shape else { return false };
+                let b = mesh.calc_bounds();
+                mesh.texture_id != egui::TextureId::default()
+                    && (b.min.x - page.min.x).abs() < 1.0
+                    && (b.min.y - page.min.y).abs() < 1.0
+                    && (b.max.y - page.max.y).abs() < 1.0
+                    && b.width() > 1.0
+                    && b.width() < page.width() - 1.0
+            })
+        })
+    };
+    let mut steps = 0;
+    while !wipe_strip(&h) && steps < 300 {
+        h.run_steps(1);
+        steps += 1;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(wipe_strip(&h), "the Wipe paints part of page 2 ({steps} frames)");
+    let frames = steps + frames_until(&mut h, |a| !a.views[0].presenting_a_transition());
     assert!(frames >= 9, "the Wipe takes its second ({frames} frames of 0.1 s)");
     assert_eq!(h.state().views[0].current, 1, "still page 2 when the transition ends");
     h.run_steps(5);
