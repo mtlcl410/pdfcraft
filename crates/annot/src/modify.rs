@@ -2,7 +2,7 @@ use super::create::{
     add_annotation, base_dict, bounds, callout_attach, ending_draws, ending_pair, finite, grow, normalize, num_array, rect_for, rgb,
 };
 use super::draw::{draw_appearance, redraw_or_restore, set_appearance};
-use super::info::{line_endings_of, text_value};
+use super::info::{MAX_GROUP_DEPTH, group_primary, is_group_subordinate, line_endings_of, text_value};
 use super::lookup::{annot_dict, annot_ref, annotation_flags, annots, page_ref, set_annots};
 use super::types::{
     FLAG_HIDDEN, FLAG_LOCKED, FLAG_NO_ROTATE, FLAG_NO_ZOOM, FLAG_PRINT, LineEnding, Markup, Meta, NewAnnotation, ReviewState, Rgb, Shape, Style,
@@ -70,33 +70,57 @@ pub(crate) fn touch(d: &mut Dict, meta: &Meta) {
 }
 
 /// Delete a comment together with its pop-up and its replies (and theirs), as Acrobat does.
-/// Refused while it, or a reply that would go with it, is locked.
+/// Refused while it, or a reply that would go with it, is locked. A comment in a group
+/// (`/RT /Group`) takes the whole group with it: deleting a subordinate deletes its primary, and
+/// with it every member (ISO 32000-2 §12.5.6.2). A subordinate whose primary is too far up its
+/// `/IRT` chain to find is refused rather than deleted with only part of its group, and so is a
+/// group with a locked member.
 pub fn delete_annotation(doc: &mut Document, page: usize, index: usize) -> Result<(), AnnotError> {
-    deletable(doc, page, index)?;
+    let index = deleted_index(doc, page, index)?;
     lift_annotation(doc, page, index)
 }
 
 /// Whether [`delete_annotation`] deletes the annotation at `(page, index)`, or why not, without
 /// changing anything: what a Delete command asks before it is offered. It is refused while the
-/// annotation is locked, or a reply that would go with it is.
+/// annotation is locked, or a reply (or group member) that would go with it is.
 pub fn deletable(doc: &Document, page: usize, index: usize) -> Result<(), AnnotError> {
+    deleted_index(doc, page, index).map(|_| ())
+}
+
+/// [`deletable`], returning the index [`delete_annotation`] deletes from: the group's primary for
+/// a group subordinate, else `index`.
+fn deleted_index(doc: &Document, page: usize, index: usize) -> Result<usize, AnnotError> {
     let list = annots(doc, page_ref(doc, page)?);
-    let target = list.get(index).ok_or(AnnotError::NoSuchAnnotation { page, index })?;
+    let mut target = list.get(index).ok_or(AnnotError::NoSuchAnnotation { page, index })?;
+    let mut index = index;
     if let Some(r) = target.as_ref() {
         unlocked(doc, r)?;
+        let Some(primary) = group_primary(doc, &list, r) else {
+            return Err(AnnotError::Invalid(format!(
+                "this comment can't be deleted: its group's primary is more than {MAX_GROUP_DEPTH} comments up its chain"
+            )));
+        };
+        if primary != r
+            && let Some((i, e)) = list.iter().enumerate().find(|(_, e)| e.as_ref() == Some(primary))
+        {
+            unlocked(doc, primary)?;
+            (target, index) = (e, i);
+        }
     }
     let doomed = with_replies_and_popups(doc, &list, seed(target));
     // A locked reply can't be deleted on its own, so it doesn't go with the comment or reply it
-    // answers either. Pop-ups follow their comment.
+    // answers either; nor does a locked group member keep its place while its group goes
+    // (ISO 32000-2 §12.5.3, Table 167: Locked). Pop-ups follow their comment.
     for (_, e) in list.iter().enumerate().filter(|(i, e)| *i != index && goes_with(e, &doomed)) {
         let obj = doc.resolve(e);
         if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
             && annotation_flags(doc, d) & FLAG_LOCKED != 0
         {
-            return Err(AnnotError::Invalid("a reply to it is locked".into()));
+            let what = if is_group_subordinate(d) { "a comment in its group is locked" } else { "a reply to it is locked" };
+            return Err(AnnotError::Invalid(what.into()));
         }
     }
-    Ok(())
+    Ok(index)
 }
 
 /// Take the annotation at `(page, index)` out of its page with its pop-up and replies, as
@@ -709,11 +733,17 @@ fn pair_points(d: &Dict, key: &[u8]) -> Option<Vec<[f64; 2]>> {
 }
 
 /// Replace Text (Acrobat's proposal): strike out `quads` and add a caret at the end of the
-/// struck text holding `replacement`, grouped with the strikeout (`/IRT` + `/RT /Group`) so they
-/// move, list and delete as one. Returns the strikeout's index.
+/// struck text holding `replacement`, grouped (ISO 32000-2 §12.5.6.2) so they list, select and
+/// delete as one. Returns the caret's index, the group's comment.
+///
+/// The caret is the group's primary: it holds `replacement` in `/Contents` and has `/IT
+/// /Replace`. The strikeout is its subordinate (`/IRT` to the caret, `/RT /Group`, `/IT
+/// /StrikeOutTextEdit`) with no `/Contents`, since a reader ignores a subordinate's text.
+/// Groups written before this the other way round (the strikeout primary, the text only on
+/// the caret) still list their text: see `pdfcraft_render::fill_group_text`.
 ///
 /// The two annotations need their own `/NM`: XFDF names a reply by the `/NM` of what it replies
-/// to, so one id for both writes `inreplyto` equal to the caret's own `name`, and a reader that
+/// to, so one id for both writes `inreplyto` equal to the strikeout's own `name`, and a reader that
 /// resolves names (Acrobat, and our own importer) loses the pair. `caret_meta` is a second id
 /// from the caller, so the edit stays deterministic.
 pub fn add_text_replacement(doc: &mut Document, replacement: TextReplacement<'_>) -> Result<usize, AnnotError> {
@@ -731,7 +761,6 @@ pub fn add_text_replacement(doc: &mut Document, replacement: TextReplacement<'_>
         meta,
     )?;
     let (_, sr) = annot_ref(doc, page, s)?;
-    doc.update_dict(sr, |d| d.set(b"IT".to_vec(), Object::name("StrikeOutTextEdit")))?;
     // The caret sits on the baseline at the end of the last line, its point at the text.
     let xs = [last[0], last[2], last[4], last[6]];
     let ys = [last[1], last[3], last[5], last[7]];
@@ -746,11 +775,16 @@ pub fn add_text_replacement(doc: &mut Document, replacement: TextReplacement<'_>
     )?;
     let (_, cr) = annot_ref(doc, page, c)?;
     doc.update_dict(cr, |d| {
-        d.set(b"IRT".to_vec(), Object::Ref(sr));
-        d.set(b"RT".to_vec(), Object::name("Group"));
+        d.set(b"IT".to_vec(), Object::name("Replace"));
         d.set(b"Subj".to_vec(), PdfString::text("Replace Text"));
     })?;
-    Ok(s)
+    doc.update_dict(sr, |d| {
+        d.set(b"IT".to_vec(), Object::name("StrikeOutTextEdit"));
+        d.set(b"IRT".to_vec(), Object::Ref(cr));
+        d.set(b"RT".to_vec(), Object::name("Group"));
+        d.remove(b"Contents");
+    })?;
+    Ok(c)
 }
 
 /// The Eraser (Draw tools): remove the parts of drawing `(page, index)` within `radius` points

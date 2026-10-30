@@ -23,7 +23,8 @@ pub struct Summary {
     pub in_reply_to: Option<String>,
     /// The page and `/Annots` position `/IRT` points at, by reference (`/NM` need not be unique).
     pub parent: Option<(usize, usize)>,
-    /// `/RT /Group`: grouped with the `/IRT` annotation (Replace Text's caret), not a reply to it.
+    /// `/RT /Group`: with an `/IRT` reference, a subordinate of the group whose primary that is
+    /// ([`is_group_subordinate`]), not a reply to it.
     pub grouped: bool,
     pub rect: [f32; 4],
     pub color: Option<[f32; 3]>,
@@ -38,6 +39,15 @@ pub struct Summary {
     /// A line's two ends (`/L`), or the corners of connected lines, a polygon or a cloud
     /// (`/Vertices`), in user space; empty for other comments.
     pub points: Vec<[f32; 2]>,
+}
+
+impl Summary {
+    /// A subordinate of a group (`/RT /Group` with an `/IRT` to a listed comment, ISO 32000-2
+    /// §12.5.6.2): part of its primary's comment, not a reply. As
+    /// `pdfcraft_render::Annotation::is_group_member`, which also drops a looping `/IRT`.
+    pub fn is_group_member(&self) -> bool {
+        self.grouped && self.parent.is_some()
+    }
 }
 
 pub(crate) fn text_value(doc: &Document, d: &Dict, key: &[u8]) -> Option<String> {
@@ -68,6 +78,38 @@ fn final_ref(doc: &Document, mut r: ObjRef) -> ObjRef {
         }
     }
     r
+}
+
+/// Whether an annotation is a subordinate of a group rather than a reply: `/RT /Group` with an
+/// `/IRT` reference (ISO 32000-2 §12.5.6.2, Table 172). The group's primary is the `/IRT`
+/// annotation, and the subordinate's own text, author, colour, dates and pop-up are ignored.
+/// `/RT` is `R` by default, and a value other than `Group` reads as `R` too. Keep in step with
+/// `pdfcraft_render::inspect`.
+pub fn is_group_subordinate(d: &Dict) -> bool {
+    d.name(b"RT") == Some(b"Group") && d.reference(b"IRT").is_some()
+}
+
+/// How far a group subordinate's `/IRT` chain is followed to its primary.
+pub(crate) const MAX_GROUP_DEPTH: usize = 64;
+
+/// The primary of the group `r` belongs to: up the `/IRT` chain while it leads to another
+/// subordinate in `list` (one page's `/Annots`). `r` itself when it is not a subordinate, or
+/// when its primary is not on the page; the chain stops at a loop. `None` when it is still
+/// on a subordinate after [`MAX_GROUP_DEPTH`] annotations: the group's primary is unknown, as
+/// `pdfcraft_render::inspect::group_primaries` reads it (keep the two in step).
+pub(crate) fn group_primary(doc: &Document, list: &[Object], r: ObjRef) -> Option<ObjRef> {
+    let mut seen = vec![r];
+    let mut at = r;
+    for _ in 0..MAX_GROUP_DEPTH {
+        let obj = doc.get(at);
+        let Some(next) = obj.as_dict().filter(|d| is_group_subordinate(d)).and_then(|d| d.reference(b"IRT")) else { return Some(at) };
+        if seen.contains(&next) || !list.iter().any(|e| e.as_ref() == Some(next)) {
+            return Some(at);
+        }
+        seen.push(next);
+        at = next;
+    }
+    None
 }
 
 /// Every comment (see [`is_comment_subtype`]), ordered by page and then top edge.
