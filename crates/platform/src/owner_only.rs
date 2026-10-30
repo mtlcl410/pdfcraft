@@ -4,7 +4,9 @@
 //! A file created in a folder inherits the folder's access list, and folders such as a new folder
 //! at a drive root, `C:\Users\Public` or `C:\ProgramData` let every signed-in user read what is
 //! created in them. [`restrict_to_owner`] replaces the whole list with the current user and
-//! SYSTEM only, makes that user the owner, and checks the result. [`read_with_sddl`] reads a file and
+//! SYSTEM only, makes that user the owner, and checks the result. [`create_private_dir`] does the
+//! same for a new folder whose list the files created in it inherit, so a file can be private from
+//! the moment it exists. [`read_with_sddl`] reads a file and
 //! its security descriptor through one handle. [`foreign_access`] reads the descriptor in SDDL
 //! form, which names accounts by SID and so reads the same in every Windows language, and says why
 //! another user could have written or could read the file. They run the tools Windows ships rather
@@ -133,9 +135,31 @@ fn sid_from_whoami(text: &str) -> Option<String> {
 #[cfg(windows)]
 pub fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
     let me = current_user_sid()?;
-    replace_access_list(path, &me)?;
+    set_access_list(path, &me, Kind::File)?;
     icacls(path, &["/setowner".into(), format!("*{me}")])?;
     still_foreign(&sddl_of(path)?, &me)
+}
+
+/// Create the folder `dir`, which must not exist yet, and give it an access list of the current
+/// user and SYSTEM only, which every file created in it inherits; then make that user its owner
+/// and check the result as [`restrict_to_owner`] does. A file created in it is private from the
+/// moment it exists. Restricting a file after creating it leaves a window in which another user
+/// whom the parent folder lets read it can open a handle, and Windows checks access only when a
+/// handle is opened, so a later change of the list doesn't revoke it (review on #3956). A handle
+/// on the folder itself, opened during the folder's own window, gives no access to the files
+/// created in it later. The folder is removed again when it can't be restricted.
+#[cfg(windows)]
+pub fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir(dir)?;
+    let restricted = current_user_sid().and_then(|me| {
+        set_access_list(dir, &me, Kind::Folder)?;
+        icacls(dir, &["/setowner".into(), format!("*{me}")])?;
+        still_foreign(&sddl_of(dir)?, &me)
+    });
+    if restricted.is_err() {
+        let _ = std::fs::remove_dir(dir);
+    }
+    restricted
 }
 
 /// `Err` naming the problem when the descriptor read back after restricting still isn't `me`'s
@@ -148,17 +172,34 @@ fn still_foreign(sddl: &str, me: &str) -> std::io::Result<()> {
     }
 }
 
-/// Set `path`'s access list to Full control for `me` and SYSTEM and nothing else, protected from
-/// inheritance. Only the list is written, not the owner. `me` and the path reach PowerShell through
-/// environment variables, never as script text.
+/// What [`set_access_list`] restricts: a file, or a folder whose entries the files and folders
+/// created in it inherit.
 #[cfg(windows)]
-fn replace_access_list(path: &std::path::Path, me: &str) -> std::io::Result<()> {
+#[derive(Clone, Copy)]
+enum Kind {
+    File,
+    Folder,
+}
+
+/// Set `path`'s access list to Full control for `me` and SYSTEM and nothing else, protected from
+/// inheritance; on a folder, what is created in it inherits the two entries. Only the list is
+/// written, not the owner. `me` and the path reach PowerShell through environment variables, never
+/// as script text.
+#[cfg(windows)]
+fn set_access_list(path: &std::path::Path, me: &str, kind: Kind) -> std::io::Result<()> {
     // No double quotes: the command line would strip them.
-    const SCRIPT: &str = "$s = New-Object Security.AccessControl.FileSecurity; \
+    const FILE: &str = "$s = New-Object Security.AccessControl.FileSecurity; \
         $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;' + $env:PDFCRAFT_ACL_USER + ')(A;;FA;;;SY)', 'Access'); \
         [IO.File]::SetAccessControl($env:PDFCRAFT_ACL_PATH, $s)";
+    const FOLDER: &str = "$s = New-Object Security.AccessControl.DirectorySecurity; \
+        $s.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;' + $env:PDFCRAFT_ACL_USER + ')(A;OICI;FA;;;SY)', 'Access'); \
+        [IO.Directory]::SetAccessControl($env:PDFCRAFT_ACL_PATH, $s)";
+    let script = match kind {
+        Kind::File => FILE,
+        Kind::Folder => FOLDER,
+    };
     let out = system_tool(POWERSHELL)
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("PDFCRAFT_ACL_PATH", path)
         .env("PDFCRAFT_ACL_USER", me)
         .output()?;
@@ -356,6 +397,31 @@ mod tests {
         let sddl = sddl_of(&file).unwrap();
         assert_eq!(section(&sddl, "O:"), Some(me.as_str()), "{sddl}");
         assert_eq!(foreign_access(&sddl, &me), None, "{sddl}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review on #3956: a file created in a private folder inside a folder that lets Users read
+    /// what's in it is the user's alone from the moment it exists, before anything restricts it.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_created_in_a_private_folder_is_private_from_the_start() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-owner-only-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = std::process::Command::new("icacls").arg(&dir).arg("/grant").arg("*S-1-5-32-545:(OI)(CI)R").output().unwrap();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        let private = dir.join("staging");
+        create_private_dir(&private).unwrap();
+        let me = current_user_sid().unwrap();
+        let folder = sddl_of(&private).unwrap();
+        assert_eq!((section(&folder, "O:"), foreign_access(&folder, &me)), (Some(me.as_str()), None), "{folder}");
+        let file = private.join("ctl.json");
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&file).unwrap();
+        let sddl = sddl_of(&file).unwrap();
+        assert!(!sddl.contains(";BU)") && !sddl.contains(";S-1-5-32-545)"), "Users must not inherit read access: {sddl}");
+        assert_eq!(foreign_access(&sddl, &me), None, "{sddl}");
+        // The name is taken: the folder isn't reused.
+        assert!(create_private_dir(&private).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

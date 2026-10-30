@@ -670,7 +670,9 @@ fn the_control_file_is_owner_only_in_a_folder_other_users_can_read() {
     super::write_control_file(&dir.join("ctl.json").to_string_lossy(), 4242, "t0ken").unwrap();
     let sddl = owner_only::sddl_of(&dir.join("ctl.json")).unwrap();
     assert_eq!(owner_only::foreign_access(&sddl, &me), None, "{sddl}");
-    assert_eq!(written(&dir).0["token"].as_str(), Some("t0ken"));
+    let (json, names) = written(&dir);
+    assert_eq!(json["token"].as_str(), Some("t0ken"));
+    assert_eq!(names, ["ctl.json", "plain.txt"], "no private staging folder left behind");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
