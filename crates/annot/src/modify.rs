@@ -384,7 +384,8 @@ pub fn set_points(doc: &mut Document, page: usize, index: usize, points: &[[f64;
         ("Line", _) => return Err(AnnotError::Invalid("a line has two ends".into())),
         ("PolyLine", _) => (Shape::PolyLine { vertices: points.to_vec(), start, end }, b"Vertices"),
         ("Polygon", _) => {
-            let cloud = d.get(b"BE").and_then(|b| b.as_dict()).is_some_and(|b| b.name(b"S") == Some(b"C"));
+            // Cloudy as the appearance draws it: `/BE /S /C` with an intensity above 0 (Table 169).
+            let cloud = appearance::cloud_intensity(&d).is_some();
             (Shape::Polygon { vertices: points.to_vec(), cloud }, b"Vertices")
         }
         (other, _) => return Err(AnnotError::Invalid(format!("{other} comments have no points to move"))),

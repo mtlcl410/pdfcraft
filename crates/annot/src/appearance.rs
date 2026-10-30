@@ -133,7 +133,7 @@ pub(crate) const MAX_CLOUD_BUMPS: usize = 20_000;
 /// A cloudy border's intensity (ISO 32000-2 §12.5.4, Table 169: `/BE /I`, "in the range 0 to 2.
 /// Default value: 0"), or `None` for no cloud: no `/BE`, a style other than `/C`, or intensity 0,
 /// which draws the border plain.
-fn cloud_intensity(d: &Dict) -> Option<f64> {
+pub(crate) fn cloud_intensity(d: &Dict) -> Option<f64> {
     let be = d.get(b"BE").and_then(|b| b.as_dict())?;
     if be.name(b"S") != Some(b"C") {
         return None;
@@ -169,18 +169,21 @@ fn rect_less_rd(d: &Dict, rect: [f64; 4]) -> Option<[f64; 4]> {
 
 /// The shape a cloudy square, circle or text box draws its bumps around: `/Rect` less `/RD`
 /// (Table 180: the differences between "the left, top, right, and bottom coordinates of Rect and
-/// those of the square or circle, respectively"), kept as given; or, without a usable `/RD`,
-/// less the bumps' greatest reach and half the line, so they stay inside `/Rect`.
+/// those of the square or circle, respectively"), but at least the bumps' greatest reach and half
+/// the line from each side, so they stay inside `/Rect`; without a usable `/RD`, that margin.
 fn cloud_inner(d: &Dict, rect: [f64; 4], bump: f64, w: f64) -> Option<[f64; 4]> {
+    // `cloud_path` rounds each edge to whole bumps, so one may span up to three radii and bulge
+    // 1.5 radii; it also grows the radius to keep within its bump budget. That much margin keeps
+    // the cloud inside `/Rect`; an `/RD` leaving more is followed, one leaving less is not.
+    let perimeter = 2.0 * ((rect[2] - rect[0]) + (rect[3] - rect[1]));
+    let m = 1.5 * bump.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64)) + w / 2.0;
+    let safe = [rect[0] + m, rect[1] + m, rect[2] - m, rect[3] - m];
     let inner = match rd_of(d) {
-        Some(rd) => less_rd(rect, &rd),
-        None => {
-            // `cloud_path` rounds each edge to whole bumps, so one may span up to three radii
-            // and bulge 1.5 radii; it also grows the radius to keep within its bump budget.
-            let perimeter = 2.0 * ((rect[2] - rect[0]) + (rect[3] - rect[1]));
-            let m = 1.5 * bump.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64)) + w / 2.0;
-            [rect[0] + m, rect[1] + m, rect[2] - m, rect[3] - m]
+        Some(rd) => {
+            let r = less_rd(rect, &rd);
+            [r[0].max(safe[0]), r[1].max(safe[1]), r[2].min(safe[2]), r[3].min(safe[3])]
         }
+        None => safe,
     };
     (inner[2] - inner[0] >= 1.0 && inner[3] - inner[1] >= 1.0).then_some(inner)
 }

@@ -2263,7 +2263,8 @@ fn a_cloudy_square_follows_rd_left_top_right_bottom() {
 
 /// Review on #4195: without `/RD`, a small cloudy square still keeps its bumps inside `/Rect`.
 /// Its edges are short enough that each rounds to a single bump about three radii long, which
-/// bulges further than one radius; a valid `/RD` is used exactly as given.
+/// bulges further than one radius. An `/RD` leaving less than that margin is widened to it, so
+/// the cloud stays inside `/Rect` too.
 #[test]
 fn a_small_cloudy_square_without_rd_stays_inside_its_rect() {
     for side in [20.0, 24.4, 30.0, 41.0] {
@@ -2277,7 +2278,8 @@ fn a_small_cloudy_square_without_rd_stays_inside_its_rect() {
     }
     let small_rd =
         built("<< /Type /Annot /Subtype /Square /Rect [100 100 200 200] /C [1 0 0] /BS << /W 2 >> /BE << /S /C /I 1 >> /RD [1 1 1 1] >>").unwrap();
-    assert!(small_rd.contains("101 101"), "the inner square starts where /RD says: {small_rd}");
+    let e = extent(&small_rd);
+    assert!(e[0] >= 99.0 && e[1] >= 99.0 && e[2] <= 201.0 && e[3] <= 201.0, "/RD [1 1 1 1] keeps the cloud inside /Rect: {e:?}");
 }
 
 /// ISO 32000-2 Table 180: `/RD` gives the differences between `/Rect` and "the actual boundaries
@@ -2321,4 +2323,34 @@ fn pdfcraft_rectangles_and_ellipses_still_fill_their_rect() {
         };
         assert!(ap.contains(&expected), "{expected} in {ap}");
     }
+}
+
+/// Review on #4195: a polygon reshaped with `/BE /S /C` and no `/I` (or `/I 0`) is a plain one,
+/// as its appearance is drawn (Table 169: intensity 0 is no cloud), so its `/Rect` gets no room
+/// for bumps; with an intensity above 0 it does.
+#[test]
+fn a_reshaped_polygon_pads_its_rect_only_for_a_drawn_cloud() {
+    // `/BE << /S /C >>` with `/I` when given; no `/BE` at all for `None`.
+    let reshaped = |be: Option<Option<i64>>| {
+        let mut doc = fixture();
+        let shape = Shape::Polygon { vertices: vec![[100.0, 100.0], [200.0, 100.0], [150.0, 200.0]], cloud: false };
+        let i = add_annotation(&mut doc, &new(0, shape), &meta("p")).unwrap();
+        let (_, r) = annot_ref(&mut doc, 0, i).unwrap();
+        if let Some(intensity) = be {
+            let mut b = pdfcraft_cos::Dict::new();
+            b.set(b"S".to_vec(), Object::name("C"));
+            if let Some(i) = intensity {
+                b.set(b"I".to_vec(), Object::Int(i));
+            }
+            doc.update_dict(r, |d| d.set(b"BE".to_vec(), Object::Dict(b))).unwrap();
+        }
+        set_points(&mut doc, 0, i, &[[100.0, 100.0], [300.0, 100.0], [200.0, 250.0]], &meta("")).unwrap();
+        rect(&list(&doc, 0)[i])
+    };
+    let plain = reshaped(None);
+    for be in [None, Some(0)] {
+        assert_eq!(reshaped(Some(be)), plain, "/I {be:?}: no cloud drawn, no room for one");
+    }
+    let cloudy = reshaped(Some(Some(1)));
+    assert!(cloudy[0] < plain[0] && cloudy[2] > plain[2], "room for the bumps: {cloudy:?} around {plain:?}");
 }
