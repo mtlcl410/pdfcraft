@@ -67,6 +67,7 @@ Opens the files in the PdfCraft desktop app.
 Options:
   --new-window                open a window of its own instead of passing the files to a running PdfCraft
   --create-images [images…]   put the images in one PDF and ask for the page DPI
+  --combine files…            add the files to the Combine files tab, of a running PdfCraft if there is one
   --control <file>            enable the UI control channel (pdfcraft-cli ui --control <file> …)
   --page N, --zoom 150, --layout continuous, --theme dark, …
                               view settings applied once the files are open
