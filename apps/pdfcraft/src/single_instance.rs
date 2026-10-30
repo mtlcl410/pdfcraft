@@ -59,9 +59,10 @@ pub enum Claim {
 /// Files that later launches handed over, and how to wake the UI for them.
 #[derive(Default)]
 struct Inbox {
-    paths: Vec<String>,
-    /// Files for the Combine files tab (`--combine`).
-    combine: Vec<String>,
+    /// The requests in the order they arrived: [`OsEvent::Open`] or, for `--combine`,
+    /// [`OsEvent::Combine`]. One queue, so the UI handles an Open that came after a Combine after
+    /// it, and that Open comes to the front instead of opening behind the Combine files tab.
+    events: Vec<OsEvent>,
     wake: Option<Box<dyn Fn() + Send>>,
 }
 
@@ -80,11 +81,16 @@ impl Server {
     /// Queue files from another launch (to open, or to combine) and wake the UI.
     #[cfg_attr(not(any(windows, all(unix, not(target_os = "macos")))), allow(dead_code))]
     fn deliver(&self, paths: Vec<String>, combine: bool) {
+        if paths.is_empty() {
+            return;
+        }
         let mut inbox = self.inbox.lock().unwrap_or_else(PoisonError::into_inner);
-        if combine {
-            inbox.combine.extend(paths)
-        } else {
-            inbox.paths.extend(paths)
+        // A run of requests of one kind (File Explorer starts one launch per selected file) stays
+        // one event; a request of the other kind starts a new one after it.
+        match (inbox.events.last_mut(), combine) {
+            (Some(OsEvent::Combine(queued)), true) | (Some(OsEvent::Open(queued)), false) => queued.extend(paths),
+            (_, true) => inbox.events.push(OsEvent::Combine(paths)),
+            (_, false) => inbox.events.push(OsEvent::Open(paths)),
         }
         if let Some(wake) = &inbox.wake {
             wake();
@@ -102,24 +108,14 @@ impl Server {
         let inbox = Arc::clone(&self.inbox);
         let ctx = ctx.clone();
         Box::new(move || {
-            let (paths, combine) = {
-                let mut inbox = inbox.lock().unwrap_or_else(PoisonError::into_inner);
-                (std::mem::take(&mut inbox.paths), std::mem::take(&mut inbox.combine))
-            };
-            if paths.is_empty() && combine.is_empty() {
+            let events = std::mem::take(&mut inbox.lock().unwrap_or_else(PoisonError::into_inner).events);
+            if events.is_empty() {
                 return Vec::new();
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if native_wayland {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
-            }
-            let mut events = Vec::new();
-            if !paths.is_empty() {
-                events.push(OsEvent::Open(paths));
-            }
-            if !combine.is_empty() {
-                events.push(OsEvent::Combine(combine));
             }
             events
         })
@@ -451,10 +447,20 @@ mod tests {
         // Files to combine (one launch each, from File Explorer) arrive as one Combine event,
         // apart from files to open.
         server.deliver(vec!["c.pdf".into()], true);
-        server.deliver(vec!["d.pdf".into()], false);
         server.deliver(vec!["e.pdf".into()], true);
         let events = poll();
-        assert!(matches!(events.as_slice(), [OsEvent::Open(o), OsEvent::Combine(c)] if o == &["d.pdf"] && c == &["c.pdf", "e.pdf"]), "{events:?}");
+        assert!(matches!(events.as_slice(), [OsEvent::Combine(c)] if c == &["c.pdf", "e.pdf"]), "{events:?}");
+        // #2503 review: requests reach the UI in the order they arrived, so an Open after a
+        // Combine is handled after it and comes to the front instead of opening behind the
+        // Combine files tab.
+        server.deliver(vec!["f.pdf".into()], true);
+        server.deliver(vec!["g.pdf".into()], false);
+        server.deliver(vec!["h.pdf".into()], true);
+        let events = poll();
+        assert!(
+            matches!(events.as_slice(), [OsEvent::Combine(f), OsEvent::Open(g), OsEvent::Combine(h)] if f == &["f.pdf"] && g == &["g.pdf"] && h == &["h.pdf"]),
+            "{events:?}"
+        );
         assert!(poll().is_empty());
     }
 
