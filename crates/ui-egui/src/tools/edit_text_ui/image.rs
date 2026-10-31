@@ -257,18 +257,27 @@ pub(crate) fn handle_hit(
 }
 
 /// The picture under `p` (its shape and where it shows, not only its box): a click selects it, a
-/// drag moves the
-/// selected one. On the text layer, asked before the paragraphs: editable text on top of a
-/// picture takes the press.
-pub(crate) fn body_hit(xf: &PageXform, page: usize, info: &DocInfo, doc: &pdfcraft_engine::Document, images: &[pdfcraft_engine::PageImage], view: &DocView, p: Pos2) -> Option<Hit> {
+/// drag moves the selected one. On the text layer, asked before the paragraphs: editable text on
+/// top of a picture takes the press.
+pub(crate) fn body_hit(
+    xf: &PageXform,
+    page: usize,
+    info: &DocInfo,
+    doc: &pdfcraft_engine::Document,
+    images: &[pdfcraft_engine::PageImage],
+    view: &DocView,
+    p: Pos2,
+) -> Option<Hit> {
     if !xf.rect.contains(p) {
         return None;
     }
     let (x, y) = xf.screen_to_view(p);
     let user = info.pages.get(page)?.view_to_user(x, y).map(f64::from);
-    let index = images
-        .iter()
-        .rposition(|im| im.visible_rect.is_some_and(|r| xf.user_rect(info, page, r.map(|v| v as f32)).contains(p)) && im.contains(user) && doc.image_shows_at(im, user))?;
+    let index = images.iter().rposition(|im| {
+        im.visible_rect.is_some_and(|r| xf.user_rect(info, page, r.map(|v| v as f32)).contains(p))
+            && im.contains(user)
+            && doc.image_shows_at(im, user)
+    })?;
     let selected = view.image_selection.as_ref().is_some_and(|s| s.page == page && s.index == index);
     let icon = if selected { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand };
     Some(Hit::new(Owner::Picture { index, part: PicturePart::Body }, Layer::Text, icon))
