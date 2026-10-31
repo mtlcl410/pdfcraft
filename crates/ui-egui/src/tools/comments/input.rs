@@ -31,7 +31,8 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
         && let Some(p) = pointer.filter(|p| page_rect.contains(*p))
     {
         cv.context_at = Some((cx.page, cx.to_user(p)));
-        cv.selected = cx.hit(p).map(|a| (cx.page, a.index));
+        // On a group subordinate, its group (the primary), so the menu offers the comment's actions.
+        cv.selected = cx.click_hit(p).map(|a| (cx.page, a.index));
     }
     let gestures = Gestures { ui, resp, cx, pointer, origin, page_rect, pressed_here, over_page };
     match cx.tool {

@@ -3062,4 +3062,20 @@ fn a_group_is_one_comment_in_the_panel_and_on_the_page() {
     let p = at(&h, 60.0, 50.0);
     click(&mut h, p);
     assert_eq!(h.state().views[0].comments.selected, Some((0, 0)));
+    // #4358 review: a right-click on the Circle selects the group too, so the menu is the
+    // comment's, and a double-click there edits the group's text, which is the Square's.
+    h.state_mut().views[0].comments.selected = None;
+    let p = at(&h, 220.0, 150.0);
+    h.hover_at(p);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed: true, modifiers: Default::default() });
+    h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed: false, modifiers: Default::default() });
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].comments.selected, Some((0, 0)), "a right-click on the Circle selects its group");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.state_mut().views[0].comments.selected = None;
+    crate::support::input::double_click(&mut h, p);
+    let composer = h.state().views[0].comments.composer.as_ref().map(|c| c.text.clone());
+    assert_eq!(composer.as_deref(), Some("Primary"), "a double-click on the Circle edits its group's text");
 }
