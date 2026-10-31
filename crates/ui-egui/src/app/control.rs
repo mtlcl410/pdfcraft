@@ -16,8 +16,11 @@ impl PdfCraftApp {
     pub fn set_option(&mut self, key: &str, value: &str) -> Result<(), String> {
         if key == "print-file" {
             // The file's Print dialog, now if it is open, else once it opens.
-            let open =
-                self.views.iter().map(|v| v.id).find(|id| self.session.get(*id).and_then(|d| d.path.as_deref()).is_some_and(|p| same_file(p, value)));
+            let open = self
+                .views
+                .iter()
+                .map(|v| v.id)
+                .find(|id| self.session.get(*id).and_then(|d| d.path.as_deref()).is_some_and(|p| super::files::same_file(p, value)));
             self.print_requests.push((value.to_string(), open));
             return Ok(());
         }
