@@ -3937,6 +3937,39 @@ fn ungroup_refuses_what_would_draw_differently() {
     refused(images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup), "only grouped Form artwork");
 }
 
+/// Review on #3067: a transparency group with a blending colour space of its own (ISO 32000-2
+/// §11.6.6, Table 145 /CS) composites its contents there, and inline they would composite in the
+/// page's, so Ungroup refuses it. The page group's own space (§11.4.7), or DeviceRGB on a page
+/// that names none, is fine, as is a group that names no space.
+#[test]
+fn ungroup_refuses_a_group_blending_in_another_colour_space() {
+    let group = |cs: Option<&str>| {
+        let mut g = Dict::new();
+        g.set(b"S".to_vec(), Object::name("Transparency"));
+        if let Some(cs) = cs {
+            g.set(b"CS".to_vec(), Object::name(cs));
+        }
+        Object::Dict(g)
+    };
+    let fill = b"1 0 0 rg 0 0 10 10 re f";
+    let ungroup = |cs: Option<&str>, page_cs: Option<&str>| {
+        let (mut doc, _) = page_with_form(&[("Group", group(cs))], fill, "", None);
+        if let Some(page_cs) = page_cs {
+            let page = pdfcraft_model::pages(&doc)[0].obj;
+            doc.update_dict(page, |d| d.set(b"Group".to_vec(), group(Some(page_cs)))).unwrap();
+        }
+        images::change_image(&mut doc, 0, 0, &images::ImageChange::Ungroup)
+    };
+    match ungroup(Some("DeviceCMYK"), None) {
+        Err(EditError::Invalid(m)) => assert!(m.contains("colour space of its own"), "{m}"),
+        other => panic!("a CMYK group on a page with no group space: {other:?}"),
+    }
+    assert!(matches!(ungroup(Some("DeviceRGB"), Some("DeviceCMYK")), Err(EditError::Invalid(_))), "the page blends in CMYK");
+    ungroup(Some("DeviceRGB"), None).unwrap();
+    ungroup(Some("DeviceCMYK"), Some("DeviceCMYK")).unwrap();
+    ungroup(None, Some("DeviceCMYK")).unwrap();
+}
+
 #[test]
 fn paragraphs_take_new_formatting() {
     let mut doc = text_page("BT /F1 10 Tf 12 TL 100 700 Td (One two three four five six seven) Tj T* (eight nine ten eleven twelve) Tj ET");

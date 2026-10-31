@@ -9,7 +9,9 @@
 //! Drawing a form inline paints the same pixels unless the form is a transparency group whose
 //! compositing differs from painting its parts one by one: a knockout group, a group that uses
 //! a blend mode other than Normal inside, or a group drawn translucent, blended or under a soft
-//! mask. Those are refused rather than changed, as is tagged form content (its structure link
+//! mask, or a group with a blending colour space (`/CS`) other than the page's: its contents
+//! composite in that space and are then converted (ISO 32000-2 §11.6.6), inline they would
+//! composite in the page's. Those are refused rather than changed, as is tagged form content (its structure link
 //! would be lost) and content whose marked content or text objects don't balance (inlined, they
 //! would change the scope of the page's own). A form in a layer (`/OC`) keeps its membership as `/OC … BDC … EMC`.
 //!
@@ -45,9 +47,17 @@ pub(crate) type Ungrouped = (Vec<Op>, Dict, Vec<(Vec<u8>, Object)>);
 
 /// Ungroup form `name` from the page's `resources`. `translucent` says whether the graphics state
 /// at the `Do` is translucent, blended or soft-masked, which a transparency group composites as a
-/// whole. `placement` maps the form's space to the page's default space at the `Do` (its
-/// `/Matrix`, then the CTM there).
-pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translucent: bool, placement: Matrix) -> Result<Ungrouped, EditError> {
+/// whole. `page_space` is the page group's blending colour space ([`page_blend_space`]).
+/// `placement` maps the form's space to the page's default space at the `Do` (its `/Matrix`,
+/// then the CTM there).
+pub(crate) fn ungroup_ops(
+    doc: &Document,
+    resources: &Dict,
+    name: &[u8],
+    translucent: bool,
+    page_space: Option<&Object>,
+    placement: Matrix,
+) -> Result<Ungrouped, EditError> {
     let refuse = |why: &str| EditError::Invalid(format!("this artwork can't be ungrouped: {why}"));
     let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).ok_or_else(|| refuse("it is missing"))?;
     let form = xobjects.get(name).ok_or_else(|| refuse("it is missing"))?;
@@ -83,6 +93,13 @@ pub(crate) fn ungroup_ops(doc: &Document, resources: &Dict, name: &[u8], translu
         }
         if translucent {
             return Err(refuse("it is a transparency group drawn translucent, blended or under a soft mask"));
+        }
+        // Its contents composite in its own colour space (ISO 32000-2 §11.6.6, Table 145 /CS);
+        // inline they would composite in the page's.
+        if let Some(cs) = group.get(b"CS")
+            && !same_blend_space(doc, cs, page_space)
+        {
+            return Err(refuse("it is a transparency group that blends in a colour space of its own"));
         }
     }
 
@@ -448,6 +465,23 @@ fn blends_inside(doc: &Document, resources: &Dict, ops: &[Op], depth: usize, wal
         }
     }
     false
+}
+
+/// The blending colour space of the page group (ISO 32000-2 §11.4.7): the page's transparency
+/// `/Group /CS`, resolved. `None` when the page names none, and the PDF processor chooses.
+pub(crate) fn page_blend_space(doc: &Document, page: &Dict) -> Option<Object> {
+    let group = page.get(b"Group").map(|g| doc.resolve(g)).and_then(|g| g.as_dict().cloned()).filter(|g| is_name(doc, g, b"S", b"Transparency"))?;
+    group.get(b"CS").map(|cs| (*doc.resolve(cs)).clone())
+}
+
+/// Whether a group blending in `cs` composites as the page does: in the page group's own space
+/// when it names one, else in DeviceRGB, the space viewers composite a page in on screen.
+fn same_blend_space(doc: &Document, cs: &Object, page_space: Option<&Object>) -> bool {
+    let cs = doc.resolve(cs);
+    match page_space {
+        Some(page) => *cs == *page,
+        None => cs.as_name() == Some(b"DeviceRGB"),
+    }
 }
 
 /// Whether `d`'s `key` is the name `want`, directly or through an indirect object (any value may
