@@ -413,7 +413,7 @@ pub fn set_points(doc: &mut Document, page: usize, index: usize, points: &[[f64;
     }
     if d.name(b"Subtype") == Some(b"FreeText") && callout_line(doc, &d).is_some() {
         // A callout's points: its arrow point, then optionally its knee (a four-number `/CL`
-        // gains one; ISO 32000-2 Table 177 allows both forms).
+        // gains one; ISO 32000-2 Table 177 allows both forms). The arrow point alone keeps a knee.
         if !matches!(points.len(), 1 | 2) || !finite(&points.concat()) {
             return Err(AnnotError::Invalid("a callout has an arrow point and, optionally, a knee".into()));
         }
@@ -545,6 +545,15 @@ fn place_text_box(doc: &mut Document, r: ObjRef, rect: [f64; 4], lead: Option<&[
     let old_line = callout_line(doc, &d);
     let old_box = callout_text_box(doc, &d);
     let old_end = old_line.as_deref().and_then(<[[f64; 2]]>::last).copied();
+    // An arrow point alone moves the arrow: a knee the line has stays where it is.
+    let kept: [[f64; 2]; 2];
+    let lead = match (lead, old_line.as_deref()) {
+        (Some([point]), Some([_, knee, _])) => {
+            kept = [*point, *knee];
+            Some(&kept[..])
+        }
+        _ => lead,
+    };
     let line: Option<Vec<[f64; 2]>> = match (lead, old_line.as_deref()) {
         (Some(lead @ [.., toward]), _) => {
             let side = callout_side(rect, *toward);

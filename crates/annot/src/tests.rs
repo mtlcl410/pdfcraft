@@ -2446,3 +2446,17 @@ fn summaries_give_no_callout_points_without_a_text_box() {
         assert_eq!((s.points.len(), s.text_box), (0, None), "/RD {rd:?}");
     }
 }
+
+/// Review on #4094: a callout given its arrow point alone keeps its knee. The new line was built
+/// from the one point and the end, so a six-number `/CL` silently became four.
+#[test]
+fn a_callouts_arrow_point_alone_keeps_its_knee() {
+    let (mut doc, c) = callout_fixture();
+    let before = nums(&list(&doc, 0)[c], b"CL");
+    assert_eq!(before.len(), 6, "{before:?}");
+    set_points(&mut doc, 0, c, &[[190.0, 500.0]], &meta("p")).unwrap();
+    let after = nums(&list(&doc, 0)[c], b"CL");
+    assert_eq!(after.len(), 6, "the knee stays: {after:?}");
+    assert_eq!(after[..2], [190.0, 500.0], "the arrow point moved");
+    assert_eq!(after[2..], before[2..], "the knee and the end are where they were");
+}
