@@ -32,7 +32,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
     {
         cv.context_at = Some((cx.page, cx.to_user(p)));
         // On a group subordinate, its group (the primary), so the menu offers the comment's actions.
-        cv.selected = cx.click_hit(p).map(|a| (cx.page, a.index));
+        cv.selected = cx.click_hit(p).map(|a| cx.selects(a));
     }
     let gestures = Gestures { ui, resp, cx, pointer, origin, page_rect, pressed_here, over_page };
     match cx.tool {
@@ -93,12 +93,8 @@ pub(crate) fn hit(cx: &PageCx<'_>, view: &DocView, p: Pos2) -> Option<Hit> {
         }
     }
     // A group subordinate (`/RT /Group`) stands for its primary (ISO 32000-2 §12.5.6.2): a click
-    // there selects the group. Only a click: a drag still moves what is under the pointer.
-    let (a, member) = match cx.hit(p) {
-        Some(a) => (a, false),
-        None => (cx.click_hit(p)?, true),
-    };
-    let a = Some(a).filter(|a| bodies && pick(a))?;
+    // there selects the group, and a drag moves it.
+    let a = Some(cx.click_hit(p)?).filter(|a| bodies && pick(a))?;
     // A click on a highlight over a link follows the link, so the link's hand and tip show there.
     if cx.tool == QuickTool::Select && a.subtype == "Highlight" && on_link(cx, p) {
         return None;
@@ -109,7 +105,7 @@ pub(crate) fn hit(cx: &PageCx<'_>, view: &DocView, p: Pos2) -> Option<Hit> {
     // page, over a form field; text markup lies on the text, under one.
     let layer = if a.fill_sign || !markup { Layer::Placed } else { Layer::Comment };
     // Text markup does not move: a click selects it, a drag across it selects the text.
-    Some(Hit { declines_drag: markup || member, ..Hit::new(Owner::Comment { index: a.index, part: CommentPart::Body }, layer, icon) })
+    Some(Hit { declines_drag: markup, ..Hit::new(Owner::Comment { index: a.index, part: CommentPart::Body }, layer, icon) })
 }
 
 /// Whether the comments take the press on this page (or, with no button down, would take one
@@ -154,10 +150,15 @@ pub(crate) fn describe(cx: &PageCx<'_>, view: &mut DocView) {
     let Some(p) = cx.ptr.pos else { return };
     // Inspection sorts comments by position, but the renderer paints them in `/Annots` order: the
     // tip is that of the one drawn on top, among those with something to say (#3620).
+    // A group subordinate says what its group does: its primary's author and text (ISO 32000-2
+    // §12.5.6.2), wherever the primary is.
+    let members = cx.group_members();
     let top = cx
         .comments()
-        .filter(|a| cx.screen_rects(a).any(|r| r.contains(p)))
-        .filter_map(|a| hover_tip(a, cx.prefs).map(|text| (a.index, text)))
+        .map(|a| (a, a))
+        .chain(members.iter().copied())
+        .filter(|(a, _)| cx.screen_rects(a).any(|r| r.contains(p)))
+        .filter_map(|(a, says)| hover_tip(says, cx.prefs).map(|text| (a.index, text)))
         .max_by_key(|(index, _)| *index);
     if let Some((_, text)) = top {
         view.cursor.describe(Subject::Comment, text);
@@ -181,7 +182,7 @@ pub(super) fn hover_tip(a: &Annotation, prefs: &CommentPrefs) -> Option<String> 
 /// owner, from [`hit`]). The cursor comes from [`hit`] too.
 fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mut DocView, pointer: Option<Pos2>, origin: Option<Pos2>) -> bool {
     let owner = match view.router.owner(cx.page) {
-        Some(Owner::Comment { index, part }) => cx.get(index).map(|a| (a, part)),
+        Some(Owner::Comment { index, part }) => cx.held(index).map(|a| (a, part)),
         _ => None,
     };
     let cv = &mut view.comments;
@@ -208,7 +209,7 @@ fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mu
                 consumed = true;
             }
             CommentPart::Body if !is_markup(&a.subtype) => {
-                cv.selected = Some((cx.page, a.index));
+                cv.selected = Some(cx.selects(a));
                 cv.reveal = true;
                 if cx.allowed {
                     cv.gesture = Some(Gesture::Move { page: cx.page, index: a.index, from: o });
@@ -263,7 +264,7 @@ fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mu
         // leaves comments unselected.
         match owner {
             Some((a, _)) => {
-                cv.selected = Some((cx.page, a.index));
+                cv.selected = Some(cx.selects(a));
                 cv.reveal = true;
                 consumed = true;
             }
@@ -275,7 +276,12 @@ fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mu
         && cx.allowed
         && let Some((a, _)) = owner
     {
-        cv.selected = Some((cx.page, a.index));
+        cv.selected = Some(cx.selects(a));
+        // A subordinate whose primary is on another page selects its group there; the group's
+        // text is the primary's, edited from its card.
+        if cv.selected != Some((cx.page, a.index)) {
+            return true;
+        }
         cv.composer = Some(Composer {
             page: cx.page,
             at: edit_anchor(cx.info, a),

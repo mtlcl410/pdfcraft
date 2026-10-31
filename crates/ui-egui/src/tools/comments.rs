@@ -49,7 +49,7 @@ use paint::{changing_points, drawn_shape, edited_in_view};
 use state::after_delete;
 use state::login_name;
 pub use state::{CommentView, Composer, ComposerKind, Gesture, SortBy};
-pub(crate) use state::{EditorFocus, PageCx};
+pub(crate) use state::{EditorFocus, PageCx, moving_together};
 
 /// Acrobat's selection blue for annotation frames and handles (11-visual-spec §5).
 const SELECT_BLUE: Color32 = Color32::from_rgb(0x14, 0x73, 0xE6);

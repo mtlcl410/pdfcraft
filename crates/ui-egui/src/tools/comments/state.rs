@@ -339,7 +339,7 @@ impl PageCx<'_> {
     }
 
     /// Where a comment is drawn on screen (a sticky note stays upright on a turned page).
-    pub(super) fn screen_rect(&self, a: &Annotation) -> Rect {
+    pub(crate) fn screen_rect(&self, a: &Annotation) -> Rect {
         self.xf.user_rect(self.info, self.page, a.shown_rect(self.rotation()))
     }
 
@@ -391,9 +391,15 @@ impl PageCx<'_> {
         self.comments().find(|a| a.index == index)
     }
 
+    /// [`Self::get`], or a group subordinate on this page: what a press on it took hold of when its
+    /// group's primary is on another page ([`Self::click_hit`]).
+    pub(crate) fn held(&self, index: usize) -> Option<&Annotation> {
+        self.get(index).or_else(|| self.group_members().into_iter().map(|(m, _)| m).find(|m| m.index == index))
+    }
+
     /// The group subordinates (`/RT /Group`, ISO 32000-2 §12.5.6.2) on this page, each with the
-    /// comment on this page that is its group's primary.
-    pub(super) fn group_members(&self) -> Vec<(&Annotation, &Annotation)> {
+    /// comment that is its group's primary, on this page or another.
+    pub(crate) fn group_members(&self) -> Vec<(&Annotation, &Annotation)> {
         let all = &self.info.annotations;
         // Painted every frame a comment is selected: most documents have no group to look up.
         if self.hidden || !all.iter().any(|a| a.is_group_member() && a.page == self.page) {
@@ -403,15 +409,32 @@ impl PageCx<'_> {
         all.iter()
             .zip(primaries)
             .filter(|(a, _)| a.is_group_member() && a.page == self.page)
-            .filter_map(|(a, p)| Some((a, all.get(p?).filter(|p| p.page == self.page && p.is_comment())?)))
+            .filter_map(|(a, p)| Some((a, all.get(p?).filter(|p| p.is_comment())?)))
             .collect()
     }
 
-    /// The comment a click at `p` selects: the topmost one under it or, on a group subordinate,
-    /// the group's primary, which stands for the group.
+    /// What a click at `p` takes hold of on this page: the topmost comment under it or, on a
+    /// group subordinate, the group's primary, which stands for the group. A subordinate whose
+    /// primary is on another page is taken itself, as the group's hold on this page: moving it
+    /// moves the group, and selecting it selects the group ([`Self::selects`]).
     pub(super) fn click_hit(&self, p: Pos2) -> Option<&Annotation> {
-        self.hit(p)
-            .or_else(|| self.group_members().into_iter().rev().find(|(m, _)| self.screen_rects(m).any(|r| r.expand(3.0).contains(p))).map(|(_, p)| p))
+        self.hit(p).or_else(|| {
+            let (m, primary) = self.group_members().into_iter().rev().find(|(m, _)| self.screen_rects(m).any(|r| r.expand(3.0).contains(p)))?;
+            Some(if primary.page == self.page { primary } else { m })
+        })
+    }
+
+    /// What selecting this page's `a` selects: its group's primary for a group subordinate, on
+    /// whatever page it is (its card in the Comments panel), else `a`.
+    pub(super) fn selects(&self, a: &Annotation) -> (usize, usize) {
+        let primary = if a.is_group_member() { self.group_members().into_iter().find(|(m, _)| m.index == a.index).map(|(_, p)| p) } else { None };
+        primary.map_or((self.page, a.index), |p| (p.page, p.index))
+    }
+
+    /// Whether moving the comment at `(page, index)` moves this page's `a` too: it is that
+    /// comment, or in the same group (ISO 32000-2 §12.5.6.2).
+    pub(crate) fn moves_with(&self, a: &Annotation, page: usize, index: usize) -> bool {
+        page == self.page && (index == a.index || !self.hidden && moving_together(&self.info.annotations, page, index).contains(&a.index))
     }
 
     pub(crate) fn rect_to_user(&self, r: Rect) -> [f64; 4] {
@@ -435,18 +458,35 @@ impl PageCx<'_> {
         {
             return self.xf.user_rect(self.info, self.page, a.shown(*rect, self.rotation()).map(|v| v as f32));
         }
+        // A move takes the moved comment's group with it.
         if let Some(Edit::MoveAnnotation { page, index, dx, dy }) = pending
-            && (*page, *index) == (self.page, a.index)
+            && self.moves_with(a, *page, *index)
         {
             let r = a.shown_rect(self.rotation());
             return self.xf.user_rect(self.info, self.page, [r[0] + *dx as f32, r[1] + *dy as f32, r[2] + *dx as f32, r[3] + *dy as f32]);
         }
         match (gesture, pointer) {
-            (Some(Gesture::Move { page, index, from }), Some(p)) if (*page, *index) == (self.page, a.index) => r.translate(p - *from),
+            (Some(Gesture::Move { page, index, from }), Some(p)) if self.moves_with(a, *page, *index) => r.translate(p - *from),
             (Some(Gesture::Resize { page, index, handle, from, aspect_ratio }), Some(p)) if (*page, *index) == (self.page, a.index) => {
                 resized(r, *handle, p - *from, corner_ratio(r, *aspect_ratio, shift))
             }
             _ => r,
         }
     }
+}
+
+/// The comments on `page` a move of the one at `(page, index)` takes along: it and, when it is in
+/// a group (`/RT /Group`, ISO 32000-2 §12.5.6.2), the group's other members on that page, in
+/// `/Annots` order. The group's members on other pages move too, without being drawn here.
+pub(crate) fn moving_together(all: &[Annotation], page: usize, index: usize) -> Vec<usize> {
+    if !all.iter().any(|a| a.is_group_member() && a.page == page) {
+        return vec![index];
+    }
+    let primaries = pdfcraft_render::group_primaries(all);
+    let key = |i: usize| primaries.get(i).copied().flatten().unwrap_or(i);
+    let Some(at) = all.iter().position(|a| a.page == page && a.index == index) else { return vec![index] };
+    let group = key(at);
+    let mut out: Vec<usize> = all.iter().enumerate().filter(|(i, a)| a.page == page && key(*i) == group).map(|(_, a)| a.index).collect();
+    out.sort_unstable();
+    out
 }

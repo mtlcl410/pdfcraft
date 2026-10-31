@@ -244,13 +244,23 @@ impl SignatureDrag {
             && let Some(key @ (_, page, index)) = dragged
             && let Some(a) = doc.info.annotations.iter().find(|a| a.page == page && a.index == index && !a.locked)
         {
-            // Made once per drag: it copies and writes out the whole document.
-            match doc.comment_layer(page, &[index]) {
+            // Made once per drag: it copies and writes out the whole document. A comment in a group
+            // takes the group's other members on the page along (ISO 32000-2 §12.5.6.2).
+            let together = crate::comments::moving_together(&doc.info.annotations, page, index);
+            match doc.comment_layer(page, &together) {
                 Ok(Some(alone)) => {
                     // The box it is drawn in: a comment kept upright on a turned page (NoRotate)
-                    // isn't drawn in its /Rect, and the frame it follows is that box too.
+                    // isn't drawn in its /Rect, and the frame it follows is that box too. A group's
+                    // box holds every member on the page.
                     let rotation = doc.info.pages.get(page).map_or(0, |p| p.rotation);
-                    let layer = StampLayer { renderer: alone.renderer(), from: a.shown_rect(rotation), tag: None, pixels: None, failed: None };
+                    let from = doc
+                        .info
+                        .annotations
+                        .iter()
+                        .filter(|m| m.page == page && together.contains(&m.index))
+                        .map(|m| m.shown_rect(rotation))
+                        .fold(a.shown_rect(rotation), |u, r| [u[0].min(r[0]), u[1].min(r[1]), u[2].max(r[2]), u[3].max(r[3])]);
+                    let layer = StampLayer { renderer: alone.renderer(), from, tag: None, pixels: None, failed: None };
                     self.moving = Some((key, Moving { layer, settling: false }));
                 }
                 _ => self.no_layer = Some(key),
@@ -277,14 +287,15 @@ impl SignatureDrag {
         if *page != cx.page || cx.hidden {
             return;
         }
-        let Some(a) = cx.get(*index) else { return };
+        let Some(a) = cx.held(*index) else { return };
         let shift = painter.ctx().input(|i| i.modifiers.shift);
         // As far as its frame has gone from where the move started (once applied, its box is
         // already where it went).
         let rect = cx.adjusted_rect(a, cv.gesture.as_ref(), cx.ptr.pos, shift, pending);
         let from = cx.xf.user_rect(cx.info, *page, m.layer.from);
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(cx.xf.rect));
-        m.layer.paint(&painter, cx, *page, from.translate(rect.min - from.min));
+        // The layer's box (a group's holds every member on the page) goes as far as the comment.
+        m.layer.paint(&painter, cx, *page, from.translate(rect.min - cx.screen_rect(a).min));
     }
 }
 

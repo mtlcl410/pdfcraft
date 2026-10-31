@@ -30,16 +30,22 @@ pub(crate) fn paint_page(ui: &egui::Ui, painter: &egui::Painter, cx: &PageCx<'_>
             painter.rect_stroke(r.expand(2.0), CornerRadius::same(2), Stroke::new(1.0, SELECT_BLUE.gamma_multiply(0.7)), egui::StrokeKind::Outside);
         }
     }
+    // The rest of a group is selected with its primary, on this page or another, and goes where a
+    // move takes the group.
+    if let Some(selected) = cv.selected {
+        let shift = ui.input(|i| i.modifiers.shift);
+        for (m, _) in cx.group_members().into_iter().filter(|(_, p)| (p.page, p.index) == selected) {
+            let moved = cx.adjusted_rect(m, cv.gesture.as_ref(), pointer, shift, view.pending_edit.as_ref());
+            let by = moved.min - cx.screen_rect(m).min;
+            for r in cx.screen_rects(m) {
+                painter.rect_stroke(r.translate(by).expand(2.0), CornerRadius::ZERO, Stroke::new(1.0, SELECT_BLUE), egui::StrokeKind::Middle);
+            }
+        }
+    }
     if let Some((page, index)) = cv.selected
         && page == cx.page
         && let Some(a) = cx.get(index)
     {
-        // The rest of the group is selected with its primary.
-        for (m, _) in cx.group_members().into_iter().filter(|(_, p)| p.index == index) {
-            for r in cx.screen_rects(m) {
-                painter.rect_stroke(r.expand(2.0), CornerRadius::ZERO, Stroke::new(1.0, SELECT_BLUE), egui::StrokeKind::Middle);
-            }
-        }
         if is_markup(&a.subtype) && !a.quads.is_empty() {
             for r in cx.screen_rects(a) {
                 painter.rect_stroke(r.expand(2.0), CornerRadius::ZERO, Stroke::new(1.0, SELECT_BLUE), egui::StrokeKind::Middle);
