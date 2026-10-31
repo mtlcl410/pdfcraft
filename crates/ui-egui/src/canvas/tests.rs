@@ -1530,6 +1530,59 @@ fn edit_text_boxes_stay_drawn_while_page_input_is_blocked() {
     assert_eq!(app.views[0].edit_lines.get(&0).map(|(g, _)| *g), Some(generation), "the boxes follow the edit while input is blocked");
 }
 
+/// A cut page (#623) is named in a bar of its own: a static XFA form's notice, which comes
+/// first among the form notices, still shows beside it instead of replacing it (review on #2113).
+#[test]
+fn a_cut_page_is_named_beside_an_xfa_form_notice() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        let bytes = pdfcraft_xfa::fixtures::static_shell("<form1><page1><name>Ada</name></page1></form1>");
+        app.open_bytes("form.pdf", None, bytes).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h.get_by_label_contains("XFA data are kept in step");
+    h.state_mut().views[0].cut_pages.insert(0);
+    h.run_steps(2);
+    h.get_by_label_contains("Page 1 holds more content than PdfCraft can read");
+    h.get_by_label_contains("XFA data are kept in step");
+}
+
+/// Dismissing another notice doesn't hide a page found cut later (#623), and dismissing the
+/// cut-page notice lasts until another page is found cut (review on #2113).
+#[test]
+fn a_page_found_cut_after_a_dismissal_is_still_named() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        let bytes = app.session.create_blank(300.0, 400.0, 2).unwrap();
+        app.open_bytes("blank.pdf", None, bytes.as_ref().clone()).unwrap();
+        app
+    });
+    h.run_steps(3);
+    // The reader dismissed the document's notice before the render found the cut page.
+    h.state_mut().views[0].notice_dismissed = true;
+    h.state_mut().views[0].cut_pages.insert(0);
+    h.run_steps(2);
+    h.get_by_label_contains("Page 1 holds more content than PdfCraft can read");
+    h.get_by_label("Dismiss").click();
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("holds more content").is_none(), "the cut-page notice can be dismissed");
+    // Re-reading the same page (an undo, a layer toggle) doesn't bring it back.
+    h.state_mut().views[0].invalidate_content();
+    h.state_mut().views[0].cut_pages.insert(0);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("holds more content").is_none(), "the dismissed page stays dismissed");
+    h.state_mut().views[0].cut_pages.insert(1);
+    h.run_steps(2);
+    h.get_by_label_contains("2 pages hold more content than PdfCraft can read, page 1 first");
+}
+
 #[test]
 fn virtualized_organizer_keeps_insert_gaps_at_document_positions() {
     use egui_kittest::kittest::Queryable;
