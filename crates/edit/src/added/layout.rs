@@ -129,6 +129,11 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
             return Some(c);
         }
         let rest = AddedText { text: t.text.chars().filter(|c| !is_thai(*c)).collect(), ..t.clone() };
+        // Text with Thai is laid out by `draw_shaped`, which writes its Latin runs in WinAnsi:
+        // the extra letters (#2098) get no codes of their own there and would come out as `?`.
+        if let Some(c) = rest.text.chars().find(|c| pdfcraft_fonts::extra_letter(*c).is_some()) {
+            return Some(c);
+        }
         return first_undrawable(&rest);
     }
     // Arabic or Hebrew that nothing can draw: there's no face, or the face lacks it.

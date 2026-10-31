@@ -8702,3 +8702,21 @@ fn styled_existing_justification_is_refused_instead_of_silently_left_aligning() 
     assert_eq!(page_content_bytes(&doc, 0), before);
     assert_eq!(page_content_bytes(&reopen(&doc), 0), before);
 }
+
+/// Review on #3076: Thai text is laid out by `draw_shaped`, which writes its Latin runs in WinAnsi,
+/// so a Central European letter beside Thai has no code there and would be saved as `?`. It is
+/// refused, as in Arabic or Hebrew text; on its own the same letter is written (#2098).
+#[test]
+fn central_european_letters_beside_thai_are_refused() {
+    if pdfcraft_fonts::document_thai_font().is_none() {
+        return;
+    }
+    let t = AddedText { rect: [20.0, 100.0, 250.0, 300.0], text: "ทดสอบ čć".into(), size: 16.0, ..AddedText::default() };
+    assert_eq!(first_undrawable(&t), Some('č'));
+    let mut doc = fixture();
+    let before = list_added(&doc);
+    let err = add_content(&mut doc, 0, &Content::Text(t.clone())).unwrap_err().to_string();
+    assert!(err.contains("U+010D"), "{err}");
+    assert_eq!(list_added(&doc), before);
+    assert_eq!(first_undrawable(&AddedText { text: "čć".into(), ..t }), None);
+}
