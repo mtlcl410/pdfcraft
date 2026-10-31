@@ -2098,6 +2098,47 @@ fn addresses_written_as_page_text_are_listed_with_text_links() {
     assert!(r[0] > 100.0 && r[0] < 140.0 && r[1] < 92.0 && r[3] > 80.0, "{r:?}");
 }
 
+/// An address on a layer the viewer hides is not a text link: link_list reads the page text
+/// with the layers as layer_set left them.
+#[test]
+fn text_links_leave_out_addresses_on_hidden_layers() {
+    let dir = workdir("text-links-layers");
+    let content =
+        "BT /F1 14 Tf 72 700 Td (https://example.com/shown) Tj ET\n/OC /L1 BDC BT /F1 14 Tf 72 650 Td (https://example.com/layered) Tj ET EMC\n";
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R] /D << /Order [6 0 R] >> >> >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> /Properties << /L1 6 0 R >> >> /Contents 4 0 R >>".into(),
+        format!("<< /Length {} >>\nstream\n{content}endstream", content.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /Type /OCG /Name (Addresses) >>".into(),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    std::fs::write(dir.join("layers.pdf"), pdf).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "layers.pdf" }))["doc"].as_u64().unwrap();
+    let urls = |a: &mut Automation| -> Vec<String> {
+        let listed = ok(a, "link_list", json!({ "doc": doc, "text_links": true }));
+        listed["text_links"].as_array().unwrap().iter().map(|l| l["url"].as_str().unwrap().to_owned()).collect()
+    };
+    assert_eq!(urls(&mut a), ["https://example.com/shown", "https://example.com/layered"]);
+    ok(&mut a, "layer_set", json!({ "doc": doc, "layer": "Addresses", "visible": false }));
+    assert_eq!(urls(&mut a), ["https://example.com/shown"]);
+    ok(&mut a, "layer_set", json!({ "doc": doc, "layer": "Addresses", "visible": true }));
+    assert_eq!(urls(&mut a), ["https://example.com/shown", "https://example.com/layered"]);
+}
+
 #[test]
 fn bookmarks_from_structure_through_tools() {
     let dir = workdir("bookmarks-structure");

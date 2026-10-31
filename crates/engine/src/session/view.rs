@@ -148,8 +148,8 @@ impl Session {
     /// annotation lies over.
     pub fn text_links(&self, id: DocId) -> Vec<(usize, crate::text_links::TextLink)> {
         let Some(doc) = self.get(id) else { return Vec::new() };
-        let config = RenderConfig { password: doc.password.as_deref().map(Arc::from), ..Default::default() };
-        let mut r = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), config);
+        // The viewer's settings, so text on a layer it hides is not a link.
+        let mut r = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), doc.config.clone());
         let mut out = Vec::new();
         for (page, info) in doc.info.pages.iter().enumerate() {
             let res = r.render(pdfcraft_render::RenderRequest { page, kind: pdfcraft_render::RequestKind::Text, scale: 1.0, ..Default::default() });
