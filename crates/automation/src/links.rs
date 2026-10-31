@@ -179,7 +179,7 @@ impl Automation {
             (att.name.clone(), bytes)
         };
         // "Embedded go-to actions work only for files of Type PDF" (§12.6.4.4).
-        if !bytes.get(..bytes.len().min(1024)).is_some_and(|head| head.windows(5).any(|w| w == b"%PDF-")) {
+        if !pdfcraft_render::looks_like_pdf(&bytes) {
             return Err(failed(format!("{name} is not a PDF, so the GoToE link can't open it")));
         }
         let id = self.session.open(name.clone(), None, std::sync::Arc::new(bytes), a.opt_str("password")?).map_err(failed)?;

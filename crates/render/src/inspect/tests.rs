@@ -1310,6 +1310,47 @@ fn links_read_embedded_go_to_actions_to_attached_pdfs() {
     );
 }
 
+/// Many GoToE links naming a file attachment annotation by `/NM` read the page's annotations
+/// once, not once per link, and a repeated `/NM` is the first annotation that has it.
+#[test]
+fn embedded_go_to_links_by_annotation_name_read_the_page_once() {
+    const N: usize = 400;
+    let att = |k: usize| 10 + k;
+    let link = |k: usize| 10 + N + k;
+    let mut pdf =
+        String::from("%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+    let annots: Vec<String> = (0..N).map(att).chain((0..N).map(link)).map(|o| format!("{o} 0 R")).collect();
+    pdf += &format!("3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [{}] >> endobj\n", annots.join(" "));
+    for k in 0..N {
+        // The last two attachments share a name: the first of them is the one named.
+        let name = if k == N - 1 { N - 2 } else { k };
+        pdf += &format!("{} 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 1 1] /NM (a{name}) >> endobj\n", att(k));
+    }
+    for k in 0..N {
+        pdf +=
+            &format!("{} 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoToE /T << /R /C /P 0 /A (a{k}) >> >> >> endobj\n", link(k));
+    }
+    pdf += "trailer << /Root 1 0 R >>\n%%EOF";
+    let doc = Document::load_mem(pdf.as_bytes()).expect("loads");
+    let counting = CountingReads { doc: &doc, reads: std::cell::Cell::new(0) };
+    let page = PageInfo { width: 200.0, height: 200.0, crop: [0.0, 0.0, 200.0, 200.0], rotation: 0, label: String::new() };
+    let mut info = DocInfo { pages: vec![page], ..Default::default() };
+    Inspector::new(&counting).fill(&mut info);
+    let indexes: Vec<Option<usize>> = info
+        .links
+        .iter()
+        .map(|l| match &l.target {
+            LinkTarget::EmbeddedGoTo { source: AttachmentSource::Annotation { page: 0, index }, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let want: Vec<Option<usize>> = (0..N).map(|k| (k < N - 1).then_some(k)).collect();
+    assert_eq!(indexes, want);
+    // A handful of reads per annotation; scanning `/Annots` for each link read about 80,000.
+    let reads = counting.reads.get();
+    assert!(reads < 20 * 2 * N, "{reads} object reads");
+}
+
 #[test]
 fn links_read_bounded_local_remote_go_to_actions() {
     use DestView::{Fit, Xyz};

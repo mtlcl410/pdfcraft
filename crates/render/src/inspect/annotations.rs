@@ -1,7 +1,7 @@
 use super::core::{limited_pdf_string, pretty_date, spend};
 use super::model::{Annotation, AttachmentSource, DestView, Field, FieldKind, LayerOp, Link, LinkTarget, RemoteDestination, link_replies};
 use super::navigation::text_string;
-use super::{Dictionary, DocInfo, Entry, HashMap, HashSet, Inspector, Object, ObjectId};
+use super::{Dictionary, DocInfo, Entry, HashMap, HashSet, Inspector, Object, ObjectId, OnceCell};
 
 /// At most this many `/State` entries of a set-layer-visibility action are read.
 const MAX_LAYER_STATE: usize = 1024;
@@ -299,12 +299,22 @@ impl<'a> Inspector<'a> {
 
     /// The position in page `page`'s `/Annots` of the first annotation whose `/NM` is `nm`.
     fn annotation_named(&self, page: usize, nm: &[u8]) -> Option<usize> {
-        let id = *self.page_ids.get(page)?;
-        let page = self.doc.get_dictionary(id).ok()?;
-        let Object::Array(annots) = self.resolve(page.get(b"Annots").ok()?) else { return None };
-        annots.iter().position(|a| {
-            self.dict(a).and_then(|d| d.get(b"NM").ok()).is_some_and(|n| matches!(self.resolve(n), Object::String(b, _) if b.as_slice() == nm))
-        })
+        let pages = self.annotation_names.get_or_init(|| self.page_ids.iter().map(|_| OnceCell::new()).collect());
+        pages.get(page)?.get_or_init(|| self.annotation_names_on(page)).get(nm).copied()
+    }
+
+    /// Each `/NM` on page `page`, with the position in its `/Annots` of the first annotation
+    /// that has it.
+    fn annotation_names_on(&self, page: usize) -> super::core::AnnotationNames {
+        let mut names = HashMap::new();
+        let Some(page) = self.page_ids.get(page).and_then(|id| self.doc.get_dictionary(*id).ok()) else { return names };
+        let Some(Object::Array(annots)) = page.get(b"Annots").ok().map(|a| self.resolve(a)) else { return names };
+        for (i, a) in annots.iter().enumerate() {
+            if let Some(Object::String(nm, _)) = self.dict(a).and_then(|d| d.get(b"NM").ok()).map(|n| self.resolve(n)) {
+                names.entry(nm.clone()).or_insert(i);
+            }
+        }
+        names
     }
 
     /// The non-empty local file an action's `/F` names (a string or a file specification), shared

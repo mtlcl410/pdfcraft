@@ -89,7 +89,7 @@ impl PdfCraftApp {
         };
         // "Embedded go-to actions work only for files of Type PDF" (§12.6.4.4). Checked here, as
         // the Attachments panel's Open would turn a picture or text file into a new PDF.
-        if !looks_like_pdf(&bytes) {
+        if !pdfcraft_render::looks_like_pdf(&bytes) {
             self.notify_fmt("{name} isn't a PDF, so the link can't open it.", &[("name", &att.name)]);
             return;
         }
@@ -161,10 +161,4 @@ impl PdfCraftApp {
             self.open_url(&p.url);
         }
     }
-}
-
-/// Whether `bytes` are a PDF file: the `%PDF-` header (ISO 32000-2 §7.5.2) within their first
-/// 1024 bytes.
-fn looks_like_pdf(bytes: &[u8]) -> bool {
-    bytes.get(..bytes.len().min(1024)).is_some_and(|head| head.windows(5).any(|w| w == b"%PDF-"))
 }

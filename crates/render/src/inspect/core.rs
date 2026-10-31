@@ -133,6 +133,9 @@ pub(super) fn inspect_structure(info: &mut DocInfo, fill: impl FnOnce(&mut DocIn
     }
 }
 
+/// One page's annotations by `/NM`: the position in `/Annots` of the first one with each name.
+pub(super) type AnnotationNames = HashMap<Vec<u8>, usize>;
+
 pub(super) struct Inspector<'a> {
     pub(super) doc: &'a dyn Structure,
     pub(super) page_ids: Vec<ObjectId>,
@@ -144,13 +147,16 @@ pub(super) struct Inspector<'a> {
     /// has no `/P`. Searching every page's `/Annots` for each such field was O(fields ×
     /// annotations): a second on a form of 8,000 fields.
     pub(super) annotation_pages: OnceCell<HashMap<ObjectId, usize>>,
+    /// Per page, the position in `/Annots` of the first annotation with each `/NM`, built when a
+    /// GoToE target names one. Scanning `/Annots` for each link was O(links × annotations).
+    pub(super) annotation_names: OnceCell<Vec<OnceCell<AnnotationNames>>>,
 }
 
 impl<'a> Inspector<'a> {
     pub(super) fn new(doc: &'a dyn Structure) -> Self {
         let page_ids = doc.page_ids();
         let page_index = page_ids.iter().copied().enumerate().map(|(index, id)| (id, index)).collect();
-        let mut me = Self { doc, page_ids, page_index, named: HashMap::new(), annotation_pages: OnceCell::new() };
+        let mut me = Self { doc, page_ids, page_index, named: HashMap::new(), annotation_pages: OnceCell::new(), annotation_names: OnceCell::new() };
         let mut named = HashMap::new();
         if let Some(tree) =
             doc.catalog().ok().and_then(|c| c.get(b"Names").ok()).and_then(|o| me.dict(o)).and_then(|n| n.get(b"Dests").ok()).and_then(|o| me.dict(o))
