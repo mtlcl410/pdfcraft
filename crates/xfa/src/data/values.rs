@@ -38,7 +38,8 @@ fn som_of(doc: &Document, f: &FieldDatum) -> String {
 /// (`New York` is stored as `New_York`); `/PCOn` on the selected widget is the original item.
 /// Without it, a group with one `/Opt` entry per widget exports that entry: its state names may
 /// be positions (`/0`, `/1`; ISO 32000-2 Table 230), and the data holds the item (`1`, `2`).
-fn radio_dataset_value(doc: &Document, f: &FieldDatum, sel: &Option<String>) -> String {
+/// `sel` is the selected on-state name; with none selected the text is empty.
+pub fn radio_dataset_value(doc: &Document, f: &FieldDatum, sel: &Option<String>) -> String {
     let Some(selected) = sel.as_deref().filter(|s| !s.is_empty() && *s != "Off") else {
         return String::new();
     };

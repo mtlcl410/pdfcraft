@@ -6146,6 +6146,30 @@ fn a_static_xfa_radio_group_with_numeric_items_keeps_the_picked_button() {
     }
 }
 
+/// Taking the XFA out of a radio group whose buttons carry `/PCOn` as well as `/Opt` (the item
+/// saving writes ahead of the `/Opt` entry) notes no lost data when the data holds that item:
+/// one equal to the on state, and one equal to neither the state nor the `/Opt` entry.
+#[test]
+fn stripping_xfa_takes_a_radio_items_pcon_as_the_fields_value() {
+    let lang = "form1[0].page1[0].lang[0]";
+    let lost = |s: &Session, id: DocId| {
+        s.get(id).unwrap().info.warnings.iter().filter(|w| w.contains("held a value other than the form's XFA data")).cloned().collect::<Vec<_>>()
+    };
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    // `/PCOn` equals the state: the data's `0` is the first button, whose `/Opt` entry is `1`.
+    let form = pdfcraft_xfa::fixtures::static_radio_shell_with_pcon("<form1><page1><lang>0</lang></page1></form1>", ["0", "1"]);
+    let id = s.open("pcon-state.pdf", None, Arc::new(form), None).unwrap();
+    assert_eq!(s.get(id).unwrap().form.iter().find(|f| f.name == lang).unwrap().value, ["0"]);
+    s.apply(id, Edit::XfaToStatic).unwrap();
+    assert_eq!(lost(&s, id), Vec::<String>::new());
+    // `/PCOn` is neither: a click writes `en` to the data for the first button.
+    let form = pdfcraft_xfa::fixtures::static_radio_shell_with_pcon("<form1><page1><lang/></page1></form1>", ["en", "fr"]);
+    let id = s.open("pcon-item.pdf", None, Arc::new(form), None).unwrap();
+    s.apply(id, Edit::SetFieldValue { name: lang.into(), value: FieldValue::Radio(Some("0".into())) }).unwrap();
+    s.apply(id, Edit::XfaToStatic).unwrap();
+    assert_eq!(lost(&s, id), Vec::<String>::new());
+}
+
 /// A static XFA form whose values are only in its datasets takes every one on opening, as
 /// filling the fields one at a time would leave it: values, appearances and the note; a
 /// read-only field keeps its own value.

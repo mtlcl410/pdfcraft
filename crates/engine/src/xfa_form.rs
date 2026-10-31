@@ -133,8 +133,15 @@ pub(crate) fn strip_xfa(doc: &mut pdfcraft_cos::Document, cx: &mut EditCtx) -> R
             match value {
                 pdfcraft_xfa::FieldData::Text(t) => f.value.join("\n") != *t && !t.trim().is_empty(),
                 pdfcraft_xfa::FieldData::Check(on) => f.value.is_empty() == *on,
-                // The data holds the export value, the field the on-state name.
-                pdfcraft_xfa::FieldData::Radio(sel) => f.value.first().map(|v| f.export_for_state(v)) != sel.as_deref(),
+                // The field holds an on-state name; the data names a button by its item. They agree
+                // when the data holds what saving writes (`/PCOn`, the `/Opt` entry or the state
+                // name), or an export value or state that selects the same button.
+                pdfcraft_xfa::FieldData::Radio(sel) => {
+                    let state = f.value.first().map(String::as_str);
+                    let same_button = sel.as_deref().map(|s| f.state_for_export(s).unwrap_or(s)) == state;
+                    let written = data.iter().find(|d| d.name == *name).map(|d| pdfcraft_xfa::radio_dataset_value(doc, d, &f.value.first().cloned()));
+                    !same_button && written.as_deref() != Some(sel.as_deref().unwrap_or_default())
+                }
                 pdfcraft_xfa::FieldData::None => false,
             }
         })

@@ -2659,6 +2659,11 @@ fn form_fill_picks_a_radio_option_by_its_export_value() {
         let on: Vec<usize> = f.widgets.iter().enumerate().filter(|(_, w)| w.state.as_deref().is_some_and(|s| s != "Off")).map(|(i, _)| i).collect();
         assert_eq!(on, [pick.parse::<usize>().unwrap() - 1], "picked {pick}");
     }
+    // A number is the same option: `1` is the first button, not the state `/1`.
+    for pick in [1, 2, 3] {
+        ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "title": pick } }));
+        assert_eq!(ok(&mut a, "form_fields", json!({ "doc": doc }))["fields"][0]["value"], pick.to_string(), "picked {pick}");
+    }
     // An on-state name the options do not list still selects its button.
     ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "title": "0" } }));
     assert_eq!(ok(&mut a, "form_fields", json!({ "doc": doc }))["fields"][0]["value"], "1");
