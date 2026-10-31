@@ -37,7 +37,8 @@ pub(crate) fn undrawable(d: &TextDraft, memo: &UndrawableMemo) -> Option<char> {
 pub(crate) type UndrawableMemo = std::cell::RefCell<Option<(AddedText, Option<char>)>>;
 
 /// The warning shown for a draft with `c` in it: in Courier, a Central European letter Helvetica
-/// and Times draw but Acrobat's stand-in for Courier doesn't (review on #3076) says so.
+/// and Times draw but a widely used viewer's stand-in for Courier doesn't (review on #3076) says
+/// so.
 pub(crate) fn draft_undrawable_message(d: &TextDraft, c: char) -> String {
     if d.style.family == pdfcraft_engine::FontFamily::Courier && pdfcraft_fonts::extra_letter(c).is_some() {
         return crate::i18n::fmt(

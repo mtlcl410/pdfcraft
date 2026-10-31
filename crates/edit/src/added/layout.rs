@@ -143,8 +143,8 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
         return Some(c);
     }
     if !shaped_by_a_face(t) {
-        // Acrobat's stand-in for Courier has no glyphs for the extra letters (it draws boxes,
-        // seen in Acrobat Pro, review on #3076), so Courier keeps refusing them.
+        // A widely used viewer's stand-in for Courier has no glyphs for the extra letters (it
+        // draws boxes, review on #3076), so Courier keeps refusing them.
         if t.family == Family::Courier
             && let Some(c) = t.text.chars().find(|c| pdfcraft_fonts::extra_letter(*c).is_some())
         {

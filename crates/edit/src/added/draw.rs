@@ -294,8 +294,8 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                 encoding.set(b"BaseEncoding".to_vec(), Object::name("WinAnsiEncoding"));
                 encoding.set(b"Differences".to_vec(), Object::Array(differences));
                 font.set(b"Encoding".to_vec(), Object::Dict(encoding));
-                // Widths and text by code: Acrobat takes neither from the /Differences glyph
-                // names, so it drew the letters on top of one another and copied them without
+                // Widths and text by code: a widely used viewer takes neither from the /Differences
+                // glyph names, so it drew the letters on top of one another and copied them without
                 // their accents (review on #3076).
                 font.set(b"FirstChar".to_vec(), Object::Int(0));
                 font.set(b"LastChar".to_vec(), Object::Int(255));

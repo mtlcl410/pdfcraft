@@ -3,9 +3,9 @@
 //! nonetheless carry. Text that uses them is written with an `/Encoding` whose `/Differences` give
 //! the letters it uses codes of their own ([`LatinEncoding`]), drawn from the viewer's standard
 //! fonts (ISO 32000-2 §9.6.5), so nothing is embedded. The font also gets `/Widths` and a
-//! `/ToUnicode` CMap ([`LatinEncoding::widths`], [`LatinEncoding::to_unicode`]): checked in Acrobat
-//! Pro (review on #3076), Acrobat took neither the widths nor the text from the glyph names, so
-//! the letters were drawn on top of one another and copied without their accents.
+//! `/ToUnicode` CMap ([`LatinEncoding::widths`], [`LatinEncoding::to_unicode`]): checked in a
+//! widely used viewer (review on #3076), it took neither the widths nor the text from the glyph
+//! names, so the letters were drawn on top of one another and copied without their accents.
 
 use crate::std14::Std14;
 use crate::std14_metrics::EXTRA_LETTERS;
@@ -133,8 +133,8 @@ impl LatinEncoding {
 
     /// The `/Widths` of codes 0 to 255 (`/FirstChar 0 /LastChar 255`) in `font`: each extra
     /// letter's Core14 width at its code, the WinAnsi widths elsewhere. A viewer that doesn't
-    /// take widths from the `/Differences` glyph names (Acrobat) would otherwise give the
-    /// letters' codes no advance.
+    /// take widths from the `/Differences` glyph names (a widely used one doesn't) would otherwise
+    /// give the letters' codes no advance.
     pub fn widths(&self, font: Std14) -> Vec<f64> {
         (0..=255u8)
             .map(|code| match self.letters.iter().find(|&&(_, at, _)| at == code) {
@@ -240,9 +240,9 @@ mod tests {
         assert_eq!(extra_letter('a'), None);
     }
 
-    /// Review on #3076: Acrobat took neither the widths nor the text from the glyph names, so
-    /// the font carries both by code. Each extra letter's code has its Core14 width and maps to
-    /// the letter; the other codes keep their WinAnsi width and character.
+    /// Review on #3076: a widely used viewer took neither the widths nor the text from the glyph
+    /// names, so the font carries both by code. Each extra letter's code has its Core14 width and
+    /// maps to the letter; the other codes keep their WinAnsi width and character.
     #[test]
     fn the_encoding_gives_widths_and_text_by_code() {
         let e = LatinEncoding::for_text("čćđ Đakovo").expect("an encoding");

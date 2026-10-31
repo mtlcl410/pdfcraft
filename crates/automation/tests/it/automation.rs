@@ -9426,7 +9426,7 @@ fn page_add_text_writes_central_european_letters() {
     for (i, (font, text)) in samples.iter().enumerate() {
         ok(&mut a, "page_add_text", json!({"doc":doc,"page":1,"text":text,"font":font,"bold":i == 1,"at":[40, 60 + 40 * i],"width":500,"size":16}));
     }
-    // Courier refuses them: Acrobat's stand-in for Courier draws boxes for them (review on #3076).
+    // Courier refuses them: a widely used viewer's stand-in for Courier draws boxes for them (review on #3076).
     let err = a.call("page_add_text", &json!({"doc":doc,"page":1,"text":"Ďáblice ťuk","font":"courier","at":[40,140]})).unwrap_err().to_string();
     assert!(err.contains("U+010E") && err.contains("Helvetica and Times"), "{err}");
     let err = a.call("page_add_text", &json!({"doc":doc,"page":1,"text":"Brașov","at":[40,300]})).unwrap_err().to_string();

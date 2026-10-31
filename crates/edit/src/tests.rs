@@ -6980,10 +6980,10 @@ fn central_european_letters_on_several_lines_keep_their_codes() {
     }
 }
 
-/// Review on #3076, checked in Acrobat Pro: a font with extra letters carries their widths and
-/// their text by code (`/FirstChar 0 /LastChar 255 /Widths`, `/ToUnicode`), as Acrobat took
-/// neither from the glyph names; and Courier refuses them, since Acrobat's stand-in for Courier
-/// draws boxes for them.
+/// Review on #3076, checked in a widely used viewer: a font with extra letters carries their
+/// widths and their text by code (`/FirstChar 0 /LastChar 255 /Widths`, `/ToUnicode`), as that
+/// viewer took neither from the glyph names; and Courier refuses them, since its stand-in for
+/// Courier draws boxes for them.
 #[test]
 fn central_european_letters_carry_widths_and_text_and_courier_refuses_them() {
     let mut doc = fixture();

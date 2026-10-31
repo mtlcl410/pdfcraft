@@ -417,7 +417,7 @@ pub fn undrawable_message(c: char) -> String {
 }
 
 /// The wording of the refusal for Courier text with `c`, a letter Helvetica and Times draw but
-/// Acrobat's stand-in for Courier doesn't (review on #3076).
+/// a widely used viewer's stand-in for Courier doesn't (review on #3076).
 pub fn courier_undrawable_message(c: char) -> String {
     format!("Courier can't draw \"{c}\" (U+{:04X}) in other PDF viewers; Helvetica and Times can", u32::from(c))
 }
