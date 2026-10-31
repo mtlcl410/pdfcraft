@@ -224,6 +224,10 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     let variant = (1..face.maxp().unwrap().num_glyphs())
         .find(|&g| post.glyph_name(skrifa::raw::types::GlyphId16::new(g)) == Some("a.1"))
         .expect("Inter has a.1");
+    // A glyph whose name has no Unicode value: its code reads as WinAnsi, as the renderer reads it.
+    let unnamed = (1..face.maxp().unwrap().num_glyphs())
+        .find(|&g| post.glyph_name(skrifa::raw::types::GlyphId16::new(g)).is_some_and(|n| !n.starts_with('.') && glyph_text(n).is_none()))
+        .expect("Inter has a glyph whose name has no text");
     // A format 6 Mac cmap over codes 3..=0x57: each letter at its code minus 29.
     let (first, last) = (3u16, 0x57u16);
     let mut glyphs = vec![0u16; usize::from(last - first + 1)];
@@ -252,8 +256,8 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
             .collect();
         words.iter().flat_map(|w| w.to_be_bytes()).collect::<Vec<u8>>()
     };
-    // Symbol (3,0): 0xF020 → k, 0xF0C0 → é, 0xF0C1 → a.1, 0xF0C2 → x.
-    let symbol = format4(&[(0xF020, gid('k')), (0xF0C0, gid('é')), (0xF0C1, variant), (0xF0C2, gid('x')), (0xF0C3, gid('w'))]);
+    // Symbol (3,0): 0xF020 → k, 0xF0C0 → é, 0xF0C1 → a.1, 0xF0C2 → x, 0xF0C4 → the unnamed glyph.
+    let symbol = format4(&[(0xF020, gid('k')), (0xF0C0, gid('é')), (0xF0C1, variant), (0xF0C2, gid('x')), (0xF0C3, gid('w')), (0xF0C4, unnamed)]);
     // Unicode (3,1), after it: 0xC2 → z. The renderer reads the (3,0) record, offsets and
     // all, before this one, so code 0xC2 is `x`.
     let unicode = format4(&[(0xC2, gid('z'))]);
@@ -315,6 +319,7 @@ fn a_symbolic_truetype_font_without_an_encoding_reads_its_glyph_names() {
     let f = font(&mut doc, vec![("Subtype", Object::name("TrueType")), ("FontDescriptor", Object::Dict(descriptor))]);
     assert_eq!(Metrics::from_dict(&doc, &f).decode(&codes), TEXT, "a swapped post version");
     assert_eq!(symbolic.decode(&[0x20, 0xC0, 0xC1, 0xC2, 0xC3]), "kéaxw");
+    assert_eq!(symbolic.decode(&[0xC4]), "Ä", "a glyph name with no text reads as WinAnsi, not Standard's `tilde`");
     assert_eq!(symbolic.encode("Solid").as_deref(), Some(&codes[..5]), "typing sets the same glyphs");
     // A named encoding, or the Nonsymbolic flag, says what the codes are: they read through it.
     assert_eq!(metrics(4, Some(Object::name("WinAnsiEncoding"))).decode(&codes), "6ROLGVWDWH");

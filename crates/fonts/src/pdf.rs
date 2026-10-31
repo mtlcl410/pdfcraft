@@ -1232,7 +1232,9 @@ pub fn glyph_unicode(name: &str) -> Option<char> {
 /// selects it: the code, then at 0xF000, 0xF100 and 0xF200). Such a font's codes need not be
 /// Standard or WinAnsi: FrameMaker files distilled with Distiller 3 number them in the Macintosh
 /// glyph order, 29 below ASCII, so `Solid` read as `6ROLG` and typing set the wrong glyphs (#3962).
-/// Codes without a glyph, or whose glyph has no name with a Unicode value, are left out.
+/// Codes without a glyph are left out. A code whose glyph has no name with a Unicode value reads
+/// as WinAnsi, as the renderer reads it (vendored hayro-interpret patch (53)), so the editor and
+/// extraction agree: `€` for code 0x80, which Standard leaves without a character.
 fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
     use skrifa::GlyphId;
     use skrifa::raw::{FontData, FontRead as _, TableProvider as _, tables::cmap::PlatformId, tables::post::Post, types::Tag};
@@ -1276,7 +1278,11 @@ fn symbolic_glyph_texts(doc: &Document, font: &Dict) -> Vec<(u32, String)> {
                 offsets.iter().find_map(|o| subtable.map_codepoint(code + o).filter(|g| *g != GlyphId::NOTDEF))
             })?;
             let glyph = u16::try_from(glyph.to_u32()).ok()?;
-            Some((code, glyph_text(post_name(&post, &custom, glyph)?)?))
+            let winansi = || {
+                let u = crate::encodings::WIN_ANSI.get(usize::try_from(code).ok()?).copied().filter(|u| *u != 0)?;
+                char::from_u32(u).map(String::from)
+            };
+            Some((code, post_name(&post, &custom, glyph).and_then(glyph_text).or_else(winansi)?))
         })
         .collect()
 }
