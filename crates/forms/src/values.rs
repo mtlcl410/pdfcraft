@@ -727,18 +727,10 @@ fn first_pick(seen: &mut [bool], i: usize) -> bool {
     }
 }
 
-/// The twin's positions for the source's picked positions `picked`: each picked option goes to
-/// the twin's first not yet taken option with the same export value and text. `None` when one
-/// has no such option there. The positions come back in ascending order, as `/I` lists them.
+/// The twin's positions for the source's picked positions `picked`, as
+/// [`crate::option_positions_in`] maps them, in ascending order, as `/I` lists them.
 fn twin_positions(picked: &[usize], source: &[(String, String)], twin: &[(String, String)]) -> Option<Vec<usize>> {
-    let mut free: std::collections::HashMap<(&str, &str), std::collections::VecDeque<usize>> = std::collections::HashMap::new();
-    for (i, (e, d)) in twin.iter().enumerate() {
-        free.entry((e.as_str(), d.as_str())).or_default().push_back(i);
-    }
-    let mut out = picked
-        .iter()
-        .map(|&p| source.get(p).and_then(|(e, d)| free.get_mut(&(e.as_str(), d.as_str()))).and_then(|q| q.pop_front()))
-        .collect::<Option<Vec<usize>>>()?;
+    let mut out = crate::option_positions_in(picked, source, twin)?;
     out.sort_unstable();
     Some(out)
 }

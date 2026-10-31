@@ -238,6 +238,14 @@ impl Field {
         }
     }
 
+    /// Combo and list boxes: this field's option positions `picked` as positions in `other`'s
+    /// options, in the same order. Same-name twins are one field (ISO 32000-2 §12.7.3.1) but can
+    /// list their options in different orders, and a value given by position is read in the first
+    /// twin's options. `None` when an option picked has no match in `other`.
+    pub fn positions_in(&self, other: &Field, picked: &[usize]) -> Option<Vec<usize>> {
+        option_positions_in(picked, &self.options, &other.options)
+    }
+
     /// Combo and list boxes: the selected options in the order the value names them (`/V` keeps
     /// the order they were picked in), so the last is the latest pick.
     pub fn picked_in_order(&self) -> Vec<usize> {
@@ -356,4 +364,15 @@ fn name_obj(text: &str) -> Object {
 
 fn invalid<T>(m: impl Into<String>) -> Result<T, FormError> {
     Err(FormError::Invalid(m.into()))
+}
+
+/// The positions in `target` of the options at positions `picked` in `source`, in the same order:
+/// each goes to `target`'s first not yet taken option with the same export value and text, so two
+/// options sharing both stay apart. `None` when one has no such option in `target`.
+pub(crate) fn option_positions_in(picked: &[usize], source: &[(String, String)], target: &[(String, String)]) -> Option<Vec<usize>> {
+    let mut free: std::collections::HashMap<(&str, &str), std::collections::VecDeque<usize>> = std::collections::HashMap::new();
+    for (i, (e, d)) in target.iter().enumerate() {
+        free.entry((e.as_str(), d.as_str())).or_default().push_back(i);
+    }
+    picked.iter().map(|&p| source.get(p).and_then(|(e, d)| free.get_mut(&(e.as_str(), d.as_str()))).and_then(|q| q.pop_front())).collect()
 }

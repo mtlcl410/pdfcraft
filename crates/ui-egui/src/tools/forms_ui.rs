@@ -295,7 +295,18 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, form: &[FormField], allowed: b
                 // A single-select list holding an array is written as one value even when its shown
                 // row is clicked again.
                 if picked != in_order || f.single_value_is_array {
-                    view.pending_edit = Some(Edit::SetFieldValue { name: f.name.clone(), value: FieldValue::ChoiceIndices(picked) });
+                    // The edit names the field, and positions are read in the first field of that
+                    // name: a same-name twin listing its options in another order gives its own
+                    // picks as positions there. One option missing there goes by export value.
+                    let first = form.iter().find(|x| x.name == f.name).filter(|x| x.obj != f.obj);
+                    let value = match first {
+                        None => FieldValue::ChoiceIndices(picked),
+                        Some(first) => match f.positions_in(first, &picked) {
+                            Some(there) => FieldValue::ChoiceIndices(there),
+                            None => FieldValue::Choice(picked.iter().filter_map(|&i| f.options.get(i)).map(|(e, _)| e.clone()).collect()),
+                        },
+                    };
+                    view.pending_edit = Some(Edit::SetFieldValue { name: f.name.clone(), value });
                 }
             }
         }

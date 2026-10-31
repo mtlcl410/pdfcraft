@@ -1352,6 +1352,45 @@ fn a_list_box_click_picks_one_of_two_options_with_the_same_export_value() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Same-name list boxes are one field (ISO 32000-2 §12.7.3.1), and a twin can list the options
+/// sharing an export value in another order: clicking One-B in the second gives both One-B, not
+/// the option at the same position in the first.
+#[test]
+fn a_click_in_a_twin_list_box_with_options_in_another_order_picks_the_row_clicked() {
+    let bytes = pdf_from_objects(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 6 0 R] /NeedAppearances true /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 400 400] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 6 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (dup) /Opt [[(1) (One-A)] [(1) (One-B)] [(2) (Two)]] /Rect [50 250 200 320] /P 3 0 R /F 4 >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (dup) /Opt [[(1) (One-B)] [(1) (One-A)] [(2) (Two)]] /Rect [50 100 200 170] /P 3 0 R /F 4 >>",
+    ]);
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("twins.pdf", None, bytes).unwrap();
+        app.set_option("left", "closed").unwrap();
+        app.set_option("zoom", "100").unwrap();
+        app
+    });
+    h.run_steps(4);
+    let twins = |h: &Harness<'static, PdfCraftApp>| -> Vec<Vec<usize>> {
+        let s = h.state();
+        s.session.get(s.views[0].id).unwrap().form.iter().filter(|f| f.name == "dup").map(|f| f.selected.clone()).collect()
+    };
+    let r = {
+        let s = h.state();
+        let doc = s.session.get(s.views[0].id).unwrap();
+        let f = doc.form.iter().filter(|f| f.name == "dup").nth(1).unwrap();
+        pdfcraft_ui_egui::forms_ui::field_screen_rect(&s.views[0], &doc.info, f, 0).expect("on screen")
+    };
+    let zoom = r.height() / 70.0;
+    // Row 0 of the second list box: One-B.
+    click_at(&mut h, egui::pos2(r.center().x, r.min.y + 8.0 * zoom));
+    assert_eq!(value(&h, "dup"), ["1"]);
+    assert_eq!(twins(&h), [vec![1], vec![0]], "One-B in both: second in the first, first in the twin");
+}
+
 /// ISO 32000-2 Table 233: a list box without MultiSelect selects "at most one item". Given
 /// `/V [(TW) (JP)]` it shows Taiwan alone, and a click writes the one option clicked.
 #[test]
