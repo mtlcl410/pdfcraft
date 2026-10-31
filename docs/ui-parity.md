@@ -31,7 +31,7 @@ No dump of Acrobat's menu tree has been diffed against the registry yet (gap 24)
 | Document tabs | yes | yes, with unsaved marker | shipped |
 | Multiple windows, drag a tab out | yes | no | planned |
 | Split window, spreadsheet split | yes | no | planned |
-| Read mode, full screen | yes | yes; full screen is one fitted page at a time on black, click/keys turn pages (#1459), a right-click or Shift+Enter goes back, page transitions and display times play (#379), a still pointer hides | shipped; loop after the last page and the full-screen preferences planned |
+| Read mode, full screen | yes | yes; full screen is one fitted page or spread at a time on black, and background clicks and keys turn pages while clicks on links, comments, fields and other page objects do not (#1459), a right-click or Shift+Enter goes back, page transitions and display times play (#379), a still pointer hides | shipped; loop after the last page and the full-screen preferences planned |
 | Light, dark, system theme | yes | yes | shipped |
 | Side panels: thumbnails, bookmarks, attachments, layers, comments, fields, signatures | yes | yes; panels keep their width (#704); the Pages inspector has a 50–150% thumbnail size slider and buttons (#3808) | shipped |
 | Destinations, articles, model tree, Tags, Order, Content panels | yes | no | planned |

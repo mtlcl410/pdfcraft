@@ -2147,3 +2147,40 @@ fn a_display_time_starts_once_the_page_has_rendered() {
     presenter_frame(&ctx, &mut v, &info, 6.6);
     assert_eq!(v.current, 1, "its second on screen is up");
 }
+
+/// In two-page view a display time counts from when the whole spread is on screen: one page of
+/// it still showing Rendering… holds the spread (#5316 review).
+#[test]
+fn a_display_time_in_two_page_view_waits_for_the_whole_spread() {
+    use pdfcraft_render::PageTransition;
+    let page = pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 };
+    let timed = PageTransition {
+        page: 0,
+        style: None,
+        duration: 1.0,
+        horizontal: false,
+        inward: false,
+        direction: Some(0),
+        scale: 1.0,
+        opaque: false,
+        display: Some(1.0),
+    };
+    let info = DocInfo { pages: vec![page.clone(), page.clone(), page.clone(), page], transitions: vec![timed], ..Default::default() };
+    let mut v = DocView::new(DocId(1), &info, ViewDefaults { layout: PageLayout::TwoUp, continuous: false, ..Default::default() });
+    v.enter_presentation();
+    let ctx = egui::Context::default();
+    let tex = |ctx: &egui::Context| ctx.load_texture("page", egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), Default::default());
+    let r = Rect::from_min_size(Pos2::ZERO, egui::vec2(300.0, 400.0));
+    v.screen_rects = vec![(0, r), (1, r.translate(egui::vec2(300.0, 0.0)))];
+    v.pages.insert(0, super::cache::PageTex { tag: 0, tex: tex(&ctx) });
+    for now in [0.0, 1.0, 2.0, 5.0] {
+        presenter_frame(&ctx, &mut v, &info, now);
+    }
+    assert_eq!(v.current, 0, "page 2 of the spread is still rendering: the spread's second has not started");
+    v.pages.insert(1, super::cache::PageTex { tag: 0, tex: tex(&ctx) });
+    presenter_frame(&ctx, &mut v, &info, 5.5);
+    presenter_frame(&ctx, &mut v, &info, 6.0);
+    assert_eq!(v.current, 0, "half of its second on screen");
+    presenter_frame(&ctx, &mut v, &info, 6.6);
+    assert_eq!(v.current, 2, "its second on screen is up: the next spread");
+}

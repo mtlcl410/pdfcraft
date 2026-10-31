@@ -122,8 +122,10 @@ pub(super) fn frame(
             Some(Turn { from_page, from, to_page: page, effect, seconds, started: None })
         });
         // Its display time starts once the page is on screen, not while it still says Rendering…
-        // (or at once for a page the renderer can't draw, which never will be).
-        let ready = view.pages.contains_key(&page) || view.errors.contains_key(&page);
+        // (or at once for a page the renderer can't draw, which never will be). In two-page view
+        // that is every page of the spread, so the spread isn't turned before both were shown.
+        let drawn = |p: &usize| view.pages.contains_key(p) || view.errors.contains_key(p);
+        let ready = drawn(&page) && view.screen_rects.iter().all(|(p, _)| drawn(p));
         view.presenter.shown = if turn.is_some() || !ready { None } else { Some((page, now)) };
         view.presenter.turn = turn;
     }

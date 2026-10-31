@@ -2873,9 +2873,6 @@ fn shown_row(view: &DocView, rects: &[Rect]) -> Vec<usize> {
     }
 }
 
-/// Full screen: a click on the document goes forward a page and a shift-click back, as in
-/// Acrobat, unless the click did something else (a link, a word selected). Decided once the pages
-/// have had the click. `Some(back)` on the frame of a click, `back` when it was a shift-click.
 /// The pages' context menu, except in full screen, where a right-click turns back a page instead
 /// ([`presentation_click_state`]).
 fn page_context_menu(resp: &egui::Response, presenting: bool, add: impl FnOnce(&mut egui::Ui)) {
@@ -2884,6 +2881,9 @@ fn page_context_menu(resp: &egui::Response, presenting: bool, add: impl FnOnce(&
     }
 }
 
+/// Full screen: a click on the document goes forward a page and a shift-click back, as in
+/// Acrobat, unless the click did something else (a link, a word selected). Decided once the pages
+/// have had the click. `Some(back)` on the frame of a click, `back` when it was a shift-click.
 fn presentation_click_state(ui: &egui::Ui, view: &DocView, navigation_rect: Rect, enabled: bool) -> Option<bool> {
     let presenting = view.presentation.is_some() && enabled;
     // A right-click goes back a page, as a left click goes forward (*Adobe Acrobat Help*, 2019,
