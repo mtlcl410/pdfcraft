@@ -367,6 +367,34 @@ fn a_signed_save_that_finds_the_file_changed_asks_about_that_too() {
     assert_ne!(std::fs::read(&file.path).unwrap(), fixture(4));
 }
 
+/// `bytes` signed with the test certificate.
+fn signed(bytes: &[u8]) -> Vec<u8> {
+    let mut session = pdfcraft_engine::Session::new();
+    let id = session.open("signed.pdf", None, std::sync::Arc::new(bytes.to_vec()), None).unwrap();
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = pdfcraft_engine::sign::pkcs12::open(&p12, "test").unwrap();
+    let opts = pdfcraft_engine::SignOptions { page: 0, rect: Some([20.0, 20.0, 160.0, 50.0]), ..Default::default() };
+    session.sign(id, &digital_id, opts).unwrap().as_ref().clone()
+}
+
+/// #2187 review: a reload keeps the tab's document id, but the new version's signatures were
+/// never asked about: its first change asks again (#2168).
+#[test]
+fn a_reloaded_signed_file_asks_again_before_its_first_change() {
+    let file = TempPdf::new("signed-reload", &signed(&fixture(2)));
+    let mut h = harness(&file.path);
+    let id = h.state().views[0].id;
+    // Change anyway was answered for this version.
+    h.state_mut().signed_edits_confirmed.insert(id);
+    file.rebuild(&signed(&fixture(3)));
+    h.run_steps(3);
+    assert_eq!(pages(&h), 3, "the new version shows");
+    assert_eq!(h.state().views[0].id, id, "in the same tab, under the same id");
+    rotate_first_page(&mut h);
+    assert_eq!(h.state().dialog, Some(pdfcraft_ui_egui::Dialog::SignedEdit), "the new version's first change asks");
+    assert!(!dirty(&h), "and waits for the answer");
+}
+
 /// With the watcher off nothing notices the change until Save looks at the file.
 #[test]
 fn saving_checks_the_file_with_the_watcher_off_too() {
