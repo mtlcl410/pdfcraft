@@ -133,7 +133,9 @@ fn open_focus(f: &FormField, widget: usize) -> Focus {
 /// buttons sharing a state are exclusive unless the group has RadiosInUnison (ISO 32000-2
 /// Table 229).
 fn select_edit(f: &FormField, wi: usize) -> Option<Edit> {
-    let selectable = f.widgets.get(wi).is_some_and(|w| w.on_state.is_some()) && !f.widget_on(wi);
+    // A button read-only on its own (its widget's `/Ff`, Table 227) keeps its focus stop, but
+    // the form would refuse turning it on.
+    let selectable = f.widgets.get(wi).is_some_and(|w| w.on_state.is_some() && !w.read_only) && !f.widget_on(wi);
     selectable.then(|| Edit::SetFieldValue { name: f.name.clone(), value: FieldValue::Widget(wi) })
 }
 

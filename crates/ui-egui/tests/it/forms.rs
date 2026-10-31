@@ -1653,3 +1653,51 @@ fn clicking_a_radio_button_that_shares_its_on_state() {
     assert_eq!(value(&h, "free"), ["S"]);
     assert_eq!(on_widgets(&h, "plain"), [false, false, true]);
 }
+
+/// A radio button read-only on its own (its widget's `/Ff`, ISO 32000-2 Table 227) is still
+/// focused by the arrows and Space, but neither tries to turn it on: the form would refuse the
+/// edit and show a failure for a button the user can't change. A click says it is read-only.
+#[test]
+fn a_read_only_radio_button_is_focused_but_not_selected() {
+    let kid = |x: u32, state: &str, extra: &str| {
+        format!(
+            "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /AS /Off {extra}/Rect [{x} 350 {} 366] /P 3 0 R /F 4 /AP << /N << /{state} 5 0 R /Off 5 0 R >> >> >>",
+            x + 16
+        )
+    };
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) >> >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [7 0 R 8 0 R] >>".into(),
+        "<< >>".into(),
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 16 16] /Length 0 >>\nstream\n\nendstream".into(),
+        "<< /FT /Btn /T (size) /Ff 32768 /V /Off /Kids [7 0 R 8 0 R] >>".into(),
+        kid(20, "S", ""),
+        kid(60, "L", "/Ff 1 "),
+    ];
+    let objs: Vec<&str> = objs.iter().map(String::as_str).collect();
+    let bytes = pdf_from_objects(&objs);
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("radios.pdf", None, bytes).unwrap();
+        app.set_option("left", "closed").unwrap();
+        app.set_option("zoom", "150").unwrap();
+        app
+    });
+    h.run_steps(6);
+    click_field(&mut h, "size", 0);
+    assert_eq!(value(&h, "size"), ["S"]);
+    let toast = |h: &Harness<'static, PdfCraftApp>| h.state().toast.as_ref().map(|(m, _)| m.clone());
+    assert_eq!(toast(&h), None);
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    assert_eq!(focused(&h), Some(("size".into(), 1)), "the arrow still moves onto the read-only button");
+    assert_eq!((value(&h, "size"), toast(&h)), (vec!["S".to_string()], None), "and leaves the selection alone");
+    h.key_press(egui::Key::Space);
+    h.run_steps(3);
+    assert_eq!((value(&h, "size"), toast(&h)), (vec!["S".to_string()], None), "Space doesn't select it");
+    // A click says why nothing happens, as for any read-only field, and is no failed edit.
+    click_field(&mut h, "size", 1);
+    assert_eq!((value(&h, "size"), toast(&h)), (vec!["S".to_string()], Some("size is read-only".to_string())), "nor does a click");
+}
