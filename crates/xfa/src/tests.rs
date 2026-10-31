@@ -4174,3 +4174,30 @@ fn clear_password_values_clears_static_xfa_password_fields() {
     let packets = read_packets(&doc).unwrap().unwrap();
     assert!(!packets.xdp.contains("hunter2"), "{}", packets.xdp);
 }
+
+/// Review on #5010: the text the reader returns is held to what `parse` accepts. A packet within
+/// the 64 MB byte limit that isn't valid UTF-8 grows as each bad byte becomes a three-byte
+/// replacement character: 33 MiB of them come to 99 MiB of text, past the limit, and are refused
+/// as too large rather than handed to `parse`, which would refuse them only later.
+#[test]
+fn packets_whose_text_grows_past_the_template_limit_are_refused() {
+    let mut doc = Document::open(Arc::new(shell("<template><subform/></template>"))).unwrap();
+    let mut bytes = b"<template>".to_vec();
+    bytes.resize(bytes.len() + (33 << 20), 0xFF);
+    assert!(bytes.len() <= crate::packets::MAX_XDP, "the packet is within the byte limit");
+    let packet = pdfcraft_cos::ObjRef::new(5, 0);
+    doc.set(packet, Object::Stream(pdfcraft_cos::Stream::flate(Dict::new(), &bytes)));
+    match read_packets(&doc) {
+        Err(XfaError::TooLarge(m)) => assert!(m.contains("bytes of text"), "{m}"),
+        other => panic!("{:?}", other.map(|p| p.map(|p| p.xdp.len()))),
+    }
+    // As one stream rather than an array of named parts too.
+    let root = doc.root().unwrap();
+    doc.update_dict(root, |c| {
+        let mut acro = c.get(b"AcroForm").and_then(Object::as_dict).cloned().unwrap();
+        acro.set(b"XFA".to_vec(), Object::Ref(packet));
+        c.set(b"AcroForm".to_vec(), Object::Dict(acro));
+    })
+    .unwrap();
+    assert!(matches!(read_packets(&doc), Err(XfaError::TooLarge(_))));
+}
