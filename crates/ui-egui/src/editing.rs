@@ -732,12 +732,23 @@ impl PdfCraftApp {
         let added = view.content.finish_draft(doc.added());
         let paragraph = view.line_editor.take_if(|ed| ed.has_changes()).and_then(crate::edit_text_ui::finished_edit);
         let added_ok = added.is_none_or(|edit| self.apply_edit(edit));
+        // The first change to a signed document waits on its question (#2168), which holds the
+        // edit: that isn't a refusal, so nothing is put back to be committed a second time. Stop
+        // there, as a second edit would take the first one's place in the question; the paragraph
+        // editor stays open for the save that resumes after the answer.
+        if !added_ok && self.signed_edit_waits(id) {
+            if let Some(view) = self.views.iter_mut().find(|v| v.id == id) {
+                view.line_editor = editor;
+            }
+            return false;
+        }
         let paragraph_ok = paragraph.is_none_or(|edit| self.apply_edit(edit));
+        let waits = self.signed_edit_waits(id);
         if let Some(view) = self.views.iter_mut().find(|v| v.id == id) {
             if !added_ok {
                 (view.content.draft, view.content.select_added) = (draft, select_added);
             }
-            if !paragraph_ok {
+            if !paragraph_ok && !waits {
                 view.line_editor = editor;
             }
         }
@@ -759,14 +770,15 @@ impl PdfCraftApp {
         let author = self.comment_prefs.author.clone();
         let rotation = self.session.get(id).map_or(0, |doc| crate::comments::page_rotation(&doc.info, tb.page));
         let edit = crate::fill_sign::typed_with_color(tb.page, tb.at, &text, tb.size, rotation, &author, tb.color);
-        if self.apply_edit(edit) {
-            if let Some(view) = self.views.get_mut(i) {
-                view.fill_text = None;
-            }
-            true
-        } else {
-            false
+        let applied = self.apply_edit(edit);
+        // Waiting on the signed-document question (#2168), the question holds the text: the box
+        // goes, or the save that resumes after the answer would add it again.
+        if (applied || self.signed_edit_waits(id))
+            && let Some(view) = self.views.get_mut(i)
+        {
+            view.fill_text = None;
         }
+        applied
     }
 
     /// When the preference is on, bake Fill & Sign marks before the bytes are written.
