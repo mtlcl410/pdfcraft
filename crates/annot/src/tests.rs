@@ -1071,14 +1071,17 @@ fn rect_of(doc: &Document, page: usize, index: usize) -> Vec<f64> {
 }
 
 /// ISO 32000-2 §12.5.6.2: "Operations that manipulate any annotation in a group, such as
-/// movement, … shall be treated … as acting on the entire group." Moving the primary or any
-/// subordinate moves every member by the same offset, each on its own page, and nothing else.
+/// movement, … shall be treated … as acting on the entire group." Moving the primary or a
+/// subordinate on its page moves both by the same offset, and nothing else. A group is one
+/// page's, as Acrobat (desktop and iPad) and PDF-XChange read it: the Line on page 2, grouped with
+/// the page-1 Square in the file, is a comment of its own and moves alone.
 #[test]
-fn a_group_moves_as_one_across_its_pages() {
+fn a_group_moves_as_one_on_its_page() {
     for moved in ["square", "oval", "line"] {
         let mut doc = fixture();
         let (square, oval, line, other) = spread_group(&mut doc);
-        assert_eq!(group_members(&doc, 1, line).unwrap(), [(0, square), (0, oval), (1, line)], "{moved}: the members, primary first");
+        assert_eq!(group_members(&doc, 0, oval).unwrap(), [(0, square), (0, oval)], "{moved}: the members on page 1, primary first");
+        assert_eq!(group_members(&doc, 1, line).unwrap(), [(1, line)], "{moved}: the Line on page 2 is a group of its own");
         let before = [rect_of(&doc, 0, square), rect_of(&doc, 0, oval), rect_of(&doc, 1, line), rect_of(&doc, 0, other)];
         let (page, index) = match moved {
             "square" => (0, square),
@@ -1087,65 +1090,67 @@ fn a_group_moves_as_one_across_its_pages() {
         };
         move_annotation(&mut doc, page, index, 30.0, -10.0, &meta("m")).unwrap();
         let after = [rect_of(&doc, 0, square), rect_of(&doc, 0, oval), rect_of(&doc, 1, line), rect_of(&doc, 0, other)];
+        let shifted = |b: &[f64]| b.iter().enumerate().map(|(i, x)| x + if i % 2 == 0 { 30.0 } else { -10.0 }).collect::<Vec<f64>>();
+        let page_1 = moved != "line";
         for (k, (b, a)) in before.iter().zip(&after).take(3).enumerate() {
-            let shifted: Vec<f64> = b.iter().enumerate().map(|(i, x)| x + if i % 2 == 0 { 30.0 } else { -10.0 }).collect();
-            assert_eq!(a, &shifted, "{moved}: member {k} moves with the group");
+            let moves = if k == 2 { !page_1 } else { page_1 };
+            assert_eq!(a, &if moves { shifted(b) } else { b.clone() }, "{moved}: annotation {k} moves: {moves}");
         }
         assert_eq!(after[3], before[3], "{moved}: the unrelated Oval stays");
     }
 }
 
-/// A group moves or restyles whole or not at all: one locked member, wherever it is, refuses the
-/// change for every member (ISO 32000-2 §12.5.3, Table 167: Locked; §12.5.6.2).
+/// A group moves or restyles whole or not at all: one locked member refuses the change for every
+/// member (ISO 32000-2 §12.5.3, Table 167: Locked; §12.5.6.2). A locked annotation on another page
+/// is not in the group and holds nothing back.
 #[test]
 fn a_locked_member_holds_its_whole_group() {
     let mut doc = fixture();
     let (square, oval, line, _) = spread_group(&mut doc);
-    set_locked(&mut doc, 1, line, true).unwrap();
-    let before = [rect_of(&doc, 0, square), rect_of(&doc, 0, oval), rect_of(&doc, 1, line)];
+    set_locked(&mut doc, 0, oval, true).unwrap();
+    let before = [rect_of(&doc, 0, square), rect_of(&doc, 0, oval)];
     let colour = list(&doc, 0)[square].get(b"C").cloned();
-    let moved = move_annotation(&mut doc, 0, oval, 30.0, 0.0, &meta("m"));
+    let moved = move_annotation(&mut doc, 0, square, 30.0, 0.0, &meta("m"));
     assert_eq!(moved, Err(AnnotError::Invalid("a comment in its group is locked".into())));
     let styled = set_style(&mut doc, 0, square, StyleChange::new(Some([0.0, 0.0, 1.0]), None, None, None), &meta("s"));
     assert_eq!(styled, Err(AnnotError::Invalid("a comment in its group is locked".into())));
     assert_eq!(set_fill(&mut doc, 0, square, Some([1.0, 1.0, 0.0]), &meta("f")), Err(AnnotError::Invalid("a comment in its group is locked".into())));
-    assert_eq!([rect_of(&doc, 0, square), rect_of(&doc, 0, oval), rect_of(&doc, 1, line)], before, "nothing moved");
+    assert_eq!([rect_of(&doc, 0, square), rect_of(&doc, 0, oval)], before, "nothing moved");
     assert_eq!(list(&doc, 0)[square].get(b"C").cloned(), colour, "nothing restyled");
     assert!(list(&doc, 0)[square].get(b"IC").is_none(), "nothing filled");
-    let own = move_annotation(&mut doc, 1, line, 30.0, 0.0, &meta("m"));
+    let own = move_annotation(&mut doc, 0, oval, 30.0, 0.0, &meta("m"));
     assert_eq!(own, Err(AnnotError::Invalid("the comment is locked".into())), "the locked member itself says so as any comment does");
+
+    set_locked(&mut doc, 0, oval, false).unwrap();
+    set_locked(&mut doc, 1, line, true).unwrap();
+    move_annotation(&mut doc, 0, square, 30.0, 0.0, &meta("m")).unwrap();
 }
 
-/// Restyling or filling one member restyles the group: colour and opacity go to every member,
-/// a width only to those drawn with a border, line endings only to a member with as many, and a
-/// fill only to those that can be filled (ISO 32000-2 §12.5.6.2). Each member is redrawn.
+/// Restyling or filling one member restyles its group on the page: colour and opacity go to every
+/// member, a width only to those drawn with a border, and a fill only to those that can be filled
+/// (ISO 32000-2 §12.5.6.2). Each member is redrawn. The Line on page 2 is not in the group.
 #[test]
 fn a_group_restyles_and_fills_as_one() {
     let mut doc = fixture();
     let (square, oval, line, other) = spread_group(&mut doc);
     let ap = |doc: &Document, page: usize, i: usize| list(doc, page)[i].get(b"AP").cloned();
-    let drawn = [ap(&doc, 0, square), ap(&doc, 0, oval), ap(&doc, 1, line)];
+    let drawn = [ap(&doc, 0, square), ap(&doc, 0, oval)];
+    let line_colour = list(&doc, 1)[line].get(b"C").cloned();
     set_style(&mut doc, 0, oval, StyleChange::new(Some([0.0, 0.0, 1.0]), Some(0.5), Some(3.0), None), &meta("s")).unwrap();
-    for (page, i) in [(0, square), (0, oval), (1, line)] {
-        let d = &list(&doc, page)[i];
-        assert_eq!(d.get(b"C"), Some(&crate::create::rgb([0.0, 0.0, 1.0])), "{page}/{i}: colour");
-        assert_eq!(d.get(b"CA").and_then(|o| o.as_f64()), Some(0.5), "{page}/{i}: opacity");
-        assert_eq!(d.get(b"BS").and_then(|b| b.as_dict()).and_then(|b| b.get(b"W")).and_then(|w| w.as_f64()), Some(3.0), "{page}/{i}: width");
+    for i in [square, oval] {
+        let d = &list(&doc, 0)[i];
+        assert_eq!(d.get(b"C"), Some(&crate::create::rgb([0.0, 0.0, 1.0])), "{i}: colour");
+        assert_eq!(d.get(b"CA").and_then(|o| o.as_f64()), Some(0.5), "{i}: opacity");
+        assert_eq!(d.get(b"BS").and_then(|b| b.as_dict()).and_then(|b| b.get(b"W")).and_then(|w| w.as_f64()), Some(3.0), "{i}: width");
     }
-    assert_ne!([ap(&doc, 0, square), ap(&doc, 0, oval), ap(&doc, 1, line)], drawn, "the members are redrawn");
+    assert_ne!([ap(&doc, 0, square), ap(&doc, 0, oval)], drawn, "the members are redrawn");
     assert!(list(&doc, 0)[other].get(b"CA").is_none(), "the unrelated Oval keeps its style");
+    assert_eq!(list(&doc, 1)[line].get(b"C").cloned(), line_colour, "the Line on page 2 keeps its style");
 
-    let ends = vec![LineEnding::OpenArrow, LineEnding::Circle];
-    set_style(&mut doc, 1, line, StyleChange::new(None, None, None, Some(ends)), &meta("e")).unwrap();
-    assert!(list(&doc, 1)[line].get(b"LE").is_some(), "the line takes the endings");
-    assert!(list(&doc, 0)[square].get(b"LE").is_none(), "the Square has no endings to take");
-
-    set_fill(&mut doc, 1, line, None, &meta("f")).unwrap_err();
     set_fill(&mut doc, 0, oval, Some([1.0, 1.0, 0.0]), &meta("f")).unwrap();
     for i in [square, oval] {
         assert_eq!(list(&doc, 0)[i].get(b"IC"), Some(&crate::create::rgb([1.0, 1.0, 0.0])), "{i}: filled");
     }
-    assert!(list(&doc, 1)[line].get(b"IC").is_none(), "a line can't be filled");
 }
 
 #[test]
@@ -2415,22 +2420,29 @@ fn degenerate_and_absurd_leader_and_caption_values_do_not_panic() {
     assert!(!long.contains(&"w".repeat(257)));
 }
 
-/// Deleting any member deletes the whole group on every page it spans, with the members'
-/// replies, and nothing else (ISO 32000-2 §12.5.6.2): deleting the primary takes the
-/// subordinate on page 2, and deleting that subordinate takes the primary on page 1.
+/// Deleting any member deletes its group on the page, with the members' replies, and nothing
+/// else (ISO 32000-2 §12.5.6.2). The Line on page 2, grouped with the Square in the file, is a
+/// comment of its own and stays, as Acrobat (desktop and iPad) and PDF-XChange keep it; deleting
+/// it takes only it and its reply.
 #[test]
-fn a_group_deletes_as_one_across_its_pages() {
-    for from_page_2 in [false, true] {
-        let mut doc = fixture();
-        let (square, _, line, _) = spread_group(&mut doc);
-        add_reply(&mut doc, 1, line, "on the line", "Ann", &meta("r")).unwrap();
-        let (page, index) = if from_page_2 { (1, line) } else { (0, square) };
-        delete_annotation(&mut doc, page, index).unwrap();
-        let left: Vec<f64> = (0..list(&doc, 0).len()).filter_map(|i| rect_of(&doc, 0, i).first().copied()).collect();
-        assert!(left.contains(&400.0), "{from_page_2}: the unrelated Oval stays: {left:?}");
-        assert!(!left.contains(&100.0) && !left.contains(&300.0), "{from_page_2}: the Square and the Oval in the group are gone: {left:?}");
-        let second: Vec<String> =
-            list(&doc, 1).iter().map(|d| String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned()).collect();
-        assert!(!second.iter().any(|s| s == "Line" || s == "Text"), "{from_page_2}: the Line and its reply on page 2 are gone: {second:?}");
-    }
+fn a_group_deletes_as_one_on_its_page() {
+    let subtypes = |doc: &Document| -> Vec<String> {
+        list(doc, 1).iter().map(|d| String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned()).collect()
+    };
+    let mut doc = fixture();
+    let (square, _, line, _) = spread_group(&mut doc);
+    add_reply(&mut doc, 1, line, "on the line", "Ann", &meta("r")).unwrap();
+    delete_annotation(&mut doc, 0, square).unwrap();
+    let left: Vec<f64> = (0..list(&doc, 0).len()).filter_map(|i| rect_of(&doc, 0, i).first().copied()).collect();
+    assert!(left.contains(&400.0), "the unrelated Oval stays: {left:?}");
+    assert!(!left.contains(&100.0) && !left.contains(&300.0), "the Square and the Oval in its group are gone: {left:?}");
+    let second = subtypes(&doc);
+    assert!(second.iter().any(|s| s == "Line") && second.iter().any(|s| s == "Text"), "the Line on page 2 and its reply stay: {second:?}");
+
+    let mut doc = fixture();
+    let (square, oval, line, _) = spread_group(&mut doc);
+    add_reply(&mut doc, 1, line, "on the line", "Ann", &meta("r")).unwrap();
+    delete_annotation(&mut doc, 1, line).unwrap();
+    assert!(!subtypes(&doc).iter().any(|s| s == "Line" || s == "Text"), "the Line and its reply go");
+    assert!(rect_of(&doc, 0, square).first() == Some(&100.0) && rect_of(&doc, 0, oval).first() == Some(&300.0), "the group on page 1 stays");
 }

@@ -182,7 +182,7 @@ pub(super) fn hover_tip(a: &Annotation, prefs: &CommentPrefs) -> Option<String> 
 /// owner, from [`hit`]). The cursor comes from [`hit`] too.
 fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mut DocView, pointer: Option<Pos2>, origin: Option<Pos2>) -> bool {
     let owner = match view.router.owner(cx.page) {
-        Some(Owner::Comment { index, part }) => cx.held(index).map(|a| (a, part)),
+        Some(Owner::Comment { index, part }) => cx.get(index).map(|a| (a, part)),
         _ => None,
     };
     let cv = &mut view.comments;
@@ -277,11 +277,6 @@ fn select_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, view: &mu
         && let Some((a, _)) = owner
     {
         cv.selected = Some(cx.selects(a));
-        // A subordinate whose primary is on another page selects its group there; the group's
-        // text is the primary's, edited from its card.
-        if cv.selected != Some((cx.page, a.index)) {
-            return true;
-        }
         cv.composer = Some(Composer {
             page: cx.page,
             at: edit_anchor(cx.info, a),

@@ -391,14 +391,9 @@ impl PageCx<'_> {
         self.comments().find(|a| a.index == index)
     }
 
-    /// [`Self::get`], or a group subordinate on this page: what a press on it took hold of when its
-    /// group's primary is on another page ([`Self::click_hit`]).
-    pub(crate) fn held(&self, index: usize) -> Option<&Annotation> {
-        self.get(index).or_else(|| self.group_members().into_iter().map(|(m, _)| m).find(|m| m.index == index))
-    }
-
     /// The group subordinates (`/RT /Group`, ISO 32000-2 §12.5.6.2) on this page, each with the
-    /// comment that is its group's primary, on this page or another.
+    /// comment on this page that is its group's primary. A group is one page's: a subordinate whose
+    /// primary is on another page is a comment of its own (`pdfcraft_render::link_replies`).
     pub(crate) fn group_members(&self) -> Vec<(&Annotation, &Annotation)> {
         let all = &self.info.annotations;
         // Painted every frame a comment is selected: most documents have no group to look up.
@@ -409,23 +404,19 @@ impl PageCx<'_> {
         all.iter()
             .zip(primaries)
             .filter(|(a, _)| a.is_group_member() && a.page == self.page)
-            .filter_map(|(a, p)| Some((a, all.get(p?).filter(|p| p.is_comment())?)))
+            .filter_map(|(a, p)| Some((a, all.get(p?).filter(|p| p.page == self.page && p.is_comment())?)))
             .collect()
     }
 
-    /// What a click at `p` takes hold of on this page: the topmost comment under it or, on a
-    /// group subordinate, the group's primary, which stands for the group. A subordinate whose
-    /// primary is on another page is taken itself, as the group's hold on this page: moving it
-    /// moves the group, and selecting it selects the group ([`Self::selects`]).
+    /// The comment a click at `p` selects: the topmost one under it or, on a group subordinate,
+    /// the group's primary, which stands for the group.
     pub(super) fn click_hit(&self, p: Pos2) -> Option<&Annotation> {
-        self.hit(p).or_else(|| {
-            let (m, primary) = self.group_members().into_iter().rev().find(|(m, _)| self.screen_rects(m).any(|r| r.expand(3.0).contains(p)))?;
-            Some(if primary.page == self.page { primary } else { m })
-        })
+        self.hit(p)
+            .or_else(|| self.group_members().into_iter().rev().find(|(m, _)| self.screen_rects(m).any(|r| r.expand(3.0).contains(p))).map(|(_, p)| p))
     }
 
-    /// What selecting this page's `a` selects: its group's primary for a group subordinate, on
-    /// whatever page it is (its card in the Comments panel), else `a`.
+    /// What selecting this page's `a` selects: its group's primary for a group subordinate (its
+    /// card in the Comments panel), else `a`.
     pub(super) fn selects(&self, a: &Annotation) -> (usize, usize) {
         let primary = if a.is_group_member() { self.group_members().into_iter().find(|(m, _)| m.index == a.index).map(|(_, p)| p) } else { None };
         primary.map_or((self.page, a.index), |p| (p.page, p.index))

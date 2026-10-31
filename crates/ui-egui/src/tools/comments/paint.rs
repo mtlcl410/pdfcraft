@@ -30,8 +30,7 @@ pub(crate) fn paint_page(ui: &egui::Ui, painter: &egui::Painter, cx: &PageCx<'_>
             painter.rect_stroke(r.expand(2.0), CornerRadius::same(2), Stroke::new(1.0, SELECT_BLUE.gamma_multiply(0.7)), egui::StrokeKind::Outside);
         }
     }
-    // The rest of a group is selected with its primary, on this page or another, and goes where a
-    // move takes the group.
+    // The rest of a group is selected with its primary and goes where a move takes the group.
     if let Some(selected) = cv.selected {
         let shift = ui.input(|i| i.modifiers.shift);
         for (m, _) in cx.group_members().into_iter().filter(|(_, p)| (p.page, p.index) == selected) {

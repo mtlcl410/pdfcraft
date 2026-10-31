@@ -287,7 +287,7 @@ impl SignatureDrag {
         if *page != cx.page || cx.hidden {
             return;
         }
-        let Some(a) = cx.held(*index) else { return };
+        let Some(a) = cx.get(*index) else { return };
         let shift = painter.ctx().input(|i| i.modifiers.shift);
         // As far as its frame has gone from where the move started (once applied, its box is
         // already where it went).

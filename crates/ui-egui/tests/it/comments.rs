@@ -3146,10 +3146,11 @@ const SPREAD_GROUP_FIXTURE: &[u8] = b"%PDF-1.7
 trailer << /Root 1 0 R >>
 %%EOF";
 
-/// A subordinate whose primary is on another page: clicking it selects the group there (its
-/// card), and dragging it moves both members, each on its own page.
+/// A group is one page's, as Acrobat (desktop and iPad) and PDF-XChange read it: a subordinate
+/// whose primary is on another page is a comment of its own. Clicking it selects it, with its own
+/// author in the panel, and dragging it moves it alone.
 #[test]
-fn a_member_on_another_page_than_its_primary_selects_and_moves_its_group() {
+fn a_member_on_another_page_than_its_primary_is_a_comment_of_its_own() {
     let mut h = harness_with_bytes(SPREAD_GROUP_FIXTURE.to_vec(), |app| {
         app.set_option("panel", "comments").unwrap();
         // Both pages on screen.
@@ -3162,11 +3163,12 @@ fn a_member_on_another_page_than_its_primary_selects_and_moves_its_group() {
     let (square, circle) = group_rects(&h);
     let p = on_page_2(&h, 220.0, 150.0);
     click(&mut h, p);
-    assert_eq!(h.state().views[0].comments.selected, Some((0, 0)), "the group, whose primary is on page 1, is selected");
+    assert_eq!(h.state().views[0].comments.selected, Some((1, 0)), "the Circle itself is selected");
+    assert!(h.query_all_by_label("Bob").next().is_some(), "listed with its own author");
     let (from, to) = (on_page_2(&h, 220.0, 150.0), on_page_2(&h, 240.0, 140.0));
     drag(&mut h, from, to);
     let (sq, ci) = group_rects(&h);
     let (moved_square, moved_circle) = (moved_by(&square, &sq), moved_by(&circle, &ci));
     assert!((moved_circle.0 - 20.0).abs() < 1.0 && (moved_circle.1 + 10.0).abs() < 1.0, "the Circle moves: {moved_circle:?}");
-    assert_eq!(moved_square, moved_circle, "and its primary on page 1 by as much");
+    assert_eq!(moved_square, (0.0, 0.0), "the Square on page 1 stays");
 }
