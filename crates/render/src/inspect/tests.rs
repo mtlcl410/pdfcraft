@@ -1351,6 +1351,78 @@ fn embedded_go_to_links_by_annotation_name_read_the_page_once() {
     assert!(reads < 20 * 2 * N, "{reads} object reads");
 }
 
+/// The `/NM` indexes for GoToE targets stay within `MAX_ANNOTATION_NAME_INDEX_BYTES` when many
+/// pages share one `/Annots` array holding one very long name and many short ones, and every
+/// target still resolves: the long name and the pages past the budget are scanned instead.
+#[test]
+fn embedded_go_to_annotation_name_indexes_share_a_byte_budget() {
+    use super::annotations::MAX_ANNOTATION_NAME_INDEX_BYTES;
+    const PAGES: usize = 32;
+    const SHORT: usize = 1100;
+    let page = |k: usize| 100 + k;
+    let short = |j: usize| 1000 + j;
+    let link = |k: usize, which: usize| 10_000 + 2 * k + which;
+    let links_page = page(PAGES);
+    let kids: Vec<String> = (0..=PAGES).map(|k| format!("{} 0 R", page(k))).collect();
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [{}] /Count {} >> endobj\n",
+        kids.join(" "),
+        PAGES + 1
+    );
+    let shared: Vec<String> = std::iter::once(6).chain((0..SHORT).map(short)).map(|o| format!("{o} 0 R")).collect();
+    pdf += &format!("4 0 obj [{}] endobj\n", shared.join(" "));
+    // One name of a mebibyte, which every page's index would otherwise hash.
+    pdf += &format!("7 0 obj ({}) endobj\n", "x".repeat(1 << 20));
+    pdf += "6 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 1 1] /NM 7 0 R >> endobj\n";
+    for j in 0..SHORT {
+        pdf += &format!("{} 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 1 1] /NM (n{j:0>999}) >> endobj\n", short(j));
+    }
+    for k in 0..PAGES {
+        pdf += &format!("{} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots 4 0 R >> endobj\n", page(k));
+    }
+    let links: Vec<String> = (0..PAGES).flat_map(|k| [link(k, 0), link(k, 1)]).map(|o| format!("{o} 0 R")).collect();
+    pdf += &format!("{links_page} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [{}] >> endobj\n", links.join(" "));
+    let target = |k: usize| (k * 37) % SHORT;
+    for k in 0..PAGES {
+        let action = |a: String| format!("<< /S /GoToE /T << /R /C /P {k} /A {a} >> /D [0 /Fit] >>");
+        pdf += &format!("{} 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A {} >> endobj\n", link(k, 0), action("7 0 R".into()));
+        pdf += &format!(
+            "{} 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A {} >> endobj\n",
+            link(k, 1),
+            action(format!("(n{:0>999})", target(k)))
+        );
+    }
+    pdf += "trailer << /Root 1 0 R >>\n%%EOF";
+    let doc = Document::load_mem(pdf.as_bytes()).expect("loads");
+    let blank = PageInfo { width: 200.0, height: 200.0, crop: [0.0, 0.0, 200.0, 200.0], rotation: 0, label: String::new() };
+    let mut info = DocInfo { pages: vec![blank; PAGES + 1], ..Default::default() };
+    let inspector = Inspector::new(&doc);
+    inspector.fill(&mut info);
+    let indexes: Vec<(usize, usize)> = info
+        .links
+        .iter()
+        .filter_map(|l| match &l.target {
+            LinkTarget::EmbeddedGoTo { source: AttachmentSource::Annotation { page, index }, .. } => Some((*page, *index)),
+            _ => None,
+        })
+        .collect();
+    let want: Vec<(usize, usize)> = (0..PAGES).flat_map(|k| [(k, 0), (k, 1 + target(k))]).collect();
+    assert_eq!(indexes, want);
+    let indexed: Vec<usize> = inspector
+        .annotation_names
+        .get()
+        .into_iter()
+        .flatten()
+        .filter_map(|page| page.get().cloned().flatten())
+        .flat_map(|names| names.into_keys())
+        .map(|name| name.len())
+        .collect();
+    let total: usize = indexed.iter().sum();
+    assert!(total > 0 && total <= MAX_ANNOTATION_NAME_INDEX_BYTES, "{total} name bytes indexed");
+    // The mebibyte name is scanned for, never copied into an index.
+    assert!(indexed.iter().all(|&len| len < 1 << 20), "the long name was indexed");
+}
+
 #[test]
 fn links_read_bounded_local_remote_go_to_actions() {
     use DestView::{Fit, Xyz};

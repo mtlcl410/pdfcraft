@@ -22,6 +22,14 @@ pub(super) const MAX_ANNOTATION_BYTES: usize = 64 << 20;
 /// key does not fit is not listed.
 pub(super) const MAX_LINK_ATTACHMENT_TEXT_BYTES: usize = 16 << 20;
 
+/// `/NM` bytes, with a slot per entry, that the per-page annotation-name indexes for GoToE targets
+/// hash in all. One `/Annots` array or one long name many pages share would otherwise be hashed
+/// again for each page; past it a page is scanned for each name instead.
+pub(super) const MAX_ANNOTATION_NAME_INDEX_BYTES: usize = 16 << 20;
+
+/// A longer `/NM` is not indexed: it is scanned for. Real names are short identifiers.
+const MAX_INDEXED_ANNOTATION_NAME_BYTES: usize = 1024;
+
 /// The bytes a listed annotation keeps.
 pub(super) fn retained(a: &Annotation) -> usize {
     let text = [&a.author, &a.contents, &a.modified, &a.name, &a.in_reply_to, &a.state, &a.intent];
@@ -300,21 +308,51 @@ impl<'a> Inspector<'a> {
     /// The position in page `page`'s `/Annots` of the first annotation whose `/NM` is `nm`.
     fn annotation_named(&self, page: usize, nm: &[u8]) -> Option<usize> {
         let pages = self.annotation_names.get_or_init(|| self.page_ids.iter().map(|_| OnceCell::new()).collect());
-        pages.get(page)?.get_or_init(|| self.annotation_names_on(page)).get(nm).copied()
+        let names = pages.get(page)?.get_or_init(|| self.annotation_names_on(page));
+        match names {
+            // A name longer than an indexed one is not in the index: scanned for.
+            Some(names) if nm.len() <= MAX_INDEXED_ANNOTATION_NAME_BYTES => names.get(nm).copied(),
+            _ => self.annotations_on(page)?.iter().position(|a| self.annotation_name(a) == Some(nm)),
+        }
     }
 
-    /// Each `/NM` on page `page`, with the position in its `/Annots` of the first annotation
-    /// that has it.
+    /// Each `/NM` on page `page` up to [`MAX_INDEXED_ANNOTATION_NAME_BYTES`] long, with the
+    /// position in its `/Annots` of the first annotation that has it, spent from
+    /// `annotation_name_budget`. `None` once the budget does not cover the page.
     fn annotation_names_on(&self, page: usize) -> super::core::AnnotationNames {
         let mut names = HashMap::new();
-        let Some(page) = self.page_ids.get(page).and_then(|id| self.doc.get_dictionary(*id).ok()) else { return names };
-        let Some(Object::Array(annots)) = page.get(b"Annots").ok().map(|a| self.resolve(a)) else { return names };
+        let Some(annots) = self.annotations_on(page) else { return Some(names) };
+        let mut budget = self.annotation_name_budget.get();
         for (i, a) in annots.iter().enumerate() {
-            if let Some(Object::String(nm, _)) = self.dict(a).and_then(|d| d.get(b"NM").ok()).map(|n| self.resolve(n)) {
-                names.entry(nm.clone()).or_insert(i);
-            }
+            let Some(nm) = self.annotation_name(a).filter(|nm| nm.len() <= MAX_INDEXED_ANNOTATION_NAME_BYTES) else { continue };
+            // Each entry costs its name and its slot, so many short names are bounded too.
+            let Some(left) = budget.checked_sub(nm.len().saturating_add(std::mem::size_of::<(Vec<u8>, usize)>())) else {
+                // What the page used so far is spent; nothing of it is kept.
+                self.annotation_name_budget.set(budget);
+                return None;
+            };
+            budget = left;
+            names.entry(nm.to_vec()).or_insert(i);
         }
-        names
+        self.annotation_name_budget.set(budget);
+        Some(names)
+    }
+
+    /// Page `page`'s `/Annots`.
+    fn annotations_on(&self, page: usize) -> Option<&'a [Object]> {
+        let page = self.doc.get_dictionary(*self.page_ids.get(page)?).ok()?;
+        match self.resolve(page.get(b"Annots").ok()?) {
+            Object::Array(annots) => Some(annots),
+            _ => None,
+        }
+    }
+
+    /// An annotation's `/NM` string bytes.
+    fn annotation_name(&self, a: &'a Object) -> Option<&'a [u8]> {
+        match self.resolve(self.dict(a)?.get(b"NM").ok()?) {
+            Object::String(nm, _) => Some(nm),
+            _ => None,
+        }
     }
 
     /// The non-empty local file an action's `/F` names (a string or a file specification), shared
