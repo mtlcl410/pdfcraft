@@ -9491,3 +9491,77 @@ fn large_pictures_are_picked_where_they_show() {
     assert_eq!(d.page_image_at(0, [49.0, 80.0]), Some(0));
     assert_eq!(d.page_image_at(0, [56.0, 80.0]), None);
 }
+
+/// `data` compressed with Flate, as a stream's bytes.
+fn flated(data: &[u8]) -> Vec<u8> {
+    pdfcraft_cos::Stream::flate(pdfcraft_cos::Dict::default(), data).raw.to_vec()
+}
+
+/// #3069 review: a showing pixel that crosses from one grid cell into the next marks both. In a
+/// 257-pixel-wide picture on a 256-cell grid, pixel 1 starts in cell 0 and ends in cell 1; a point
+/// on its right part, in cell 1, picks the picture.
+#[test]
+fn a_showing_pixel_marks_every_grid_cell_it_reaches_into() {
+    let mut mask = vec![0u8; 257];
+    mask[1] = 255;
+    let objects = vec![
+        ("/Type /XObject /Subtype /Image /Width 257 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 6 0 R".to_string(), vec![0x80; 257]),
+        ("/Type /XObject /Subtype /Image /Width 257 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8".to_string(), mask),
+    ];
+    let mut s = Session::new();
+    let id = s.open("wide.pdf", None, Arc::new(images_pdf("/Wide 5 0 R", b"q 257 0 0 10 0 0 cm /Wide Do Q", &objects)), None).unwrap();
+    let d = s.get(id).unwrap();
+    let image = &d.page_images(0)[0];
+    for x in [1.2, 1.5, 1.8] {
+        assert!(d.image_shows_at(image, [x, 5.0]), "pixel 1 shows at x = {x}");
+    }
+    assert!(!d.image_shows_at(image, [5.5, 5.0]), "pixel 5 is transparent");
+}
+
+/// #3069 review: a soft mask larger than the opacity grid's decoding limit keeps the picture's
+/// whole box, however small the picture: the mask would be decoded in full before being scaled
+/// to the picture's size.
+#[test]
+fn a_picture_whose_soft_mask_is_too_large_keeps_its_whole_box() {
+    // 8000 × 8001 pixels, just past 64 million; its left quarter shows, so once scaled to the
+    // picture's two pixels the left one shows and the right one doesn't.
+    let (w, h) = (8000usize, 8001usize);
+    let row: Vec<u8> = (0..w).map(|x| if x < w / 4 { 255 } else { 0 }).collect();
+    let mask = flated(&row.repeat(h));
+    let objects = vec![
+        ("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 6 0 R".to_string(), vec![0x80; 2]),
+        (format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode"), mask),
+    ];
+    let mut s = Session::new();
+    let id = s.open("mask.pdf", None, Arc::new(images_pdf("/Small 5 0 R", b"q 100 0 0 100 0 0 cm /Small Do Q", &objects)), None).unwrap();
+    let d = s.get(id).unwrap();
+    assert!(d.image_shows_at(&d.page_images(0)[0], [75.0, 50.0]), "the whole box, without decoding the mask");
+}
+
+/// #3069 review: a picture or soft mask whose stream inflates far past what its declared size
+/// needs keeps the picture's whole box, rather than being decoded in full on the first hover.
+#[test]
+fn picture_streams_that_inflate_past_their_size_keep_the_whole_box() {
+    let flate = "/Filter /FlateDecode";
+    let image = |extra: &str, data: Vec<u8>| {
+        (format!("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"), data)
+    };
+    let huge = || flated(&[255u8, 0].repeat(4 << 20));
+    let objects = vec![
+        image(&format!("{flate} /SMask 7 0 R"), huge()),          // 5: its samples inflate to 8 MiB
+        image("/SMask 9 0 R", vec![0x80; 2]),                     // 6: its mask inflates to 8 MiB
+        image("", vec![255, 0]),                                  // 7: the left half shows
+        image(&format!("{flate} /SMask 7 0 R"), flated(&[9, 9])), // 8: as declared
+        image(flate, huge()),                                     // 9: 6's mask
+    ];
+    let content = b"q 100 0 0 100 0 0 cm /A Do Q q 100 0 0 100 0 100 cm /B Do Q q 100 0 0 100 0 200 cm /C Do Q";
+    let mut s = Session::new();
+    let id = s.open("inflate.pdf", None, Arc::new(images_pdf("/A 5 0 R /B 6 0 R /C 8 0 R", content, &objects)), None).unwrap();
+    let d = s.get(id).unwrap();
+    let images = d.page_images(0);
+    assert_eq!(images.len(), 3);
+    assert!(d.image_shows_at(&images[0], [75.0, 50.0]), "the picture's samples are too large: its whole box");
+    assert!(d.image_shows_at(&images[1], [75.0, 150.0]), "its soft mask's samples are too large: its whole box");
+    assert!(!d.image_shows_at(&images[2], [75.0, 250.0]), "Flate data as large as declared is read");
+    assert!(d.image_shows_at(&images[2], [25.0, 250.0]));
+}

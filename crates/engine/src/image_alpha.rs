@@ -24,6 +24,12 @@ const MAX_CACHED: usize = 256;
 const MAX_DECODE_PIXELS: u64 = 64_000_000;
 /// Alpha at or above this (of 255) counts as showing.
 const OPAQUE: u8 = 16;
+/// Colour components assumed for a colour space that can't be read: as many as a DeviceN space
+/// may have in practice, so the decoding bound stays generous.
+const MAX_COMPONENTS: u64 = 32;
+/// Decoded bytes allowed past what a picture's declared size needs (with a quarter more), for
+/// padding writers leave after the samples.
+const DECODE_SLACK: u64 = 64 << 10;
 
 /// Which cells of a picture show, row 0 at the top of the picture.
 #[derive(Debug)]
@@ -89,16 +95,25 @@ impl Document {
 fn build(cos: &pdfcraft_cos::Document, object: ObjRef) -> Option<Opacity> {
     let current = cos.get(object);
     let Object::Stream(s) = &*current else { return None };
-    let flag = |key: &[u8]| s.dict.get(key).is_some_and(|v| matches!(&*cos.resolve(v), Object::Bool(true)));
-    let stencil = flag(b"ImageMask");
+    let stencil = flag(cos, s, b"ImageMask");
     let soft = s.dict.get(b"SMask").is_some_and(|v| cos.resolve(v).as_name() != Some(b"None"));
     let in_data = s.dict.int(b"SMaskInData").is_some_and(|v| v != 0);
     if !(stencil || soft || in_data || s.dict.get(b"Mask").is_some()) {
         return None;
     }
-    let size = |key: &[u8]| u64::try_from(s.dict.int(key).unwrap_or(0)).unwrap_or(0);
-    if size(b"Width").saturating_mul(size(b"Height")) > MAX_DECODE_PIXELS {
+    // The picture and the mask images it brings are decoded in full before anything is scaled
+    // down to the picture's size, so each must be small enough, in pixels and in decoded bytes,
+    // before any of it is decoded.
+    let components = if stencil { 1 } else { components(cos, s.dict.get(b"ColorSpace")) };
+    if !within_budget(cos, s, components, stencil) {
         return None;
+    }
+    for key in [&b"SMask"[..], b"Mask"] {
+        if let Some(Object::Stream(mask)) = s.dict.get(key).map(|v| cos.resolve(v)).as_deref()
+            && !within_budget(cos, mask, 1, key == b"Mask" || flag(cos, mask, b"ImageMask"))
+        {
+            return None;
+        }
     }
     let (_, bytes) = pdfcraft_create::image_file(cos, object).ok()?;
     let format = image::guess_format(&bytes).ok()?;
@@ -124,12 +139,17 @@ fn build(cos: &pdfcraft_cos::Document, object: ObjRef) -> Option<Opacity> {
     let (gw, gh) = (w.min(MAX_GRID), h.min(MAX_GRID));
     let mut cells = vec![false; usize::try_from(u64::from(gw) * u64::from(gh)).ok()?];
     for y in 0..h {
-        let row = u64::from(y) * u64::from(gh) / u64::from(h);
+        let rows = cells_covered(y, h, gh);
         for x in 0..w {
             if shows(x, y) {
-                let col = u64::from(x) * u64::from(gw) / u64::from(w);
-                if let Some(cell) = usize::try_from(row * u64::from(gw) + col).ok().and_then(|i| cells.get_mut(i)) {
-                    *cell = true;
+                // Every cell the pixel reaches into shows: a point anywhere on a showing pixel
+                // picks the picture, also where the pixel crosses into the next cell.
+                for row in rows.clone() {
+                    for col in cells_covered(x, w, gw) {
+                        if let Some(cell) = usize::try_from(row * u64::from(gw) + col).ok().and_then(|i| cells.get_mut(i)) {
+                            *cell = true;
+                        }
+                    }
                 }
             }
         }
@@ -140,6 +160,79 @@ fn build(cos: &pdfcraft_cos::Document, object: ObjRef) -> Option<Opacity> {
         return None;
     }
     Some(Opacity { width: gw, height: gh, cells })
+}
+
+/// The grid cells, along an axis of `pixels` pixels and `cells` cells, that pixel `i` reaches
+/// into: from the cell its start is in to the cell its end is in. `cells` is at most `pixels`, so
+/// a pixel reaches into at most two.
+fn cells_covered(i: u32, pixels: u32, cells: u32) -> std::ops::Range<u64> {
+    let (i, pixels, cells) = (u64::from(i), u64::from(pixels).max(1), u64::from(cells));
+    let start = i * cells / pixels;
+    let end = ((i + 1) * cells).div_ceil(pixels).min(cells);
+    start..end.max(start)
+}
+
+/// Whether the boolean `key` of image stream `s` is `true`.
+fn flag(cos: &pdfcraft_cos::Document, s: &pdfcraft_cos::Stream, key: &[u8]) -> bool {
+    s.dict.get(key).is_some_and(|v| matches!(&*cos.resolve(v), Object::Bool(true)))
+}
+
+/// Whether image stream `s`, of `components` colour components (one bit each for a `stencil`),
+/// is small enough to decode for its opacity grid: at most [`MAX_DECODE_PIXELS`] pixels and, when
+/// its samples are decoded through its filters, no more decoded bytes than its declared size
+/// needs, with room for padding a writer left after the samples. Without that bound a 1 × 1
+/// picture whose stream inflates to a gigabyte would be decoded in full on the first hover. JPEG,
+/// JPEG 2000 and JBIG2 data go to their own decoders instead.
+fn within_budget(cos: &pdfcraft_cos::Document, s: &pdfcraft_cos::Stream, components: u64, stencil: bool) -> bool {
+    let size = |key: &[u8]| u64::try_from(s.dict.int(key).unwrap_or(0)).unwrap_or(0);
+    let (w, h) = (size(b"Width"), size(b"Height"));
+    if w.saturating_mul(h) > MAX_DECODE_PIXELS {
+        return false;
+    }
+    let codec = match s.dict.get(b"Filter").map(|f| cos.resolve(f)).as_deref() {
+        Some(Object::Name(n)) => Some(n.clone()),
+        Some(Object::Array(a)) => a.last().and_then(Object::as_name).map(<[u8]>::to_vec),
+        _ => None,
+    };
+    if matches!(codec.as_deref(), Some(b"DCTDecode" | b"DCT" | b"JPXDecode" | b"JBIG2Decode")) {
+        return true;
+    }
+    let bpc = if stencil { 1 } else { u64::try_from(s.dict.int(b"BitsPerComponent").unwrap_or(8)).unwrap_or(8).clamp(1, 16) };
+    let row = w.checked_mul(components).and_then(|n| n.checked_mul(bpc)).map(|bits| bits.div_ceil(8));
+    let budget = row.and_then(|r| r.checked_mul(h)).and_then(|n| n.checked_add(n / 4)).and_then(|n| n.checked_add(DECODE_SLACK));
+    let Some(budget) = budget.and_then(|n| usize::try_from(n).ok()) else { return false };
+    cos.decoded_image_within(s, budget).is_ok()
+}
+
+/// The colour components of an image in colour space `space` (ISO 32000-2 §8.6): one for an
+/// indexed or separation space, the `/N` of an ICC-based one, as many as a DeviceN space names.
+/// A space that can't be read counts as [`MAX_COMPONENTS`], which keeps the decoding bound
+/// generous rather than refusing the picture.
+fn components(cos: &pdfcraft_cos::Document, space: Option<&Object>) -> u64 {
+    let Some(space) = space.map(|s| cos.resolve(s)) else { return MAX_COMPONENTS };
+    let array = space.as_array();
+    let family = match (&*space, array.and_then(|a| a.first()).and_then(Object::as_name)) {
+        (Object::Name(n), _) => n.as_slice(),
+        (_, Some(n)) => n,
+        _ => return MAX_COMPONENTS,
+    };
+    let operand = || array.and_then(|a| a.get(1)).map(|o| cos.resolve(o));
+    match family {
+        b"DeviceGray" | b"G" | b"CalGray" | b"Indexed" | b"I" | b"Separation" => 1,
+        b"DeviceRGB" | b"RGB" | b"CalRGB" | b"Lab" => 3,
+        b"DeviceCMYK" | b"CMYK" => 4,
+        b"ICCBased" => match operand().as_deref() {
+            Some(Object::Stream(icc)) => {
+                icc.dict.int(b"N").and_then(|n| u64::try_from(n).ok()).filter(|n| (1..=MAX_COMPONENTS).contains(n)).unwrap_or(MAX_COMPONENTS)
+            }
+            _ => MAX_COMPONENTS,
+        },
+        b"DeviceN" => match operand().as_deref() {
+            Some(Object::Array(names)) => u64::try_from(names.len()).unwrap_or(MAX_COMPONENTS).clamp(1, MAX_COMPONENTS),
+            _ => MAX_COMPONENTS,
+        },
+        _ => MAX_COMPONENTS,
+    }
 }
 
 /// `point` in the placement's unit square: the inverse of `matrix` applied to it.
