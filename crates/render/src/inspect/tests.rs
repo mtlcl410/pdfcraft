@@ -1423,6 +1423,48 @@ fn embedded_go_to_annotation_name_indexes_share_a_byte_budget() {
     assert!(indexed.iter().all(|&len| len < 1 << 20), "the long name was indexed");
 }
 
+/// A `/NM` repeated across a page's `/Annots` is charged to the index budget once: one long name
+/// on 17,000 annotations would otherwise spend the whole budget, drop the page's index and send
+/// every GoToE target on that page back to scanning `/Annots`.
+#[test]
+fn embedded_go_to_repeated_annotation_name_is_charged_once() {
+    use super::annotations::MAX_ANNOTATION_NAME_INDEX_BYTES;
+    const REPEATS: usize = 17_000;
+    let long = "r".repeat(1000);
+    let annots = format!("{} 6 0 R", "5 0 R ".repeat(REPEATS));
+    let mut pdf =
+        String::from("%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >> endobj\n");
+    pdf += &format!("3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [{annots}] >> endobj\n");
+    pdf += "4 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [8 0 R 9 0 R] >> endobj\n";
+    pdf += &format!("5 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 1 1] /NM ({long}) >> endobj\n");
+    pdf += "6 0 obj << /Type /Annot /Subtype /FileAttachment /Rect [0 0 1 1] /NM (last) >> endobj\n";
+    let link = |o: usize, nm: &str| {
+        format!("{o} 0 obj << /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoToE /T << /R /C /P 0 /A ({nm}) >> /D [0 /Fit] >> >> endobj\n")
+    };
+    pdf += &link(8, &long);
+    pdf += &link(9, "last");
+    pdf += "trailer << /Root 1 0 R >>\n%%EOF";
+    let doc = Document::load_mem(pdf.as_bytes()).expect("loads");
+    let blank = PageInfo { width: 200.0, height: 200.0, crop: [0.0, 0.0, 200.0, 200.0], rotation: 0, label: String::new() };
+    let mut info = DocInfo { pages: vec![blank; 2], ..Default::default() };
+    let inspector = Inspector::new(&doc);
+    inspector.fill(&mut info);
+    let indexes: Vec<usize> = info
+        .links
+        .iter()
+        .filter_map(|l| match &l.target {
+            LinkTarget::EmbeddedGoTo { source: AttachmentSource::Annotation { page: 0, index }, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indexes, [0, REPEATS]);
+    let page = inspector.annotation_names.get().and_then(|pages| pages.first()).and_then(|page| page.get());
+    let Some(Some(names)) = page else { panic!("page 0's /NM index was dropped: {page:?}") };
+    assert_eq!(names.len(), 2);
+    let spent = MAX_ANNOTATION_NAME_INDEX_BYTES - inspector.annotation_name_budget.get();
+    assert!(spent < 2 * (1000 + 64), "{spent} budget bytes spent on two names");
+}
+
 #[test]
 fn links_read_bounded_local_remote_go_to_actions() {
     use DestView::{Fit, Xyz};

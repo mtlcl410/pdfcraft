@@ -325,6 +325,10 @@ impl<'a> Inspector<'a> {
         let mut budget = self.annotation_name_budget.get();
         for (i, a) in annots.iter().enumerate() {
             let Some(nm) = self.annotation_name(a).filter(|nm| nm.len() <= MAX_INDEXED_ANNOTATION_NAME_BYTES) else { continue };
+            // A repeated name keeps its first position and adds no entry, so it costs nothing.
+            if names.contains_key(nm) {
+                continue;
+            }
             // Each entry costs its name and its slot, so many short names are bounded too.
             let Some(left) = budget.checked_sub(nm.len().saturating_add(std::mem::size_of::<(Vec<u8>, usize)>())) else {
                 // What the page used so far is spent; nothing of it is kept.
@@ -332,7 +336,7 @@ impl<'a> Inspector<'a> {
                 return None;
             };
             budget = left;
-            names.entry(nm.to_vec()).or_insert(i);
+            names.insert(nm.to_vec(), i);
         }
         self.annotation_name_budget.set(budget);
         Some(names)
