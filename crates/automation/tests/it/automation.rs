@@ -10361,3 +10361,43 @@ fn simple_rule_scan_drawn(content: &[u8]) -> Vec<u8> {
     }
     write_full(&doc, &SaveOptions::default()).unwrap()
 }
+
+// Contributor-original PDF: a Square on page 1 and, on page 2, a Circle with `/IRT` to it and
+// `/RT /Group`.
+const SPREAD_GROUP_FIXTURE: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R] >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [6 0 R] >> endobj
+5 0 obj << /Type /Annot /Subtype /Square /Rect [20 20 100 80] /NM (sq-primary) /T (Alice) /Contents (Primary) /C [1 0 0] >> endobj
+6 0 obj << /Type /Annot /Subtype /Circle /Rect [180 120 260 180] /NM (circ-other-page) /T (Bob) /Contents (Member on page 2) /C [0 0 1] /IRT 5 0 R /RT /Group >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+/// A group is one page's, as Acrobat reads it: a subordinate whose primary is on another page
+/// lists as a comment of its own, with its own author and text, not as part of the group or a
+/// reply, and deleting the primary leaves it. ISO 32000-2 §12.5.6.2 doesn't limit a group to a
+/// page; Acrobat (desktop and iPad) and PDF-XChange all delete the primary without such a
+/// subordinate, and Acrobat desktop lists it on its own.
+#[test]
+fn a_group_member_on_another_page_is_a_comment_of_its_own() {
+    let dir = workdir("rt-group-spread");
+    std::fs::write(dir.join("group.pdf"), SPREAD_GROUP_FIXTURE).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "group.pdf" }))["doc"].as_u64().unwrap();
+    let check = |list: &Value, when: &str| {
+        assert_eq!(list["count"], 2, "{when}: the Square and the Circle, each a comment: {list}");
+        let circle = list["comments"].as_array().unwrap().iter().find(|c| c["id"] == "circ-other-page").cloned().unwrap();
+        assert_eq!((circle["author"].as_str(), circle["contents"].as_str()), (Some("Bob"), Some("Member on page 2")), "{when}");
+        let square = list["comments"].as_array().unwrap().iter().find(|c| c["id"] == "sq-primary").cloned().unwrap();
+        assert!(square["group"].as_array().unwrap().is_empty() && square["replies"].as_array().unwrap().is_empty(), "{when}: {square}");
+    };
+    check(&ok(&mut a, "comment_list", json!({ "doc": doc })), "opened");
+    ok(&mut a, "comment_add", json!({ "doc": doc, "page": 1, "type": "note", "at": [280, 20], "contents": "Other" }));
+    let after = ok(&mut a, "comment_list", json!({ "doc": doc }));
+    let kept: Vec<Value> = after["comments"].as_array().unwrap().iter().filter(|c| c["contents"] != "Other").cloned().collect();
+    check(&json!({ "count": kept.len(), "comments": kept }), "edited");
+    ok(&mut a, "comment_delete", json!({ "doc": doc, "id": "sq-primary" }));
+    let left = ok(&mut a, "comment_list", json!({ "doc": doc }));
+    assert!(left.to_string().contains("circ-other-page"), "deleting the primary leaves the Circle on page 2: {left}");
+}

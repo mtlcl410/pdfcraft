@@ -165,6 +165,12 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
             let irt = d.get(b"IRT").map(|o| o.as_ref().map_or_else(|| doc.resolve(o), |r| doc.get(final_ref(doc, r))));
             let in_reply_to = irt.and_then(|o| o.as_dict().cloned()).and_then(|p| text_value(doc, &p, b"NM"));
             let parent = d.get(b"IRT").and_then(Object::as_ref).and_then(|r| slots.get(&final_ref(doc, r)).copied());
+            // A group is one page's, as Acrobat reads it: a subordinate whose primary is on
+            // another page is a comment of its own (keep in step with
+            // `pdfcraft_render::link_replies`).
+            let grouped = d.name(b"RT") == Some(b"Group");
+            let cross_page = grouped && parent.is_some_and(|(p, _)| p != page);
+            let (parent, in_reply_to) = if cross_page { (None, None) } else { (parent, in_reply_to) };
             out.push(Summary {
                 page,
                 index,
@@ -177,7 +183,7 @@ pub fn summaries(doc: &Document) -> Vec<Summary> {
                 name: text_value(doc, d, b"NM"),
                 in_reply_to,
                 parent,
-                grouped: d.name(b"RT") == Some(b"Group"),
+                grouped,
                 rect,
                 color,
                 state: text_value(doc, d, b"State"),

@@ -517,6 +517,18 @@ pub fn link_replies(annotations: &mut [Annotation]) {
             a.parent = None;
         }
     }
+    // A group is one page's (Acrobat reads it so): a subordinate whose primary is on another page
+    // is a comment of its own, with its own author and text, rather than part of that group or a
+    // reply to it. ISO 32000-2 §12.5.6.2 doesn't limit a group to a page, but Acrobat (desktop and
+    // iPad) and PDF-XChange all delete the primary without such a subordinate, and Acrobat desktop
+    // lists it on its own. Keep in step with
+    // `pdfcraft_annot::summaries`.
+    for a in annotations.iter_mut() {
+        if a.grouped && a.parent.is_some_and(|(page, _)| page != a.page) {
+            a.parent = None;
+            a.in_reply_to = None;
+        }
+    }
 }
 
 /// The comment each reply's thread starts from, by the reply's page and `/Annots` position: a
