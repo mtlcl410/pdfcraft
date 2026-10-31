@@ -44,17 +44,20 @@ impl TextLink {
 /// The web addresses (`http://`, `https://`, `www.`) and email addresses written in `text`, in
 /// reading order. Punctuation that ends a sentence (`.`, `,`, `;`, `:`, `!`, `?`) and brackets
 /// around an address are not part of it. Nothing is found on a page of more than
-/// [`MAX_TEXT_LINK_GLYPHS`] glyphs, and at most [`MAX_TEXT_LINKS_PER_PAGE`] addresses are kept.
+/// [`MAX_TEXT_LINK_GLYPHS`] glyphs, and at most [`MAX_TEXT_LINKS_PER_PAGE`] addresses are kept. An
+/// address that starts or ends inside a glyph carrying several characters is left out.
 pub fn find_text_links(text: &PageText) -> Vec<TextLink> {
     if text.glyphs.len() > MAX_TEXT_LINK_GLYPHS {
         return Vec::new();
     }
-    let found: std::cell::RefCell<Vec<String>> = Default::default();
+    // Each address with the text it was found in.
+    let found: std::cell::RefCell<Vec<(Option<String>, String)>> = Default::default();
     let hits = text.find_with(|chars| {
         let mut urls = pdfcraft_annot::links::find_urls(chars);
         urls.truncate(MAX_TEXT_LINKS_PER_PAGE);
         let ranges = urls.iter().map(|u| u.0.clone()).collect();
-        *found.borrow_mut() = urls.into_iter().map(|(range, uri)| web_uri(chars, range, uri)).collect();
+        *found.borrow_mut() =
+            urls.into_iter().map(|(range, uri)| (chars.get(range.clone()).map(|c| c.iter().collect()), web_uri(chars, range, uri))).collect();
         ranges
     });
     let found = found.into_inner();
@@ -63,7 +66,15 @@ pub fn find_text_links(text: &PageText) -> Vec<TextLink> {
     if hits.len() != found.len() {
         return Vec::new();
     }
-    hits.into_iter().zip(found).map(|(glyphs, uri)| TextLink { rects: text.line_rects(glyphs), uri }).filter(|l| !l.rects.is_empty()).collect()
+    hits.into_iter()
+        .zip(found)
+        // A glyph that carries more than one character (a ligature, or a font that maps a glyph to
+        // `m,`) is taken whole: an address that starts or ends inside one would make the text next
+        // to it clickable, so it is left out.
+        .filter(|(glyphs, (written, _))| written.as_deref() == Some(text.text_of(glyphs.clone()).as_str()))
+        .map(|(glyphs, (_, uri))| TextLink { rects: text.line_rects(glyphs), uri })
+        .filter(|l| !l.rects.is_empty())
+        .collect()
 }
 
 /// A `www.` address opens over `https://`: `find_urls`, which writes links into the document,
@@ -167,6 +178,30 @@ mod tests {
         assert!(link.covered_by(&page, [100.0, 280.0, 120.0, 285.0]));
         assert!(!link.covered_by(&page, [100.0, 200.0, 120.0, 250.0]), "a link elsewhere on the page");
         assert!(!link.covered_by(&page, [140.0, 280.0, 160.0, 285.0]), "a link after it on the line");
+    }
+
+    /// `text` with glyph `i` and the one after it drawn as one glyph carrying both characters.
+    fn merged(mut text: PageText, i: usize) -> PageText {
+        let next = text.glyphs.remove(i + 1);
+        text.line_of.remove(i + 1);
+        text.space_before.remove(i + 1);
+        let g = &mut text.glyphs[i];
+        g.text.push_str(&next.text);
+        g.rect[2] = next.rect[2];
+        text
+    }
+
+    #[test]
+    fn an_address_ending_inside_a_glyph_is_not_offered() {
+        // "m," is one glyph: the address ends on its first character, and its rectangle would
+        // take the comma too.
+        let s = "See https://example.com, then";
+        // Glyph indexes skip the one space before the address.
+        let m = s.find(',').expect("a comma") - 2;
+        assert!(find_text_links(&merged(page_text(s), m)).is_empty());
+        // A glyph of several characters inside the address is part of it.
+        let links = find_text_links(&merged(page_text("See https://fi.example.com"), 11));
+        assert_eq!(links.iter().map(|l| l.uri.as_str()).collect::<Vec<_>>(), ["https://fi.example.com"]);
     }
 
     #[test]
