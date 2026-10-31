@@ -1068,11 +1068,17 @@ fn links_sharing_quad_points_or_a_long_base_keep_them_within_a_budget() {
     let count = MAX_LINK_ATTACHMENT_TEXT_BYTES / (crate::MAX_LINK_QUADS * std::mem::size_of::<[f32; 8]>()) + 20;
     let quads = format!("[{}]", "10 10 60 10 60 30 10 30 ".repeat(crate::MAX_LINK_QUADS));
     let links = "<< /Subtype /Link /Rect [0 0 100 100] /QuadPoints 5 0 R /A << /S /URI /URI (https://example.org/) >> >> ".repeat(count);
+    super::annotations::QUAD_ARRAYS_READ.with(|n| n.set(0));
     let info = fill("", &links, &quads);
     assert_eq!(info.links.len(), count);
     let kept: usize = info.links.iter().map(|l| std::mem::size_of_val(l.quads.as_slice())).sum();
     assert!(kept > 0 && kept <= MAX_LINK_ATTACHMENT_TEXT_BYTES, "{kept} quad bytes kept");
     assert!(info.links.iter().any(|l| l.quads.is_empty()), "past the budget a link is active over its /Rect");
+    // Review on #4474: the shared array is read once for each link it fits, and once more to find
+    // that it no longer does; not again for every link after that.
+    let fitted = info.links.iter().filter(|l| !l.quads.is_empty()).count();
+    let read = super::annotations::QUAD_ARRAYS_READ.with(std::cell::Cell::get);
+    assert_eq!(read, fitted + 1, "{read} reads for {fitted} links within the budget, of {count}");
 
     let base = format!("https://example.com/{}/", "b".repeat(crate::MAX_URI_BASE_BYTES - 32));
     let count = MAX_LINK_ATTACHMENT_TEXT_BYTES / base.len() + 20;

@@ -62,6 +62,9 @@ impl<'a> Inspector<'a> {
 
     /// `text_budget` is what is left of [`MAX_LINK_ATTACHMENT_TEXT_BYTES`].
     pub(super) fn annotations(&self, info: &mut DocInfo, text_budget: &mut usize) {
+        // Indirect `/QuadPoints` arrays whose quadrilaterals did not fit what was left of the budget:
+        // the budget only shrinks, so they are not read again (review on #4474).
+        let mut unfit_quads: HashSet<ObjectId> = HashSet::new();
         let mut pages: Vec<(ObjectId, usize)> = self.page_index.iter().map(|(&id, &page)| (id, page)).collect();
         pages.sort_unstable_by_key(|&(_, page)| page);
         // An annotation, or a whole `/Annots` array, that several entries or pages list is on the
@@ -103,7 +106,7 @@ impl<'a> Inspector<'a> {
                 info.attachments.push(self.attachment(fs, AttachmentSource::Annotation { page, index }, text_budget, fallback));
             }
             if subtype == "Link" {
-                if let Some(link) = self.link(page, index, d, info.uri_base.as_deref(), text_budget) {
+                if let Some(link) = self.link(page, index, d, info.uri_base.as_deref(), text_budget, &mut unfit_quads) {
                     if matches!(&link.target, LinkTarget::Other(s) if s == "JavaScript") {
                         info.has_javascript = true;
                     }
@@ -195,7 +198,16 @@ impl<'a> Inspector<'a> {
     }
 
     /// `base` is the catalog's `/URI /Base`, which relative URI actions are resolved against.
-    fn link(&self, page: usize, index: usize, d: &Dictionary, base: Option<&str>, text_budget: &mut usize) -> Option<Link> {
+    /// `unfit_quads` holds the indirect `/QuadPoints` arrays already found too large for the budget.
+    fn link(
+        &self,
+        page: usize,
+        index: usize,
+        d: &Dictionary,
+        base: Option<&str>,
+        text_budget: &mut usize,
+        unfit_quads: &mut HashSet<ObjectId>,
+    ) -> Option<Link> {
         let rect = rect4(self.resolve(d.get(b"Rect").ok()?));
         let target = if let Ok(dest) = d.get(b"Dest") {
             let (page, view) = self.dest(dest, 0)?;
@@ -229,9 +241,16 @@ impl<'a> Inspector<'a> {
                 None => return None,
             }
         };
+        // Not read at all once no quadrilateral would fit what is left of the budget, or when this
+        // shared array already did not fit: many links can share one long array, and reading it
+        // again for each would cost its length every time (review on #4474).
+        let shared = d.get(b"QuadPoints").ok().and_then(|o| o.as_reference().ok());
+        let readable = *text_budget >= std::mem::size_of::<[f32; 8]>() && shared.is_none_or(|id| !unfit_quads.contains(&id));
         let quads = match d.get(b"QuadPoints").map(|o| self.resolve(o)) {
             // Read no further than one value past the cap: a longer array isn't used.
-            Ok(Object::Array(q)) if q.len() <= crate::MAX_LINK_QUADS.saturating_mul(8) => {
+            Ok(Object::Array(q)) if readable && q.len() <= crate::MAX_LINK_QUADS.saturating_mul(8) => {
+                #[cfg(test)]
+                QUAD_ARRAYS_READ.with(|n| n.set(n.get() + 1));
                 let values: Vec<Option<f32>> = q.iter().map(|o| self.resolve(o).as_float().ok()).collect();
                 let quads = crate::link_quads(&values, rect);
                 // Many links can share one long array, which each would otherwise copy. Past the
@@ -241,6 +260,9 @@ impl<'a> Inspector<'a> {
                     *text_budget = text_budget.saturating_sub(bytes);
                     quads
                 } else {
+                    if let Some(id) = shared {
+                        unfit_quads.insert(id);
+                    }
                     Vec::new()
                 }
             }
@@ -499,4 +521,10 @@ fn rect4(o: &Object) -> [f32; 4] {
         }
         _ => [0.0; 4],
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `/QuadPoints` arrays whose values were read.
+    pub(super) static QUAD_ARRAYS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
