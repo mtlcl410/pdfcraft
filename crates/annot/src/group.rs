@@ -17,7 +17,8 @@ use crate::lookup::{annots, page_refs};
 /// group is its own group of one. The primary is found up the `/IRT` chain while it leads to
 /// another listed subordinate; a loop, or an `/IRT` to nothing listed, ends it there, as
 /// deleting reads it. A chain still on a subordinate after [`MAX_GROUP_DEPTH`] annotations is
-/// refused: acting on part of a group would split it.
+/// refused: acting on part of a group would split it. Keep in step with
+/// `pdfcraft_render::inspect::group_primaries`, which lists groups.
 pub fn group_members(doc: &Document, page: usize, index: usize) -> Result<Vec<(usize, usize)>, AnnotError> {
     let lists: Vec<Vec<Object>> = page_refs(doc)?.iter().map(|p| annots(doc, *p)).collect();
     let entry = lists.get(page).ok_or(AnnotError::NoSuchPage(page))?.get(index).ok_or(AnnotError::NoSuchAnnotation { page, index })?;

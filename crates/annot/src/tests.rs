@@ -2414,3 +2414,23 @@ fn degenerate_and_absurd_leader_and_caption_values_do_not_panic() {
     assert!(long.contains(&format!("({}) Tj", "w".repeat(256))), "cut to 256");
     assert!(!long.contains(&"w".repeat(257)));
 }
+
+/// Deleting any member deletes the whole group on every page it spans, with the members'
+/// replies, and nothing else (ISO 32000-2 §12.5.6.2): deleting the primary takes the
+/// subordinate on page 2, and deleting that subordinate takes the primary on page 1.
+#[test]
+fn a_group_deletes_as_one_across_its_pages() {
+    for from_page_2 in [false, true] {
+        let mut doc = fixture();
+        let (square, _, line, _) = spread_group(&mut doc);
+        add_reply(&mut doc, 1, line, "on the line", "Ann", &meta("r")).unwrap();
+        let (page, index) = if from_page_2 { (1, line) } else { (0, square) };
+        delete_annotation(&mut doc, page, index).unwrap();
+        let left: Vec<f64> = (0..list(&doc, 0).len()).filter_map(|i| rect_of(&doc, 0, i).first().copied()).collect();
+        assert!(left.contains(&400.0), "{from_page_2}: the unrelated Oval stays: {left:?}");
+        assert!(!left.contains(&100.0) && !left.contains(&300.0), "{from_page_2}: the Square and the Oval in the group are gone: {left:?}");
+        let second: Vec<String> =
+            list(&doc, 1).iter().map(|d| String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned()).collect();
+        assert!(!second.iter().any(|s| s == "Line" || s == "Text"), "{from_page_2}: the Line and its reply on page 2 are gone: {second:?}");
+    }
+}

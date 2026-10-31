@@ -3,7 +3,7 @@ use super::create::{
 };
 use super::draw::{draw_appearance, redraw_or_restore, set_appearance};
 use super::group::group_members;
-use super::info::{MAX_GROUP_DEPTH, group_primary, is_group_subordinate, line_endings_of, text_value};
+use super::info::{is_group_subordinate, line_endings_of, text_value};
 use super::lookup::{annot_dict, annot_ref, annotation_flags, annots, page_ref, set_annots};
 use super::types::{
     FLAG_HIDDEN, FLAG_LOCKED, FLAG_NO_ROTATE, FLAG_NO_ZOOM, FLAG_PRINT, LineEnding, Markup, Meta, NewAnnotation, ReviewState, Rgb, Shape, Style,
@@ -72,56 +72,74 @@ pub(crate) fn touch(d: &mut Dict, meta: &Meta) {
 
 /// Delete a comment together with its pop-up and its replies (and theirs), as Acrobat does.
 /// Refused while it, or a reply that would go with it, is locked. A comment in a group
-/// (`/RT /Group`) takes the whole group with it: deleting a subordinate deletes its primary, and
-/// with it every member (ISO 32000-2 §12.5.6.2). A subordinate whose primary is too far up its
-/// `/IRT` chain to find is refused rather than deleted with only part of its group, and so is a
-/// group with a locked member.
+/// (`/RT /Group`) takes the whole group with it, on every page it spans: deleting any member
+/// deletes every member, with their pop-ups and replies (ISO 32000-2 §12.5.6.2). A subordinate
+/// whose primary is too far up its `/IRT` chain to find is refused rather than deleted with only
+/// part of its group, and so is a group with a locked member.
 pub fn delete_annotation(doc: &mut Document, page: usize, index: usize) -> Result<(), AnnotError> {
-    let index = deleted_index(doc, page, index)?;
-    lift_annotation(doc, page, index)
+    let Deletion { pages, doomed } = deletion(doc, page, index)?;
+    for (p, list, members) in pages {
+        let kept: Vec<Object> =
+            list.iter().enumerate().filter(|(i, e)| !members.contains(i) && !goes_with(e, &doomed)).map(|(_, e)| e.clone()).collect();
+        set_annots(doc, p, kept)?;
+    }
+    Ok(())
 }
 
 /// Whether [`delete_annotation`] deletes the annotation at `(page, index)`, or why not, without
 /// changing anything: what a Delete command asks before it is offered. It is refused while the
 /// annotation is locked, or a reply (or group member) that would go with it is.
 pub fn deletable(doc: &Document, page: usize, index: usize) -> Result<(), AnnotError> {
-    deleted_index(doc, page, index).map(|_| ())
+    deletion(doc, page, index).map(|_| ())
 }
 
-/// [`deletable`], returning the index [`delete_annotation`] deletes from: the group's primary for
-/// a group subordinate, else `index`.
-fn deleted_index(doc: &Document, page: usize, index: usize) -> Result<usize, AnnotError> {
-    let list = annots(doc, page_ref(doc, page)?);
-    let mut target = list.get(index).ok_or(AnnotError::NoSuchAnnotation { page, index })?;
-    let mut index = index;
-    if let Some(r) = target.as_ref() {
-        unlocked(doc, r)?;
-        let Some(primary) = group_primary(doc, &list, r) else {
-            return Err(AnnotError::Invalid(format!(
-                "this comment can't be deleted: its group's primary is more than {MAX_GROUP_DEPTH} comments up its chain"
-            )));
+/// What [`delete_annotation`] takes out: for each page a group member is on, its reference, its
+/// `/Annots` and the members' positions there; and every annotation that goes with them.
+struct Deletion {
+    pages: Vec<(ObjRef, Vec<Object>, HashSet<usize>)>,
+    doomed: HashSet<ObjRef>,
+}
+
+/// [`deletable`]: the group of the annotation at `(page, index)` ([`group_members`]), what goes
+/// with it, and the locks that refuse it.
+fn deletion(doc: &Document, page: usize, index: usize) -> Result<Deletion, AnnotError> {
+    let members = group_members(doc, page, index)?;
+    group_unlocked(doc, &members, (page, index))?;
+    let mut pages: Vec<(usize, ObjRef, Vec<Object>, HashSet<usize>)> = Vec::new();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for (p, i) in members {
+        let k = match slot.get(&p) {
+            Some(k) => *k,
+            None => {
+                let r = page_ref(doc, p)?;
+                pages.push((p, r, annots(doc, r), HashSet::new()));
+                slot.insert(p, pages.len() - 1);
+                pages.len() - 1
+            }
         };
-        if primary != r
-            && let Some((i, e)) = list.iter().enumerate().find(|(_, e)| e.as_ref() == Some(primary))
-        {
-            unlocked(doc, primary)?;
-            (target, index) = (e, i);
+        if let Some((.., at)) = pages.get_mut(k) {
+            at.insert(i);
         }
     }
-    let doomed = with_replies_and_popups(doc, &list, seed(target));
+    // The pages the group is on: a reply or pop-up there goes with what it hangs off.
+    let all: Vec<Object> = pages.iter().flat_map(|(_, _, list, _)| list.iter().cloned()).collect();
+    let seeds: Vec<ObjRef> = pages.iter().flat_map(|(_, _, list, at)| at.iter().filter_map(|i| list.get(*i)).filter_map(seed)).collect();
+    let doomed = with_replies_and_popups(doc, &all, seeds);
     // A locked reply can't be deleted on its own, so it doesn't go with the comment or reply it
     // answers either; nor does a locked group member keep its place while its group goes
     // (ISO 32000-2 §12.5.3, Table 167: Locked). Pop-ups follow their comment.
-    for (_, e) in list.iter().enumerate().filter(|(i, e)| *i != index && goes_with(e, &doomed)) {
-        let obj = doc.resolve(e);
-        if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
-            && annotation_flags(doc, d) & FLAG_LOCKED != 0
-        {
-            let what = if is_group_subordinate(d) { "a comment in its group is locked" } else { "a reply to it is locked" };
-            return Err(AnnotError::Invalid(what.into()));
+    for (_, _, list, at) in &pages {
+        for (_, e) in list.iter().enumerate().filter(|(i, e)| !at.contains(i) && goes_with(e, &doomed)) {
+            let obj = doc.resolve(e);
+            if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
+                && annotation_flags(doc, d) & FLAG_LOCKED != 0
+            {
+                let what = if is_group_subordinate(d) { "a comment in its group is locked" } else { "a reply to it is locked" };
+                return Err(AnnotError::Invalid(what.into()));
+            }
         }
     }
-    Ok(index)
+    Ok(Deletion { pages: pages.into_iter().map(|(_, r, list, at)| (r, list, at)).collect(), doomed })
 }
 
 /// Take the annotation at `(page, index)` out of its page with its pop-up and replies, as
