@@ -408,11 +408,16 @@ impl PageCx<'_> {
             .collect()
     }
 
-    /// The comment a click at `p` selects: the topmost one under it or, on a group subordinate,
-    /// the group's primary, which stands for the group.
+    /// The comment a click at `p` selects: the topmost comment or group subordinate under it, in
+    /// `/Annots` (paint) order as [`Self::hit`] reads it, and for a subordinate the group's
+    /// primary, which stands for the group.
     pub(super) fn click_hit(&self, p: Pos2) -> Option<&Annotation> {
-        self.hit(p)
-            .or_else(|| self.group_members().into_iter().rev().find(|(m, _)| self.screen_rects(m).any(|r| r.expand(3.0).contains(p))).map(|(_, p)| p))
+        self.comments()
+            .map(|a| (a, a))
+            .chain(self.group_members())
+            .filter(|(a, _)| self.screen_rects(a).any(|r| r.expand(3.0).contains(p)))
+            .max_by_key(|(a, _)| a.index)
+            .map(|(_, selects)| selects)
     }
 
     /// What selecting this page's `a` selects: its group's primary for a group subordinate (its
