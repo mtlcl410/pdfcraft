@@ -615,7 +615,7 @@ impl eframe::App for PdfCraftApp {
         // A document can hide the toolbars, the menu and the panels around it in its tab (ISO
         // 32000-2 Table 147); the tab strip stays, and F8 brings the rest back (`viewer_prefs`).
         let hidden = self.hidden_interface();
-        if !hidden.mode_bar() {
+        if !hidden.mode_bar(self.native_menu.is_some()) {
             chrome::mode_bar(self, ui);
         }
         // Whichever way another tab came to the front, it shows instead of the expanded view.

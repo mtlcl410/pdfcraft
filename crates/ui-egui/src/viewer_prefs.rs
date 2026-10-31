@@ -38,9 +38,10 @@ impl HiddenInterface {
         self.toolbar || self.menubar || self.window_ui
     }
 
-    /// The mode bar has nothing left to show.
-    pub fn mode_bar(self) -> bool {
-        self.toolbar && self.menubar
+    /// The mode bar has nothing left to show: the tools are hidden, and so are the menus, by the
+    /// document or because the native macOS menu bar (`native_menu`) has them instead.
+    pub fn mode_bar(self, native_menu: bool) -> bool {
+        self.toolbar && (self.menubar || native_menu)
     }
 
     /// For the control channel's `ui.state`.
@@ -354,5 +355,20 @@ mod tests {
         assert!(own.toggle());
         assert_eq!(own.hidden, HiddenInterface::ALL);
         assert!(!own.toggle());
+    }
+
+    #[test]
+    fn the_mode_bar_goes_when_nothing_is_left_on_it() {
+        let toolbar = HiddenInterface { toolbar: true, ..HiddenInterface::NONE };
+        // The in-window menus are still there.
+        assert!(!toolbar.mode_bar(false));
+        // #4378 review: on macOS the native menu bar has the menus, so hiding the tools leaves an
+        // empty bar, which goes too.
+        assert!(toolbar.mode_bar(true));
+        let both = HiddenInterface { menubar: true, ..toolbar };
+        assert!(both.mode_bar(false) && both.mode_bar(true));
+        // Menus hidden, tools shown: the bar has the tools.
+        let menubar = HiddenInterface { menubar: true, ..HiddenInterface::NONE };
+        assert!(!menubar.mode_bar(false) && !menubar.mode_bar(true));
     }
 }
