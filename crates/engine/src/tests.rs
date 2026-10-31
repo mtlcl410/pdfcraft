@@ -9530,3 +9530,59 @@ fn an_opening_reset_reaches_a_row_added_while_opening() {
     assert_eq!(data.count(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0]"), "row"), 2, "the row was added");
     assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0].row[1].item[0]")).unwrap_or(""), "", "reset in the data");
 }
+
+/// A reset in an opening script reaches an exclusion group of a row an earlier opening script
+/// added, before the row has widgets: the group's data goes back to the on value of its default
+/// button, and stays so when the form is saved.
+#[test]
+fn an_opening_reset_reaches_an_exclusion_group_of_a_row_added_while_opening() {
+    let group = r#"<exclGroup name="pick" w="1in" h="0.3in"><field name="a" w="0.5in" h="0.3in"><ui><checkButton/></ui><items><text>A</text></items><value><text>A</text></value></field><field name="b" w="0.5in" h="0.3in"><ui><checkButton/></ui><items><text>B</text></items></field></exclGroup>"#;
+    let tpl = pdfcraft_xfa::fixtures::scripted_template()
+        .replace(
+            "if (qty.rawValue === null) qty.rawValue = 2;",
+            r#"if (qty.rawValue === null) qty.rawValue = 2; table._row.addInstance(1);"#,
+        )
+        .replace(r#"<field name="amount" h="0.3in"><ui><numericEdit/></ui></field>"#, &format!(r#"<field name="amount" h="0.3in"><ui><numericEdit/></ui></field>{group}"#))
+        .replace(
+            r#"<field name="grand" w="2in" h="0.3in" access="readOnly">"#,
+            r#"<field name="grand" w="2in" h="0.3in" access="readOnly"><event activity="initialize"><script contentType="application/x-javascript">xfa.resolveNode("form.page1.table.row[1].pick").rawValue = "B"; xfa.host.resetData("form.page1.table.row[1].pick");</script></event>"#,
+        );
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("rows.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&tpl)), None).unwrap();
+    let out = s.take_js_output(id);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let cos = pdfcraft_cos::Document::open(s.save_bytes(id).unwrap()).unwrap();
+    let data = pdfcraft_xfa::data_of(&cos).unwrap();
+    assert_eq!(data.count(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0]"), "row"), 2, "the row was added");
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0].row[1].pick[0]")).unwrap_or(""), "A", "group reset in the data");
+}
+
+/// A reset in an opening script clears a multi-select list of a hidden subform (no widget)
+/// whose picks the data holds as `value` elements: its empty default leaves no pick in the
+/// saved data, and the rest of the data stays as it was.
+#[test]
+fn an_opening_reset_clears_structured_picks_of_a_field_without_a_widget() {
+    let tpl = pdfcraft_xfa::fixtures::scripted_template()
+        .replace(
+            r#"<field name="note" w="4in" h="0.3in">"#,
+            r#"<field name="tags" w="2in" h="1in"><ui><choiceList open="multiSelect"/></ui><items><text>a</text><text>b</text><text>c</text></items></field><field name="note" w="4in" h="0.3in">"#,
+        )
+        .replace(
+            "if (qty.rawValue === null) qty.rawValue = 2;",
+            r#"if (qty.rawValue === null) qty.rawValue = 2; xfa.host.resetData("form.page1.details.tags");"#,
+        )
+        .replace(
+            "</xdp:xdp>",
+            r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><page1><qty>3</qty><details><tags><value>a</value><value>c</value></tags><note>kept</note></details></page1></form></xfa:data></xfa:datasets>
+</xdp:xdp>"#,
+        );
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("tags.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&tpl)), None).unwrap();
+    let out = s.take_js_output(id);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let cos = pdfcraft_cos::Document::open(s.save_bytes(id).unwrap()).unwrap();
+    let data = pdfcraft_xfa::data_of(&cos).unwrap();
+    assert_eq!(data.value_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].details[0].tags[0]")).unwrap_or_default(), "", "picks reset in the data");
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].details[0].note[0]")), Some("kept"));
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].qty[0]")), Some("3"));
+}

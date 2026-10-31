@@ -233,15 +233,52 @@ fn plain_som(som: &str) -> String {
     out
 }
 
-/// Does `name` from a script (`qty`, `page1.qty`, `xfa.form.form.page1.qty`, or a container
-/// such as `table`) name this SOM or one of its ancestors?
-fn som_matches(som: &str, name: &str) -> bool {
-    let plain = plain_som(som);
-    let n = plain_som(name.trim());
-    let n = n.strip_prefix("xfa.form.").or_else(|| n.strip_prefix("$form.")).unwrap_or(&n);
-    let want: Vec<&str> = n.split('.').filter(|s| !s.is_empty()).collect();
-    let have: Vec<&str> = plain.split('.').filter(|s| !s.is_empty()).collect();
-    !want.is_empty() && have.windows(want.len()).any(|w| w == want.as_slice())
+/// The names a script passed to a reset (`qty`, `page1.qty`, `xfa.form.form.page1.qty`, or a
+/// container such as `table`), indexed, so matching an object against them costs the same
+/// however many names there are.
+struct ResetTargets {
+    /// Each name's steps without indexes, joined by `.`.
+    wants: HashSet<String>,
+    /// The most steps of a name.
+    longest: usize,
+}
+
+impl ResetTargets {
+    fn new(names: &[String]) -> Self {
+        let mut wants = HashSet::new();
+        let mut longest = 0;
+        for name in names {
+            let n = plain_som(name.trim());
+            let n = n.strip_prefix("xfa.form.").or_else(|| n.strip_prefix("$form.")).unwrap_or(&n);
+            let steps: Vec<&str> = n.split('.').filter(|s| !s.is_empty()).collect();
+            if !steps.is_empty() {
+                longest = longest.max(steps.len());
+                wants.insert(steps.join("."));
+            }
+        }
+        ResetTargets { wants, longest }
+    }
+
+    /// Does a name name this SOM or one of its ancestors: is it a run of the SOM's steps? The
+    /// runs are looked up, at most [`Self::longest`] steps each, so the work depends on the
+    /// SOM's depth and not on how many names there are.
+    fn matches(&self, som: &str) -> bool {
+        let plain = plain_som(som);
+        let have: Vec<&str> = plain.split('.').filter(|s| !s.is_empty()).collect();
+        for start in 0..have.len() {
+            let mut run = String::new();
+            for (k, step) in have.iter().skip(start).take(self.longest).enumerate() {
+                if k > 0 {
+                    run.push('.');
+                }
+                run.push_str(step);
+                if self.wants.contains(&run) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// A generated field as the runner tracks it: kind, value and on state.
@@ -585,22 +622,20 @@ impl<'a, 'b> Runner<'a, 'b> {
     fn reset(&mut self, names: &[String]) -> Result<(), String> {
         self.flush()?;
         let by_som = self.by_som().clone();
-        let listed: Option<Vec<String>> = if names.is_empty() {
-            None
-        } else {
-            Some(by_som.iter().filter(|(som, _)| names.iter().any(|n| som_matches(som, n))).map(|(_, f)| f.clone()).collect())
-        };
-        // Fields of the live form with no widget yet (a row an opening script added, before the
-        // form is laid out again): their data goes back to the template's default too, or the
-        // value would stay and be laid out and saved.
+        let targets = (!names.is_empty()).then(|| ResetTargets::new(names));
+        let wanted = |som: &str| targets.as_ref().is_none_or(|t| t.matches(som));
+        let listed: Option<Vec<String>> = targets.as_ref().map(|_| by_som.iter().filter(|(som, _)| wanted(som)).map(|(_, f)| f.clone()).collect());
+        // Fields and exclusion groups of the live form with no widget yet (a row an opening
+        // script added, before the form is laid out again): their data goes back to the
+        // template's default too, or the value would stay and be laid out and saved.
         let unshown: Vec<String> = {
             let live = self.live();
             let mut out = Vec::new();
             let mut stack: Vec<&pdfcraft_xfa::FormNode> = vec![&live.root];
             while let Some(n) = stack.pop() {
-                if n.kind == Some(pdfcraft_xfa::NodeKind::Field)
+                if matches!(n.kind, Some(pdfcraft_xfa::NodeKind::Field | pdfcraft_xfa::NodeKind::ExclGroup))
                     && !by_som.contains_key(&n.som)
-                    && (names.is_empty() || names.iter().any(|name| som_matches(&n.som, name)))
+                    && wanted(&n.som)
                 {
                     out.push(n.som.clone());
                 }
@@ -611,10 +646,7 @@ impl<'a, 'b> Runner<'a, 'b> {
         for som in unshown {
             let Some(text) = pdfcraft_xfa::reset_default(self.tpl, &som) else { continue };
             let path = pdfcraft_xfa::data_path(self.tpl, &som);
-            if self.data.as_ref().and_then(|d| d.text_at(&path)).unwrap_or("") != text {
-                self.data_op(pdfcraft_xfa::DataOp::Value { path, text });
-                self.changes.values += 1;
-            }
+            self.reset_data(path, text);
         }
         if listed.as_ref().is_some_and(Vec::is_empty) {
             self.invalidate();
@@ -623,6 +655,7 @@ impl<'a, 'b> Runner<'a, 'b> {
         pdfcraft_forms::reset(self.doc, listed.as_deref()).map_err(|e| e.to_string())?;
         self.fields = None;
         let infos = self.fields().clone();
+        let listed: Option<HashSet<&String>> = listed.as_ref().map(|l| l.iter().collect());
         for (som, name) in &by_som {
             if listed.as_ref().is_some_and(|l| !l.contains(name)) {
                 continue;
@@ -632,14 +665,19 @@ impl<'a, 'b> Runner<'a, 'b> {
                 continue;
             }
             let path = pdfcraft_xfa::data_path(self.tpl, som);
-            let text = data_text(info);
-            if self.data.as_ref().and_then(|d| d.text_at(&path)).unwrap_or("") != text {
-                self.data_op(pdfcraft_xfa::DataOp::Value { path, text });
-                self.changes.values += 1;
-            }
+            self.reset_data(path, data_text(info));
         }
         self.invalidate();
         Ok(())
+    }
+
+    /// Put a reset's `text` in the data at `path`, unless it already holds it: a multi-select
+    /// list's picks (`value` elements) are compared as its lines, and replaced.
+    fn reset_data(&mut self, path: pdfcraft_xfa::DataPath, text: String) {
+        if self.data.as_ref().and_then(|d| d.value_at(&path)).unwrap_or_default() != text {
+            self.data_op(pdfcraft_xfa::DataOp::Reset { path, text });
+            self.changes.values += 1;
+        }
     }
 
     /// Apply what a script of `ev` did. Returns whether the form has to be laid out again.
@@ -1079,14 +1117,36 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
     }
 
+    /// Matching objects against a reset's names costs the same however many names there are:
+    /// 5,000 objects against 50,000 names that miss them all is 250 million comparisons when
+    /// each object is compared with every name.
+    #[test]
+    fn matching_many_objects_against_many_reset_names_is_bounded() {
+        let names: Vec<String> = (0..50_000).map(|i| format!("form1.page1.other{i}")).collect();
+        let started = std::time::Instant::now();
+        let targets = ResetTargets::new(&names);
+        let hits = (0..5_000).filter(|i| targets.matches(&format!("form1[0].page1[0].table[0].row[{i}].item[0]"))).count();
+        assert_eq!(hits, 0);
+        assert!(targets.matches("form1[0].page1[0].other49999[0]"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+    }
+
     #[test]
     fn script_names_match_indexed_som_paths() {
+        let som_matches = |som: &str, name: &str| ResetTargets::new(&[name.to_string()]).matches(som);
         assert!(som_matches("form[0].page1[0].qty[0]", "qty"));
         assert!(som_matches("form[0].page1[0].qty[0]", "page1.qty"));
         assert!(som_matches("form[0].page1[0].qty[0]", "xfa.form.form.page1.qty"));
+        assert!(som_matches("form[0].page1[0].qty[0]", "$form.form.page1.qty"));
         assert!(som_matches("form[0].page1[0].table[0].row[2].amount[0]", "table"));
+        assert!(som_matches("form[0].page1[0].table[0].row[2].amount[0]", "table.row[0].amount"));
         assert!(!som_matches("form[0].page1[0].qty[0]", "qt"));
         assert!(!som_matches("form[0].page1[0].price[0]", "qty"));
+        assert!(!som_matches("form[0].page1[0].qty[0]", "page1.page1.qty"));
+        assert!(!som_matches("form[0].page1[0].qty[0]", " . "));
+        assert!(!ResetTargets::new(&[]).matches("form[0].qty[0]"));
+        let many = ResetTargets::new(&["price".into(), "page1.qty".into()]);
+        assert!(many.matches("form[0].page1[0].qty[0]") && many.matches("form[0].page2[0].price[0]"));
         assert_eq!(
             split_instance(&Template::default(), "form[0].table[0].row[2]").map(|(p, ps, n, i)| (p.len(), ps, n, i)),
             Some((2, "form[0].table[0]".into(), "row".into(), 2))

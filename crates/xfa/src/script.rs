@@ -575,15 +575,30 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
     out
 }
 
-/// What a reset gives the field at `som` in the data: its template default, or nothing when it has
-/// none. `None` for an object a reset restores no value of: not a field of the template, or a
-/// button, signature or picture field.
+/// What a reset gives the field or exclusion group at `som` in the data: its template default
+/// as saved (a choice list's item value, not its shown text, as [`Field::saved_value`] gives
+/// it), or nothing when it has none. A group's default is the on value of the first of its
+/// buttons whose own default is that on value. `None` for an object a reset restores no value
+/// of: not a field or group of the template, or a button, signature or picture field.
 pub fn reset_default(tpl: &Template, som: &str) -> Option<String> {
-    let f = crate::data::template_field(tpl, som)?;
-    if matches!(f.ui, crate::model::Ui::Button | crate::model::Ui::Signature | crate::model::Ui::ImageEdit) {
-        return None;
+    match crate::data::template_object(tpl, som)? {
+        Node::Field(f) => {
+            if matches!(f.ui, crate::model::Ui::Button | crate::model::Ui::Signature | crate::model::Ui::ImageEdit) {
+                return None;
+            }
+            Some(f.value.plain().map(|v| f.saved_value(v.trim())).unwrap_or_default())
+        }
+        Node::ExclGroup(g) => Some(
+            g.fields
+                .iter()
+                .find_map(|f| {
+                    let on = f.items.first().map(|s| s.trim()).filter(|s| !s.is_empty())?;
+                    (f.value.plain()?.trim() == on).then(|| on.to_string())
+                })
+                .unwrap_or_default(),
+        ),
+        _ => None,
     }
-    Some(f.value.plain().unwrap_or_default())
 }
 
 /// Lay the form out again from its template, data and overrides, replacing the pages and the
