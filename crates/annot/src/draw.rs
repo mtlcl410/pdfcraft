@@ -31,9 +31,22 @@ pub(crate) fn redraw_or_restore(doc: &mut Document, r: ObjRef, before: Dict) -> 
 /// `?` permanent. For new text (a new comment, changed contents), as Acrobat keeps text its font
 /// can't show, and for display-only copies.
 pub(crate) fn draw_appearance(doc: &mut Document, r: ObjRef) -> Result<(), AnnotError> {
+    draw_appearance_on(doc, r, |doc| page_box_listing(doc, r))
+}
+
+/// [`draw_appearance`] for a new comment that `page` is about to list: drawn with that page's
+/// visible region, so its first appearance takes in what its points reach (a squiggle's peaks
+/// over a low quad) as a later redraw's does.
+pub(crate) fn draw_new_appearance(doc: &mut Document, r: ObjRef, page: ObjRef) -> Result<(), AnnotError> {
+    draw_appearance_on(doc, r, |doc| Some(page_with_inherited_boxes(doc, page).crop(doc)))
+}
+
+/// [`draw_appearance`] on the page whose visible region `page_box` finds, read only for comments
+/// drawn through points of their own.
+fn draw_appearance_on(doc: &mut Document, r: ObjRef, page_box: impl FnOnce(&Document) -> Option<[f64; 4]>) -> Result<(), AnnotError> {
     let d = annot_dict(doc, r);
     let subtype = String::from_utf8_lossy(d.name(b"Subtype").unwrap_or_default()).into_owned();
-    let page = appearance::is_drawn_from_points(&d).then(|| page_box_listing(doc, r)).flatten();
+    let page = appearance::is_drawn_from_points(&d).then(|| page_box(doc)).flatten();
     let direct = with_direct_values(doc, &d);
     let Some(stream) = build_appearance(doc, &d, &direct, page) else { return Err(AnnotError::Unsupported(subtype)) };
     let built = Built::new(stream, &direct);

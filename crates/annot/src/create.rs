@@ -1,4 +1,4 @@
-use super::draw::draw_appearance;
+use super::draw::draw_new_appearance;
 use super::lookup::{annot_dict, annot_ref, annots, fill_sign_shape, page_ref, set_annots};
 use super::modify::{free_text_da, n, refuse_undrawable_thai, rich_text, set_part_keys, shape_text_box};
 use super::types::{
@@ -420,7 +420,7 @@ pub fn add_annotation(doc: &mut Document, new: &NewAnnotation, meta: &Meta) -> R
     }
     refuse_undrawable_thai(d.name(b"Subtype") == Some(b"FreeText"), &new.contents)?;
     let r = doc.add(Object::Dict(d.clone()));
-    draw_appearance(doc, r)?;
+    draw_new_appearance(doc, r, page)?;
     let mut list = annots(doc, page);
     let index = list.len();
     list.push(Object::Ref(r));

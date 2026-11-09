@@ -3510,8 +3510,24 @@ fn polygon_whose_vertices_reach_past_its_rect_is_drawn_through_them() {
     assert_eq!(rect(&shown[0]), [10.0, 10.0, 200.5, 180.5], "the polygon's /Rect takes in its vertices");
     assert_eq!(ap_bbox(&display, &shown[0]), rect(&shown[0]));
     assert!(ap_content(&display, &shown[0]).contains("100 100 m"), "the polygon is drawn");
-    // Half the width (1) and twice the cloud radius (2 × (6 + 1.5 × 2)) past the vertices.
-    assert_eq!(rect(&shown[1]), [10.0, 10.0, 219.0, 199.0], "and its cloudy border");
+    // Half the width (1) and the bumps' bulge past the vertices: radius 6 + 1.5 × 2 = 9, so the
+    // slanted edges (94.34 long) round to 5 bumps of 18.87, which bulge half that, 9.43.
+    assert_rect_near(&rect(&shown[1]), [10.0, 10.0, 210.434, 190.434], "and its cloudy border");
+}
+
+/// A cloudy border's bumps grow where an edge rounds to fewer of them, and with `/BE /I`
+/// (§12.5.4): the box takes in how far they bulge, not a fixed twice the nominal radius. At
+/// intensity 2 and width 2 the radius is 18, so the 52-long bottom edge is one bump bulging 26
+/// below it, past the 18 + 1 the box used to allow.
+#[test]
+fn a_cloudy_polygon_s_box_takes_in_its_grown_bumps() {
+    let (_, display) = displayed(&[
+        b"<< /Type /Annot /Subtype /Polygon /Rect [110 110 120 120] /BS << /W 2 >> /C [0 0 1] /BE << /S /C /I 2 >> /Vertices [100 100 152 100 126 140] >>",
+    ]);
+    let shown = list(&display, 0);
+    let r = nums_of(&shown[0], b"Rect");
+    assert!(r[1] <= 100.0 - 26.0 - 1.0 + 1e-3, "the bottom bump and half the width are inside: {r:?}");
+    assert_eq!(ap_bbox(&display, &shown[0]), r);
 }
 
 /// A line's `/L` (Table 178) outside its `/Rect` is drawn, with its line ending and its leader
@@ -3573,6 +3589,23 @@ fn squiggly_peaks_over_a_low_quad_are_inside_the_widened_box() {
     assert_eq!(ap_bbox(&display, &shown[0]), nums_of(&shown[0], b"Rect"));
 }
 
+/// A new squiggle is drawn with its page's visible region from the start, so its first appearance
+/// and `/Rect` are those a later redraw gives it. Its quad's fractional corners, stored with less
+/// precision than the `/Rect` made from them, lie a hair outside it, so the box takes in the
+/// peaks and the line's width: at creation as on a colour change, not only from the first edit.
+#[test]
+fn a_new_squiggle_takes_in_its_peaks_when_first_drawn() {
+    let mut doc = fixture();
+    let squiggle = Shape::TextMarkup { kind: Markup::Squiggly, quads: vec![[100.1, 301.3, 200.2, 301.3, 100.1, 300.2, 200.2, 300.2]] };
+    let i = add_annotation(&mut doc, &new(0, squiggle), &meta("sq")).expect("adds");
+    let made = list(&doc, 0).remove(i);
+    let first = (rect(&made), ap_bbox(&doc, &made));
+    set_style(&mut doc, 0, i, StyleChange::new(Some([0.0, 0.0, 1.0]), None, None, None), &meta("")).expect("restyle");
+    let redrawn = list(&doc, 0).remove(i);
+    assert_eq!(first, (rect(&redrawn), ap_bbox(&doc, &redrawn)), "the first drawing is as wide as a redraw");
+    assert!(first.0[3] > 301.9, "the peaks and the line's width are inside: {:?}", first.0);
+}
+
 /// A line's caption (`/Cap`, ISO 32000-2 Table 178) is drawn beside `/L`: the widened box takes
 /// in the caption's text as well as the line.
 #[test]
@@ -3585,6 +3618,8 @@ fn a_line_caption_is_inside_the_widened_box() {
     // The caption sits on top of the line: its 10-point text rises well past the stroke's 101.
     assert!(rect[3] > 108.0, "{rect:?}");
     assert_eq!(ap_bbox(&display, &shown[0]), rect);
+    let content = ap_content(&display, &shown[0]);
+    assert!(content.contains("(Caption) Tj"), "and the caption is drawn in it: {content}");
 }
 
 /// A line just above the crop box whose wide stroke reaches down onto the page is drawn as far as
@@ -3620,6 +3655,13 @@ fn a_cached_appearance_is_redrawn_for_a_changed_crop_box() {
     let display = with_missing_appearances_cached(&doc, &mut cache).expect("drawn");
     let shown = list(&display, 0);
     assert_eq!(nums_of(&shown[0], b"Rect"), [10.0, 10.0, 500.0, 380.0], "drawn for the larger crop box");
+    assert_eq!(ap_bbox(&display, &shown[0]), nums_of(&shown[0], b"Rect"));
+    // The same crop again comes from the cache, widened box and all.
+    let hits = cache.hits();
+    let display = with_missing_appearances_cached(&doc, &mut cache).expect("drawn");
+    assert_eq!(cache.hits(), hits + 1, "a cache hit");
+    let shown = list(&display, 0);
+    assert_eq!(nums_of(&shown[0], b"Rect"), [10.0, 10.0, 500.0, 380.0], "the hit keeps the widened /Rect");
     assert_eq!(ap_bbox(&display, &shown[0]), nums_of(&shown[0], b"Rect"));
 }
 

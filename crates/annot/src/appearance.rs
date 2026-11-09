@@ -186,9 +186,7 @@ pub fn cloud_path(pts: &[(f64, f64)], r: f64) -> String {
     let area: f64 = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(a, b)| a.0 * b.1 - b.0 * a.1).sum();
     // Outward normal of an edge: to the right of travel for counter-clockwise outlines.
     let sign = if area >= 0.0 { 1.0 } else { -1.0 };
-    let perimeter: f64 = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1)).sum();
-    // Each edge rounds to at least one bump, so the total stays within the budget plus one per edge.
-    let r = r.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64));
+    let r = cloud_bump_radius(pts, r);
     let mut c = String::new();
     for (i, (a, b)) in pts.iter().zip(pts.iter().cycle().skip(1)).enumerate() {
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -199,7 +197,7 @@ pub fn cloud_path(pts: &[(f64, f64)], r: f64) -> String {
         if len < 1e-6 {
             continue;
         }
-        let k = ((len / (2.0 * r)).round() as usize).clamp(1, 10_000);
+        let k = cloud_bumps(len, r);
         let step = len / k as f64;
         let (ux, uy) = (dx / len, dy / len);
         let (nx, ny) = (sign * uy, -sign * ux);
@@ -212,6 +210,41 @@ pub fn cloud_path(pts: &[(f64, f64)], r: f64) -> String {
     }
     c.push_str("h\n");
     c
+}
+
+/// The radius [`cloud_path`] draws the bumps of an outline through `pts` at for a nominal `r`:
+/// grown on a long outline so it has at most [`MAX_CLOUD_BUMPS`] (each edge rounds to at least
+/// one bump, so the total stays within that plus one per edge).
+fn cloud_bump_radius(pts: &[(f64, f64)], r: f64) -> f64 {
+    let perimeter: f64 = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1)).sum();
+    r.max(perimeter / (2.0 * MAX_CLOUD_BUMPS as f64))
+}
+
+/// How many bumps [`cloud_path`] draws along an edge `len` long at bump radius `r`: at least one,
+/// at most 10,000.
+fn cloud_bumps(len: f64, r: f64) -> usize {
+    // A float-to-int `as` saturates, and NaN becomes 0, which the clamp lifts to one.
+    ((len / (2.0 * r)).round() as usize).clamp(1, 10_000)
+}
+
+/// How far the bumps of [`cloud_path`]`(pts, r)` bulge past the outline: half the longest bump,
+/// as each is a curve whose control points stand two thirds of its length out. That is about
+/// `r`, more where an edge rounds to fewer, longer bumps or a long outline grows them.
+fn cloud_reach(pts: &[(f64, f64)], r: f64) -> f64 {
+    let r = cloud_bump_radius(pts, r);
+    pts.iter()
+        .zip(pts.iter().cycle().skip(1))
+        .map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1))
+        .filter(|len| *len >= 1e-6)
+        .map(|len| len / cloud_bumps(len, r) as f64 / 2.0)
+        .fold(0.0, f64::max)
+}
+
+/// The bump radius a cloudy border (§12.5.4) of width `w` is drawn with: [`cloud_radius`] scaled
+/// by `/BE /I`, read between 0.5 and 2.
+fn cloud_radius_of(d: &Dict, w: f64) -> f64 {
+    let intensity = d.get(b"BE").and_then(|b| b.as_dict()).and_then(|b| b.get(b"I")).and_then(|i| i.as_f64()).unwrap_or(1.0);
+    cloud_radius(w) * intensity.clamp(0.5, 2.0)
 }
 
 fn nums(d: &Dict, key: &[u8]) -> Option<Vec<f64>> {
@@ -699,13 +732,17 @@ fn drawn_points(doc: &Document, d: &Dict) -> Option<(Vec<f64>, f64)> {
                 return None;
             }
             let cloudy = d.get(b"BE").and_then(Object::as_dict).is_some_and(|b| b.name(b"S") == Some(b"C"));
-            // A cloud's bumps are drawn at up to twice their nominal radius (`draw_polygon`).
+            let vertices = nums(d, b"Vertices")?;
             let reach = match subtype {
-                b"Polygon" if cloudy => 2.0 * cloud_radius(w),
+                // As far as the bumps `draw_polygon` draws bulge: grown on long edges.
+                b"Polygon" if cloudy => {
+                    let pts: Vec<(f64, f64)> = vertices.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
+                    cloud_reach(&pts, cloud_radius_of(d, w))
+                }
                 b"PolyLine" if has_ending() => arrow_size(w),
                 _ => 0.0,
             };
-            (nums(d, b"Vertices")?, w / 2.0 + reach)
+            (vertices, w / 2.0 + reach)
         }
         b"Line" => {
             let [x0, y0, x1, y1] = <[f64; 4]>::try_from(nums(d, b"L")?).ok()?;
@@ -1019,8 +1056,7 @@ fn draw_polygon(context: &AppearanceContext<'_>, drawing: &mut AppearanceDrawing
         c.push_str(&format!("{}{} w 1 J 1 j\n{}", rg_stroke(s), n(w), dash(d)));
     }
     if cloudy {
-        let intensity = d.get(b"BE").and_then(|b| b.as_dict()).and_then(|b| b.get(b"I")).and_then(|i| i.as_f64()).unwrap_or(1.0);
-        c.push_str(&cloud_path(&pts, cloud_radius(w) * intensity.clamp(0.5, 2.0)));
+        c.push_str(&cloud_path(&pts, cloud_radius_of(d, w)));
     } else {
         for (i, p) in pts.iter().enumerate() {
             c.push_str(&format!("{} {} {}\n", n(p.0), n(p.1), if i == 0 { "m" } else { "l" }));
