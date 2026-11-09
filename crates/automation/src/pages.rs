@@ -410,7 +410,9 @@ fn render_warning_text(warning: pdfcraft_render::RenderWarning) -> &'static str 
     match warning {
         RenderWarning::ContentTruncated => "content past the page's safety budget was skipped",
         RenderWarning::ColourFallback => "a colour that could not be computed was painted in a fallback colour",
-        RenderWarning::Type3WidthsMissing => "a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give",
+        RenderWarning::Type3WidthsMissing => {
+            "a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give, where they give one, and otherwise by /MissingWidth (0 by default)"
+        }
     }
 }
 

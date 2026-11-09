@@ -424,7 +424,7 @@ pub(crate) fn render(args: &[String]) -> Result<(), CliError> {
             pdfcraft_render::RenderWarning::Type3WidthsMissing => {
                 let _ = writeln!(
                     std::io::stderr().lock(),
-                    "warning: page {page}: a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give"
+                    "warning: page {page}: a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give, where they give one, and otherwise by /MissingWidth (0 by default)"
                 );
             }
         }

@@ -112,3 +112,47 @@ fn a_page_or_dpi_the_renderer_cannot_use_is_refused_before_reading_the_file() {
         assert!(!out.exists(), "{option} {value}: no output may be written");
     }
 }
+
+/// A page showing `ab` in a Type 3 font without `/Widths`: `a`'s procedure sets its width with
+/// `d1`, and `b`'s `d0` gives a name where its width should be, so `b` falls back on
+/// `/MissingWidth`.
+fn type3_fixture(test: &str) -> PathBuf {
+    let content = "BT /F1 100 Tf 20 100 Td (ab) Tj ET";
+    let glyph_a = "500 0 0 0 400 400 d1 0 0 400 400 re f";
+    let glyph_b = "/x 0 d0 0 0 600 600 re f";
+    let bytes = format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+         3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n\
+         4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+         5 0 obj << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] \
+         /CharProcs << /a 6 0 R /b 7 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> >> endobj\n\
+         6 0 obj << /Length {} >> stream\n{glyph_a}\nendstream endobj\n\
+         7 0 obj << /Length {} >> stream\n{glyph_b}\nendstream endobj\n\
+         trailer << /Root 1 0 R >>\n%%EOF",
+        content.len(),
+        glyph_a.len(),
+        glyph_b.len()
+    );
+    let pdf = tmp(test, "type3.pdf");
+    std::fs::write(&pdf, bytes).unwrap();
+    pdf
+}
+
+/// The warning says what happened to every glyph: one whose procedure gives no width wasn't
+/// spaced by its procedure, so the warning doesn't claim it was.
+#[test]
+fn a_type3_font_without_widths_warns_with_its_fallback() {
+    let pdf = type3_fixture("type3");
+    let out = tmp("type3", "p1.png");
+    let r = render(&pdf, &out);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains(
+            "warning: page 1: a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give, \
+             where they give one, and otherwise by /MissingWidth (0 by default)\n"
+        ),
+        "{stderr}"
+    );
+}

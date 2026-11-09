@@ -168,7 +168,8 @@ pub enum InterpreterWarning {
     ColorFallback,
     /// PdfCraft patch (90): a Type 3 font without `/Widths` (or `/FirstChar`/`/LastChar`),
     /// which ISO 32000-2 Table 110 requires, was selected; its glyphs advance by the widths
-    /// their glyph procedures set with `d0`/`d1`. Reported each time such a font is selected.
+    /// their glyph procedures set with `d0`/`d1`, and a glyph whose procedure sets no usable
+    /// width by `/MissingWidth` (0 by default). Reported each time such a font is selected.
     Type3WidthsMissing,
 }
 

@@ -117,3 +117,44 @@ fn mcp_page_render_carries_the_warnings_as_structured_content() {
     assert_eq!(result["structuredContent"]["warnings"], json!([FALLBACK]));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The warning a Type 3 font without `/Widths` gives, worded as `pdfcraft-cli render` prints it.
+const TYPE3_WIDTHS: &str = "a Type 3 font has no /Widths; its glyphs were spaced by the widths their glyph procedures give, \
+                            where they give one, and otherwise by /MissingWidth (0 by default)";
+
+/// A page showing `ab` in a Type 3 font without `/Widths`: `a`'s procedure sets its width with
+/// `d1`, and `b`'s `d0` gives a name where its width should be, so `b` falls back on
+/// `/MissingWidth`.
+fn type3_pdf() -> Vec<u8> {
+    let content = "BT /F1 100 Tf 20 100 Td (ab) Tj ET";
+    let glyph_a = "500 0 0 0 400 400 d1 0 0 400 400 re f";
+    let glyph_b = "/x 0 d0 0 0 600 600 re f";
+    format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+         3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n\
+         4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+         5 0 obj << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] \
+         /CharProcs << /a 6 0 R /b 7 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> >> endobj\n\
+         6 0 obj << /Length {} >> stream\n{glyph_a}\nendstream endobj\n\
+         7 0 obj << /Length {} >> stream\n{glyph_b}\nendstream endobj\n\
+         trailer << /Root 1 0 R >>\n%%EOF",
+        content.len(),
+        glyph_a.len(),
+        glyph_b.len()
+    )
+    .into_bytes()
+}
+
+/// The sentence says what happened to every glyph: one whose procedure gives no width wasn't
+/// spaced by its procedure, so the warning doesn't claim it was.
+#[test]
+fn a_type3_font_without_widths_is_reported_with_its_fallback() {
+    let (dir, mut a) = setup("type3");
+    std::fs::write(dir.join("type3.pdf"), type3_pdf()).unwrap();
+    let doc = open(&mut a, "type3.pdf");
+    let out = a.call("page_render", &json!({ "doc": doc, "page": 1, "dpi": 72 })).unwrap();
+    let Some(Content::Json(report)) = out.get(1) else { panic!("expected the warnings as JSON: {out:?}") };
+    assert_eq!(report["warnings"], json!([TYPE3_WIDTHS]));
+    let _ = std::fs::remove_dir_all(dir);
+}

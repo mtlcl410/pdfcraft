@@ -271,7 +271,8 @@ pub enum RenderWarning {
     /// DeviceN tint transform that cannot be evaluated) and was painted in a fallback colour.
     ColourFallback,
     /// A Type 3 font without the `/Widths` it requires (ISO 32000-2 Table 110) was used; its
-    /// glyphs were spaced by the widths their glyph procedures give.
+    /// glyphs were spaced by the widths their glyph procedures give with `d0` or `d1` (§9.6.4),
+    /// and a glyph whose procedure gives no usable width by `/MissingWidth` (0 by default).
     Type3WidthsMissing,
 }
 
