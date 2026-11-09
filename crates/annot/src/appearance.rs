@@ -630,7 +630,13 @@ fn normalised_rect(d: &Dict) -> Option<[f64; 4]> {
 /// its `/QuadPoints` (ISO 32000-2 §12.5.6.10), lines along `/L` (§12.5.6.7), polygons and
 /// polylines through `/Vertices` (§12.5.6.9) and ink through `/InkList` (§12.5.6.13).
 pub(crate) fn is_drawn_from_points(d: &Dict) -> bool {
-    matches!(d.name(b"Subtype"), Some(b"Highlight" | b"Underline" | b"StrikeOut" | b"Squiggly" | b"Line" | b"PolyLine" | b"Polygon" | b"Ink"))
+    subtype_drawn_from_points(d.name(b"Subtype"))
+}
+
+/// [`is_drawn_from_points`] for a `/Subtype` already read, as when it is given by reference
+/// (§7.3.10).
+pub(crate) fn subtype_drawn_from_points(subtype: Option<&[u8]>) -> bool {
+    matches!(subtype, Some(b"Highlight" | b"Underline" | b"StrikeOut" | b"Squiggly" | b"Line" | b"PolyLine" | b"Polygon" | b"Ink"))
 }
 
 /// At most this many quadrilaterals widen a text markup's box ([`point_reach`]). Each takes in a

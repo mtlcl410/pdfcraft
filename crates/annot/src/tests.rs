@@ -1937,11 +1937,12 @@ fn a_subtype_given_by_reference_is_drawn_and_edited() {
     let mut doc = document_of(&[
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
-        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R 6 0 R] >>",
+        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R 6 0 R 8 0 R] >>",
         b"<< /Type /Annot /Subtype 5 0 R /Rect [20 20 180 180] /C [1 0 0] >>",
         b"/Square",
         b"<< /Type /Annot /Subtype 7 0 R /Rect [20 20 180 180] /DA (0 g /Helv 12 Tf) /C [1 1 0] /Contents (box) >>",
         b"/FreeText",
+        b"<< /Type /Annot /Subtype 7 0 R /Rect [20 20 180 180] /DA (0 g /Helv 12 Tf) /Contents (old) >>",
     ]);
     let display = with_missing_appearances(&doc).expect("the square gets a display appearance");
     assert!(ap_content(&display, &list(&display, 0)[0]).contains("1 0 0 RG"), "the square is drawn");
@@ -1953,6 +1954,29 @@ fn a_subtype_given_by_reference_is_drawn_and_edited() {
     let d = list(&doc, 0).remove(1);
     assert!(text(&d, b"DA").starts_with("0 0 1 rg"), "{}", text(&d, b"DA"));
     assert_eq!(d.get(b"C"), Some(&Object::Array(vec![Object::Int(1), Object::Int(1), Object::Int(0)])), "the background is unchanged");
+    // New text in it is drawn, not left behind a stale appearance, and kept as rich text.
+    set_contents(&mut doc, 0, 2, "fresh", &meta("")).expect("new text");
+    let d = list(&doc, 0).remove(2);
+    assert!(ap_content(&doc, &d).contains("(fresh)"), "the new text is drawn: {}", ap_content(&doc, &d));
+    assert!(text(&d, b"RC").contains("fresh"), "and is the rich text: {}", text(&d, b"RC"));
+}
+
+/// A text markup whose `/Subtype` is given by reference (§7.3.10) is drawn over its
+/// `/QuadPoints` like a direct one (Table 182): the display copy's `/Rect` takes in the quad
+/// beside it, and so does the box an edit redraws.
+#[test]
+fn a_markup_whose_subtype_is_given_by_reference_is_drawn_over_its_quads() {
+    let mut doc = document_of(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] >>",
+        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+        b"<< /Type /Annot /Subtype 5 0 R /Rect [10 10 20 20] /C [1 1 0] /QuadPoints [100 120 200 120 100 100 200 100] >>",
+        b"/Highlight",
+    ]);
+    let display = with_missing_appearances(&doc).expect("the highlight needs an appearance");
+    assert_eq!(nums_of(&list(&display, 0)[0], b"Rect"), [10.0, 10.0, 200.0, 120.0], "the /Rect takes in the quad");
+    set_style(&mut doc, 0, 0, StyleChange::new(Some([0.0, 1.0, 0.0]), None, None, None), &meta("")).expect("restyle");
+    assert_eq!(nums_of(&list(&doc, 0)[0], b"Rect"), [10.0, 10.0, 200.0, 120.0], "and so does the redrawn one");
 }
 
 /// Edits read the values they change from as the display draws them, references followed

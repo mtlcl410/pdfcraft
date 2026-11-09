@@ -434,7 +434,7 @@ pub fn with_missing_appearances_cached(doc: &Document, cache: &mut AppearanceCac
             if has_normal {
                 continue;
             }
-            let crop = appearance::is_drawn_from_points(&d)
+            let crop = appearance::subtype_drawn_from_points(subtype.as_deref().and_then(Object::as_name))
                 .then(|| crops.get_or_insert_with(|| pdfcraft_model::pages(doc).iter().map(|p| (p.obj, p.crop(doc))).collect()).get(&page).copied())
                 .flatten();
             if let Some(built) = cache.get(r, crop) {

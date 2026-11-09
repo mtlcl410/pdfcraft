@@ -188,11 +188,19 @@ pub fn with_replies_and_popups(doc: &Document, list: &[Object], doomed: impl Int
 /// around its text stays snug around the new text, centred where it was.
 pub fn set_contents(doc: &mut Document, page: usize, index: usize, text: &str, meta: &Meta) -> Result<(), AnnotError> {
     let (_, r) = annot_ref(doc, page, index)?;
-    let d = annot_dict(doc, r);
+    // Read as the display draws it, references followed (ISO 32000-2 §7.3.10): a text box whose
+    // `/Subtype` or `/DA` is given by reference is re-fitted and redrawn like a direct one.
+    let d = resolved(doc, &annot_dict(doc, r));
     let free_text = d.name(b"Subtype") == Some(b"FreeText");
     refuse_undrawable_thai(free_text, text)?;
     let snug = free_text && is_snug(&d);
-    doc.update_dict(r, |d| {
+    doc.update_dict(r, |stored| {
+        // A text box is redrawn from these values, so they are written back direct, as the
+        // other edits do; the objects they pointed at are left alone.
+        if free_text {
+            stored.clone_from(&d);
+        }
+        let d = stored;
         d.set(b"Contents".to_vec(), PdfString::text(text));
         // The rich-text version follows the new plain text (text boxes), or would contradict it.
         if free_text {
