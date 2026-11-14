@@ -3606,7 +3606,8 @@ fn an_unattached_alphabetic_mark_reads_with_the_glyphs_at_its_place() {
 
 /// A one-page PDF drawing `ops` with font F1: a CID font embedding Inter (codes are its glyph ids) whose ToUnicode
 /// maps 0041 and 0042 to "a" and "b", 0100–0103 to the Arabic letters ف ي م ن, and 0104 and 0105 to 中 and 文. Every
-/// other code has no Unicode: 0024 is a 250-unit glyph with ink, and 06F1 a 400-unit blank one (Inter's space).
+/// other code has no Unicode: 0024 is a 250-unit glyph with ink, 06F1 a 400-unit blank one (Inter's space), and the
+/// rest are 1000 units wide.
 fn joining_stroke_page(ops: &str) -> PageText {
     use lopdf::{Document, Object, Stream, dictionary};
     let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 8 beginbfchar <0041> <0061> <0042> <0062> <0100> <0641> <0101> <064A> <0102> <0645> <0103> <0646> <0104> <4E2D> <0105> <6587> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end";
@@ -3670,7 +3671,8 @@ fn a_joining_stroke_drawn_before_its_letter_joins_it() {
 }
 
 /// Only ink joins letters: a blank glyph without Unicode (a space) between two Arabic letters still parts them, as do
-/// a gap a joining stroke leaves open, a stroke drawn invisible and a run of strokes too long to be a join.
+/// a gap a joining stroke leaves open, a stroke drawn invisible, a glyph too wide to be a stroke and a run of strokes
+/// too long to be a join.
 #[test]
 fn a_blank_glyph_without_unicode_still_parts_arabic_words() {
     let blank = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<0101010106F1> <01000100>] TJ ET");
@@ -3684,6 +3686,9 @@ fn a_blank_glyph_without_unicode_still_parts_arabic_words() {
     // Strokes drawn invisible (render mode 3) show no ink.
     let invisible = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm <01010101> Tj 3 Tr [<0024> 117 <0024>] TJ 0 Tr <01000100> Tj ET");
     assert_eq!(invisible.plain_text().trim(), "فف يي");
+    // A glyph without Unicode an em wide (code 0025, at the default width) is a letter of its own, not a stroke.
+    let wide = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<010101010025> <01000100>] TJ ET");
+    assert_eq!(wide.plain_text().trim(), "فف يي");
     // Twenty strokes (60 pt, five heights) are no join between two letters, but a run of glyphs of their own.
     let long = joining_stroke_page(&format!("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<01010101{}01000100>] TJ ET", "0024".repeat(20)));
     assert_eq!(long.plain_text().trim(), "فف يي");

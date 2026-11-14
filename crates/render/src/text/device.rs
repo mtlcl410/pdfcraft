@@ -154,6 +154,11 @@ fn touches(host: &Drawn, stroke: &Drawn) -> bool {
     sb[0] <= hb[2] + tolerance && sb[2] >= hb[0] - tolerance
 }
 
+/// Widest glyph without Unicode, in heights (ems), that can be a joining stroke. A kashida is a short stroke; a wider
+/// glyph without Unicode is a letter or a ligature of its own (a Nastaliq word set as one glyph), whose box would carry
+/// its neighbour's far along the line.
+const STROKE_WIDTH: f32 = 0.5;
+
 /// `host` with the box of `stroke` ([`joins`] or [`touches`]) taken into its own, keeping its text, or `None` when
 /// the two would be longer along the line than [`CELL_GAP`] heights: a letter and its joining strokes are shorter, and
 /// a longer run of glyphs without Unicode is no join to give to one letter.
@@ -337,8 +342,15 @@ impl TextDevice {
     /// Takes `stroke`, a glyph with ink and no text of its own, into the box of the right-to-left letter it joins
     /// ([`joins`]): the glyph drawn just before it, or else the one drawn just after it. It adds no text, and the
     /// letter's box then reaches the next letter it joins, so the word's letters are no word gap apart. A stroke that
-    /// joins neither is dropped, as before.
+    /// joins neither is dropped, as before, and so is one wider than [`STROKE_WIDTH`] heights.
     fn absorb_connector(&mut self, stroke: Drawn) {
+        let b = along_baseline(&stroke.2.quad, stroke.1);
+        let width = b[2] - b[0];
+        // A NaN width is no stroke either.
+        if width.is_nan() || width > f64::from(STROKE_WIDTH) * (b[3] - b[1]) {
+            self.connector = None;
+            return;
+        }
         if let Some(host) = self.glyphs.last_mut()
             && joins(host, &stroke)
         {
