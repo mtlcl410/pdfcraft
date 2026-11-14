@@ -8423,6 +8423,54 @@ fn a_static_xfa_radio_group_with_numeric_items_keeps_the_picked_button() {
     }
 }
 
+/// Radio groups without a name (unnamed `exclGroup`s) of a dynamic form, chosen, saved and
+/// opened again: each choice is saved under the chosen button's own name, a row's in that row,
+/// as Acrobat saves such a group (it has no data node of its own, XFA 3.3 pp. 193 and 197), and
+/// each group shows its own choice when the form is opened again. The group's value used to be
+/// written to its container, which holds the rows, so the top and bottom choices were lost.
+#[test]
+fn unnamed_xfa_radio_groups_save_and_reopen_their_choices() {
+    let radio = |name: &str, on: u8| {
+        format!(r#"<field name="{name}" w="1in" h="18pt"><ui><checkButton shape="round"/></ui><items><integer>{on}</integer></items></field>"#)
+    };
+    let group = |a: &str, b: &str| format!(r#"<exclGroup layout="lr-tb">{}{}</exclGroup>"#, radio(a, 1), radio(b, 2));
+    let tpl = format!(
+        r#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+<pageSet><pageArea name="page"><contentArea x="36pt" y="36pt" w="540pt" h="720pt"/><medium short="612pt" long="792pt"/></pageArea></pageSet>
+{}<subform name="rows" layout="tb"><occur min="1" max="-1" initial="1"/>{}</subform>{}
+</subform>
+</template>
+</xdp:xdp>"#,
+        group("TopA", "TopB"),
+        group("RowA", "RowB"),
+        group("BottomA", "BottomB"),
+    );
+    let values = |s: &Session, id: DocId| -> Vec<(String, Vec<String>)> {
+        s.get(id).unwrap().form.iter().filter(|f| f.kind == pdfcraft_forms::FieldKind::Radio).map(|f| (f.name.clone(), f.value.clone())).collect()
+    };
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("groups.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(&tpl)), None).unwrap();
+    let names: Vec<String> = values(&s, id).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+    for (name, state) in names.iter().zip(["1", "2", "1"]) {
+        s.apply(id, Edit::SetFieldValue { name: name.clone(), value: FieldValue::Radio(Some(state.into())) }).unwrap();
+    }
+    let doc = s.get(id).unwrap();
+    assert!(!doc.xfa_warnings.iter().any(|w| w.contains("XFA data not written")), "{:?}", doc.xfa_warnings);
+    let saved = s.save_bytes(id).unwrap();
+    let data = pdfcraft_xfa::data_of(&pdfcraft_cos::Document::open(saved.clone()).unwrap()).unwrap();
+    let at = |som: &str| data.text_at(&pdfcraft_xfa::som_to_path(som)).map(str::to_owned);
+    assert_eq!(at("form[0].TopA[0]").as_deref(), Some("1"));
+    assert_eq!(at("form[0].rows[0].RowB[0]").as_deref(), Some("2"));
+    assert_eq!(at("form[0].BottomA[0]").as_deref(), Some("1"));
+    assert_eq!(at("form[0].rows[0]").as_deref(), Some(""), "the row node holds its buttons, not the value");
+    let again = s.open("again.pdf", None, saved, None).unwrap();
+    let chosen = |state: &str| vec![state.to_string()];
+    assert_eq!(values(&s, again), names.iter().cloned().zip([chosen("1"), chosen("2"), chosen("1")]).collect::<Vec<_>>());
+}
+
 /// The XFA data layer keeps its own copy of the forms crate's name spelling (it can't depend on
 /// forms), and a radio group's value only finds its button while the two agree: UTF-8 as
 /// itself, `#` and bytes that aren't UTF-8 as `#XX`.

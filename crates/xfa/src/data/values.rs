@@ -1,5 +1,5 @@
 use super::dates::{data_date_pattern, data_to_iso, iso_to_data, iso_to_pattern, pattern_to_iso};
-use super::path::{data_path, parse_datasets, som_to_path};
+use super::path::{data_path, in_unnamed_group, parse_datasets, som_to_path};
 use super::{DataPath, Dict, Document, ObjRef, Object, Template};
 
 /// What a field holds, for writing the datasets.
@@ -34,9 +34,29 @@ fn som_of(doc: &Document, f: &FieldDatum) -> String {
     doc.get(f.obj).as_dict().and_then(|d| text_of(doc, d, crate::pdf::SOM_KEY)).unwrap_or_else(|| f.name.clone())
 }
 
-/// Each button of a radio group, in `/Kids` order: its (`/PCOn` item, on-state name, `/Opt`
-/// entry). A group without `/Kids` is its own one widget.
-fn radio_widgets(doc: &Document, f: &FieldDatum) -> Vec<(Option<String>, Option<String>, Option<String>)> {
+/// One button of a radio group, as [`radio_widgets`] reads it.
+struct RadioWidget {
+    /// The template's item (`/PCOn`).
+    original: Option<String>,
+    /// The on-state name.
+    state: Option<String>,
+    /// The `/Opt` entry.
+    export: Option<String>,
+    /// The SOM path of the button the layout made it for (`/PCSom`).
+    som: Option<String>,
+}
+
+impl RadioWidget {
+    /// What the datasets hold for this button when it is selected: the template's item, else
+    /// the `/Opt` entry, else the on-state name (`selected` when it has none).
+    fn item(&self, selected: &str) -> String {
+        self.original.clone().or_else(|| self.export.clone()).or_else(|| self.state.clone()).unwrap_or_else(|| selected.to_string())
+    }
+}
+
+/// Each button of a radio group, in `/Kids` order. A group without `/Kids` is its own one
+/// widget.
+fn radio_widgets(doc: &Document, f: &FieldDatum) -> Vec<RadioWidget> {
     let Some(group) = doc.get(f.obj).as_dict().cloned() else { return Vec::new() };
     let kids = group.get(b"Kids").map(|k| doc.resolve(k)).and_then(|k| k.as_array().cloned()).unwrap_or_else(|| vec![Object::Ref(f.obj)]);
     // One export value per widget, as the field's `/Opt` lists them (an entry may be an
@@ -66,7 +86,8 @@ fn radio_widgets(doc: &Document, f: &FieldDatum) -> Vec<(Option<String>, Option<
                 .and_then(|n| doc.resolve(&n).as_dict().cloned())
                 .and_then(|n| n.iter().map(|(k, _)| name_text(k)).find(|k| k != "Off"));
             let export = exports.as_ref().and_then(|e| e.get(i).cloned().flatten());
-            Some((original, state, export))
+            let som = text_of(doc, &widget, crate::pdf::SOM_KEY);
+            Some(RadioWidget { original, state, export, som })
         })
         .collect()
 }
@@ -96,15 +117,31 @@ pub fn radio_dataset_value(doc: &Document, f: &FieldDatum, sel: &Option<String>)
         return String::new();
     };
     let widgets = radio_widgets(doc, f);
-    // `sel` is an on-state name, so every widget's state is compared before any `/PCOn`: with
-    // states `/0` `/1` and items `1` `2`, the state `1` is the second widget, not the first
-    // one's item.
-    let by_state = widgets.iter().find(|(_, state, _)| state.as_deref() == Some(selected));
-    let by_item = || widgets.iter().find(|(original, _, _)| original.as_deref() == Some(selected));
-    match by_state.or_else(by_item) {
-        Some((original, _, export)) => original.clone().or_else(|| export.clone()).unwrap_or_else(|| selected.to_string()),
+    match selected_index(widgets.iter(), selected).and_then(|i| widgets.get(i)) {
+        Some(w) => w.item(selected),
         None => selected.to_string(),
     }
+}
+
+/// The place among `widgets` of the button the on-state name `selected` picks. Every widget's
+/// state is compared before any `/PCOn`: with states `/0` `/1` and items `1` `2`, the state `1`
+/// is the second widget, not the first one's item.
+fn selected_index<'a>(widgets: impl Iterator<Item = &'a RadioWidget> + Clone, selected: &str) -> Option<usize> {
+    let by_state = widgets.clone().position(|w| w.state.as_deref() == Some(selected));
+    by_state.or_else(|| widgets.clone().position(|w| w.original.as_deref() == Some(selected)))
+}
+
+/// The buttons of radio group `f` when the group is an unnamed exclusion group of `tpl` (the
+/// field the layout made for it is at `group_som`, its container's SOM path): such a group has
+/// no data node, and each button is bound to its own ([`super::path::group_selection`]). Each
+/// comes with the SOM path it is bound by, `None` for a button that is bound to nothing (one
+/// without a name, which is transparent too). `None` for any other group, among them a static
+/// form's, whose buttons carry no SOM path.
+fn unnamed_group_buttons(doc: &Document, f: &FieldDatum, tpl: Option<&Template>, group_som: &str) -> Option<Vec<(Option<String>, RadioWidget)>> {
+    let tpl = tpl?;
+    let buttons: Vec<(Option<String>, RadioWidget)> =
+        radio_widgets(doc, f).into_iter().map(|w| (w.som.clone().filter(|som| in_unnamed_group(tpl, group_som, som)), w)).collect();
+    buttons.iter().any(|(som, _)| som.is_some()).then_some(buttons)
 }
 
 /// The on-state name of the radio button whose item is `item` in the datasets, as
@@ -113,10 +150,9 @@ pub fn radio_dataset_value(doc: &Document, f: &FieldDatum, sel: &Option<String>)
 /// when one button's `/PCOn` equals another's `/Opt` entry. `None` when no button writes `item`
 /// (data from elsewhere); the caller then reads it as an export value or state name.
 pub fn radio_state_for_item(doc: &Document, f: &FieldDatum, item: &str) -> Option<String> {
-    radio_widgets(doc, f).into_iter().find_map(|(original, state, export)| {
-        let state = state?;
-        let written = original.or(export).unwrap_or_else(|| state.clone());
-        (written == item).then_some(state)
+    radio_widgets(doc, f).into_iter().find_map(|w| {
+        let state = w.state.clone()?;
+        (w.item(&state) == item).then_some(state)
     })
 }
 
@@ -180,6 +216,26 @@ pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Templat
     let mut out = Vec::new();
     for f in fields {
         let som = som_of(doc, f);
+        if let FieldData::Radio(sel) = &f.data
+            && let Some(buttons) = unnamed_group_buttons(doc, f, tpl, &som)
+        {
+            // Each button's node holds its item when it is the one selected, else nothing.
+            let selected = sel.as_deref().filter(|s| !s.is_empty() && *s != "Off");
+            let picked = selected.and_then(|s| selected_index(buttons.iter().map(|(_, w)| w), s));
+            for (i, (button, w)) in buttons.into_iter().enumerate() {
+                let Some(button) = button else { continue };
+                let path = path_of(tpl, &button);
+                if path.is_empty() {
+                    continue;
+                }
+                let text = match selected {
+                    Some(s) if picked == Some(i) => w.item(s),
+                    _ => String::new(),
+                };
+                out.push(Want { som: button, path, text, ensure: false });
+            }
+            continue;
+        }
         let path = path_of(tpl, &som);
         if path.is_empty() {
             continue;
@@ -225,6 +281,27 @@ fn values_at(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> V
     let mut out = Vec::new();
     for f in fields {
         let som = som_of(doc, f);
+        if matches!(f.data, FieldData::Radio(_))
+            && let Some(buttons) = unnamed_group_buttons(doc, f, tpl, &som)
+        {
+            // The first button whose own node holds its item is the one selected; a group none
+            // of whose buttons the data mentions is left out.
+            let mut mentioned = false;
+            let mut picked = None;
+            for (button, w) in &buttons {
+                let Some(text) = button.as_deref().and_then(|b| data.value_at(&path_of(tpl, b))) else { continue };
+                mentioned = true;
+                let Some(state) = &w.state else { continue };
+                let item = w.item(state);
+                if picked.is_none() && !item.trim().is_empty() && text.trim() == item.trim() {
+                    picked = Some(item);
+                }
+            }
+            if mentioned {
+                out.push((f.name.clone(), FieldData::Radio(picked)));
+            }
+            continue;
+        }
         let path = path_of(tpl, &som);
         let Some(text) = data.value_at(&path) else { continue };
         let text = text.as_str();

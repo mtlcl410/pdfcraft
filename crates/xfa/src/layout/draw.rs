@@ -2,7 +2,7 @@ use super::common::clean_name;
 use super::items::{Item, Rounded, Turned};
 use super::{
     Arc, Border, Ctx, Draw, ExclGroup, Face, Field, Font, Layout, Layouter, MAX_DEPTH, MAX_IMAGE_BYTES, Node, Para, Rect, SomIndices, Stroke,
-    Subform, Value, XfaError, data_path, text,
+    Subform, Value, XfaError, text,
 };
 
 impl Layouter<'_> {
@@ -375,9 +375,9 @@ impl Layouter<'_> {
             self.draw_border(b, rect)?;
         }
         let ctx = ctx.with_som(&g.common, sib);
-        // The group's data node holds the selected button's on value.
-        let selected: Option<String> =
-            self.data.and_then(|d| d.text_at(&data_path(self.tpl, &ctx.som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        // The selected button's on value: in the group's data node, or an unnamed group's
+        // buttons' own ([`crate::data::group_selection`]).
+        let selected: Option<String> = self.data.and_then(|d| crate::data::group_selection(self.tpl, d, &ctx.som, g));
         let inner = rect.inset(&g.common.margin);
         let group = self.unique_name(g.common.name.as_deref().unwrap_or("group"), g.common.name.is_none());
         let nodes: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
@@ -419,7 +419,7 @@ impl Layouter<'_> {
                 if !views.any() {
                     continue;
                 }
-                let on = f.items.first().cloned().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| (i + 1).to_string());
+                let on = crate::data::button_on(f, i);
                 let tip = f.tooltip.clone().or_else(|| g.tooltip.clone());
                 let chosen = selected.as_deref() == Some(on.as_str());
                 // A group that must be answered makes each of its buttons required, as the group

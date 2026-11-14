@@ -1,4 +1,4 @@
-use super::{DataNode, DataPath, Field, MAX_DEPTH, MAX_NODES, Node, SomIndices, Template, XFA_DATA_NS};
+use super::{DataNode, DataPath, ExclGroup, Field, HashMap, MAX_DEPTH, MAX_NODES, Node, SomIndices, Template, XFA_DATA_NS};
 
 fn to_node(n: roxmltree::Node, depth: usize) -> DataNode {
     let name = n.tag_name().name().to_string();
@@ -269,4 +269,76 @@ pub(crate) fn fields_with_ids(tpl: &Template) -> Vec<(&str, String, &Field)> {
 
 pub(super) fn path_som(path: &DataPath) -> String {
     path.iter().map(|(n, i)| format!("{n}[{i}]")).collect::<Vec<_>>().join(".")
+}
+
+/// The on value of button `i` of an exclusion group: its first item, else its place from 1, as
+/// the layout gives its widget.
+pub(crate) fn button_on(f: &Field, i: usize) -> String {
+    f.items.first().filter(|s| !s.trim().is_empty()).cloned().unwrap_or_else(|| i.saturating_add(1).to_string())
+}
+
+/// The SOM path of each named button of exclusion group `g` whose SOM path is `som` (an unnamed
+/// group's is its container's), with the button's on value ([`button_on`]): the name and its
+/// number among the group's buttons, as the layout and the live form give them.
+fn group_buttons(som: &str, g: &ExclGroup) -> Vec<(String, String)> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    g.fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let name = f.common.name.as_deref()?;
+            let n = seen.entry(name).or_insert(0);
+            let sib = *n;
+            *n = n.saturating_add(1);
+            let button = if som.is_empty() { format!("{name}[{sib}]") } else { format!("{som}.{name}[{sib}]") };
+            Some((button, button_on(f, i)))
+        })
+        .collect()
+}
+
+/// The on value of the button exclusion group `g` (SOM path `som`) has selected in `data`.
+///
+/// A named group is bound to its own data node, which holds the selected button's on value
+/// (the short exclusion format, XFA 3.3 p. 196). An unnamed group is transparent to data
+/// binding (p. 193): it has no data node, and each of its buttons is bound to its own node
+/// under the group's container, the long exclusion format, which needs no group name (p. 197).
+/// Then the first button whose node holds its on value is the one selected, as Acrobat reads
+/// and saves an unnamed group.
+pub(crate) fn group_selection(tpl: &Template, data: &DataNode, som: &str, g: &ExclGroup) -> Option<String> {
+    if g.common.name.is_some() {
+        return data.text_at(&data_path(tpl, som)).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    }
+    group_buttons(som, g).into_iter().find_map(|(button, on)| (data.text_at(&data_path(tpl, &button))?.trim() == on.trim()).then_some(on))
+}
+
+/// Whether the radio button at SOM path `button` belongs to an unnamed exclusion group of the
+/// template, `group` being the SOM path of the field the layout made for that group (its
+/// container's, since an unnamed group adds no SOM segment): the container holds, directly or
+/// through unnamed subforms and areas, an unnamed group with a button of that name. Such a group
+/// is bound button by button ([`group_selection`]). `false` for a container the template doesn't
+/// have (page-set content), which keeps the group's value at the group's path.
+pub(super) fn in_unnamed_group(tpl: &Template, group: &str, button: &str) -> bool {
+    let Some(rest) = button.strip_prefix(group).and_then(|r| r.strip_prefix('.')) else { return false };
+    if rest.contains('.') {
+        return false;
+    }
+    let Some((name, _)) = som_to_path(rest).pop() else { return false };
+    let children: &[Node] = match som_to_path(group).as_slice() {
+        [(root, _)] if tpl.root.common.name.as_deref() == Some(root.as_str()) => &tpl.root.children,
+        _ => match template_object(tpl, group) {
+            Some(Node::Subform(sf)) => &sf.children,
+            Some(Node::Area(a)) => &a.children,
+            _ => return false,
+        },
+    };
+    fn holds(nodes: &[Node], name: &str, depth: usize) -> bool {
+        depth <= MAX_DEPTH
+            && nodes.iter().any(|n| match n {
+                Node::ExclGroup(g) => g.common.name.is_none() && g.fields.iter().any(|f| f.common.name.as_deref() == Some(name)),
+                Node::Subform(sf) if sf.common.name.is_none() => holds(&sf.children, name, depth + 1),
+                Node::Area(a) if a.common.name.is_none() => holds(&a.children, name, depth + 1),
+                _ => false,
+            })
+    }
+    holds(children, &name, 0)
 }

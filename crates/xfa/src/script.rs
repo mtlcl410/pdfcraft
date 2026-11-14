@@ -381,8 +381,10 @@ impl Walker<'_> {
                 }
                 Node::ExclGroup(g) => {
                     let som = child_som(parent_som, g.common.name.as_deref().or(Some("group")), sib);
-                    let selected =
-                        self.data.and_then(|d| d.text_at(&data_path(self.tpl, &som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    // An unnamed group binds through its buttons, under its container (the
+                    // layout's SOM path for it; [`crate::data::group_selection`]).
+                    let bound_som = if g.common.name.is_some() { som.as_str() } else { parent_som };
+                    let selected = self.data.and_then(|d| crate::data::group_selection(self.tpl, d, bound_som, g));
                     self.push_events(&som, &g.scripts, None, None, None);
                     let fields: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
                     let fsibs = SomIndices::of(&fields);

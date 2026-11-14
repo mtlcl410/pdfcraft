@@ -189,3 +189,6 @@ mod table_repeat_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unnamed_group_tests;

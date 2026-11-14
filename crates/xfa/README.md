@@ -78,7 +78,9 @@ that warning and keeps the existing layout and accepted widget values.
 
 - **Data** (`data`): the `datasets` packet. On layout, a field takes its value from the data
   node at its data path: its SOM path without areas, which are named in SOM expressions but are
-  not data scopes (`data_path`, as Adobe's viewers bind) (dates in ISO form, check and radio states by their on values), and a
+  not data scopes (`data_path`, as Adobe's viewers bind) (dates in ISO form, check and radio states by their on values; a
+  radio group without a name has no data node, so each of its buttons is bound to its own node under the group's container,
+  `group_selection`, XFA 3.3 pp. 193 and 197, as Acrobat saves one), and a
   repeating subform or table row gets as many instances as the data has (in flowed and positioned
   containers alike), up to its `occur max` and at
   most 1 000 (`MAX_INSTANCES`, a work bound; the rows past it are left out with a layout
