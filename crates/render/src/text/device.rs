@@ -1,4 +1,4 @@
-use super::layout::{Flow, along_baseline, arrange_flow, compatible, continues, from_upright, to_upright, union, unrolled};
+use super::layout::{Flow, along_baseline, arrange_flow, compatible, continues, from_upright, is_rtl, to_upright, union, unrolled};
 use super::{
     Affine, BezPath, BlendMode, ClipPath, Context, Device, Glyph, GlyphDrawMode, HashMap, Image, InterpreterCache, InterpreterSettings,
     InterpreterWarning, PageText, Paint, PathDrawMode, Pdf, Rect, Shape, SoftMask, TextFilter, TextGlyph, TransformExt, interpret_page,
@@ -48,6 +48,9 @@ pub(super) struct TextDevice {
     actual_filtered: bool,
     actual_cropped: bool,
     partial_replacement: bool,
+    /// A joining stroke with no text of its own, drawn with no glyph before it to join: the next glyph may take it
+    /// ([`TextDevice::absorb_connector`]).
+    connector: Option<Drawn>,
 }
 
 /// An `/ActualText` replacement: the glyph standing for it in `TextDevice::glyphs` (none for an
@@ -117,6 +120,47 @@ fn merge(drawn: &[Drawn], text: String) -> Option<Drawn> {
         [r[0].min(p[0]), r[1].min(p[1]), r[2].max(p[0]), r[3].max(p[1])]
     });
     Some((quarter, u, TextGlyph { text, rect, quad, direction: first.2.direction }))
+}
+
+/// Whether a glyph outline draws anything: a blank glyph (a space) has no point, or no area.
+fn has_ink(outline: &BezPath) -> bool {
+    let b = outline.bounding_box();
+    b.is_finite() && (b.width() > 0.0 || b.height() > 0.0)
+}
+
+/// Whether `stroke`, a glyph with ink and no text of its own, joins the right-to-left letter `host` ([`touches`]).
+///
+/// Arabic joins its letters, and a word processor that justifies a line lengthens those joins with extra joining
+/// strokes (kashida). A font may give such a stroke no Unicode, and then "there is no way to determine what the
+/// character code represents" (ISO 32000-2 §9.10.2): the stroke reads as nothing, rightly, but it still fills the
+/// space between the two letters it joins, so that space is no word gap. Left-to-right scripts don't join their
+/// letters, and keep their boxes as they are.
+fn joins(host: &Drawn, stroke: &Drawn) -> bool {
+    host.2.text.chars().any(is_rtl) && touches(host, stroke)
+}
+
+/// Whether glyph `stroke` is drawn in `host`'s direction, on its line in about its size, and touches or overlaps it
+/// along the line (within [`WORD_GAP`] of its height).
+fn touches(host: &Drawn, stroke: &Drawn) -> bool {
+    if !compatible(host.1, stroke.1) {
+        return false;
+    }
+    let (hb, sb) = (along_baseline(&host.2.quad, host.1), along_baseline(&stroke.2.quad, host.1));
+    let (hh, sh) = (hb[3] - hb[1], sb[3] - sb[1]);
+    if !(hh > 0.0 && (sh / hh - 1.0).abs() < 0.35 && ((sb[1] + sb[3]) - (hb[1] + hb[3])).abs() < hh * 0.5) {
+        return false;
+    }
+    let tolerance = f64::from(WORD_GAP) * hh;
+    sb[0] <= hb[2] + tolerance && sb[2] >= hb[0] - tolerance
+}
+
+/// `host` with the box of `stroke` ([`joins`] or [`touches`]) taken into its own, keeping its text, or `None` when
+/// the two would be longer along the line than [`CELL_GAP`] heights: a letter and its joining strokes are shorter, and
+/// a longer run of glyphs without Unicode is no join to give to one letter.
+fn joined(host: &Drawn, stroke: Drawn) -> Option<Drawn> {
+    let glyph = merge(&[host.clone(), stroke], host.2.text.clone())?;
+    let b = along_baseline(&glyph.2.quad, glyph.1);
+    (b[2] - b[0] <= f64::from(CELL_GAP) * (b[3] - b[1])).then_some(glyph)
 }
 
 /// The widest or tallest box (view-space points) a glyph, or the paint standing in for one, may
@@ -229,6 +273,7 @@ impl TextDevice {
             actual_filtered: false,
             actual_cropped: false,
             partial_replacement: false,
+            connector: None,
         }
     }
 
@@ -287,6 +332,27 @@ impl TextDevice {
             Some(self.glyphs.len() - 1)
         };
         self.replaced.push(Replaced { at, text, originals });
+    }
+
+    /// Takes `stroke`, a glyph with ink and no text of its own, into the box of the right-to-left letter it joins
+    /// ([`joins`]): the glyph drawn just before it, or else the one drawn just after it. It adds no text, and the
+    /// letter's box then reaches the next letter it joins, so the word's letters are no word gap apart. A stroke that
+    /// joins neither is dropped, as before.
+    fn absorb_connector(&mut self, stroke: Drawn) {
+        if let Some(host) = self.glyphs.last_mut()
+            && joins(host, &stroke)
+        {
+            if let Some(glyph) = joined(host, stroke) {
+                *host = glyph;
+            }
+            self.connector = None;
+            return;
+        }
+        // Several strokes drawn one after another at the start of a run go together.
+        self.connector = match self.connector.take() {
+            Some(c) if touches(&c, &stroke) => joined(&c, stroke.clone()).or(Some(stroke)),
+            _ => Some(stroke),
+        };
     }
 
     /// Record view-space box `b`, drawn with `transform`, as painted by the open `/ActualText`
@@ -477,13 +543,17 @@ impl<'a> Device<'a> for TextDevice {
                         (transform * glyph_transform).as_coeffs()
                     );
                 }
-                return;
+                String::new()
             }
         };
-        if !replaced && text.chars().all(char::is_control) {
+        // A glyph with no text of its own reads as nothing. Only a visible outline with ink is kept, as a possible
+        // joining stroke ([`TextDevice::absorb_connector`]); a blank or invisible one adds nothing the line's gaps
+        // don't already show.
+        let silent = !replaced && text.chars().all(char::is_control);
+        if silent && (matches!(mode, GlyphDrawMode::Invisible) || !matches!(glyph, Glyph::Outline(g) if has_ink(&g.outline()))) {
             return;
         }
-        let text = ligature_letters(text);
+        let text = if silent { String::new() } else { ligature_letters(text) };
         // Glyph space → view space. Glyph space uses 1000 units per em for outline glyphs; the em
         // box spans descender (−200) to ascender (800), the advance gives the width.
         let t = transform * glyph_transform;
@@ -544,9 +614,21 @@ impl<'a> Device<'a> for TextDevice {
             quad: corners.map(|p| [p.x as f32, p.y as f32]),
             direction: direction.map(|d| d as f32),
         };
+        let drawn = (dir, direction, glyph);
+        if silent {
+            self.absorb_connector(drawn);
+            return;
+        }
         match &mut self.actual {
-            Some((_, _, drawn)) => drawn.push((dir, direction, glyph)),
-            None => self.glyphs.push((dir, direction, glyph)),
+            Some((_, _, list)) => list.push(drawn),
+            None => {
+                // A stroke drawn just before this glyph, with no glyph before it to join, joins this one.
+                let drawn = match self.connector.take() {
+                    Some(c) if joins(&drawn, &c) => joined(&drawn, c).unwrap_or(drawn),
+                    _ => drawn,
+                };
+                self.glyphs.push(drawn);
+            }
         }
     }
     fn draw_image(&mut self, image: Image<'a, '_>, transform: Affine) {

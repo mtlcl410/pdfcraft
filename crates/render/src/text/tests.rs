@@ -3603,3 +3603,98 @@ fn an_unattached_alphabetic_mark_reads_with_the_glyphs_at_its_place() {
     let text = layout(v).plain_text();
     assert_eq!(text, "שלום\u{345}ab");
 }
+
+/// A one-page PDF drawing `ops` with font F1: a CID font embedding Inter (codes are its glyph ids) whose ToUnicode
+/// maps 0041 and 0042 to "a" and "b", 0100–0103 to the Arabic letters ف ي م ن, and 0104 and 0105 to 中 and 文. Every
+/// other code has no Unicode: 0024 is a 250-unit glyph with ink, and 06F1 a 400-unit blank one (Inter's space).
+fn joining_stroke_page(ops: &str) -> PageText {
+    use lopdf::{Document, Object, Stream, dictionary};
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 8 beginbfchar <0041> <0061> <0042> <0062> <0100> <0641> <0101> <064A> <0102> <0645> <0103> <0646> <0104> <4E2D> <0105> <6587> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end";
+    let w = vec![
+        Object::Integer(0x24),
+        Object::Array(vec![Object::Integer(250)]),
+        Object::Integer(0x41),
+        Object::Array(vec![Object::Integer(556), Object::Integer(556)]),
+        Object::Integer(0x100),
+        Object::Array(vec![
+            Object::Integer(304),
+            Object::Integer(577),
+            Object::Integer(577),
+            Object::Integer(326),
+            Object::Integer(1000),
+            Object::Integer(1000),
+        ]),
+        Object::Integer(0x06F1),
+        Object::Array(vec![Object::Integer(400)]),
+    ];
+    let mut doc = Document::with_version("1.7");
+    let unicode = doc.add_object(Stream::new(dictionary! {}, cmap.as_bytes().to_vec()));
+    let program = doc.add_object(Stream::new(dictionary! {}, include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").to_vec()));
+    let descriptor = doc.add_object(dictionary! { "Type" => "FontDescriptor", "FontName" => "TestArabic", "Flags" => 4, "FontFile2" => program });
+    let cid = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "TestArabic", "FontDescriptor" => descriptor,
+        "CIDSystemInfo" => dictionary! { "Registry" => Object::string_literal("Adobe"), "Ordering" => Object::string_literal("Identity"), "Supplement" => 0 },
+        "DW" => 1000, "W" => w, "CIDToGIDMap" => "Identity"
+    });
+    let font = doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "TestArabic", "Encoding" => "Identity-H", "DescendantFonts" => vec![Object::Reference(cid)], "ToUnicode" => unicode });
+    let content = doc.add_object(Stream::new(dictionary! {}, ops.as_bytes().to_vec()));
+    let pages = doc.new_object_id();
+    let page = doc.add_object(dictionary! { "Type" => "Page", "Parent" => pages, "MediaBox" => vec![Object::Integer(0), Object::Integer(0), Object::Integer(300), Object::Integer(100)], "Resources" => dictionary! {"Font" => dictionary! {"F1" => font}}, "Contents" => content });
+    doc.objects.insert(pages, dictionary! {"Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1}.into());
+    let catalog = doc.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages});
+    doc.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+    extract_page(&Pdf::new(std::sync::Arc::new(bytes)).unwrap(), 0, &InterpreterSettings::default()).unwrap()
+}
+
+/// PDFBOX-2382: a justified Arabic line lengthens the join between two letters with joining strokes (kashida) that
+/// have no Unicode, drawn twice with the second pulled back over the first. The strokes read as nothing, but the
+/// space they fill is no word gap: "في" read "ف ي" and Find missed it. Words a real gap apart stay apart.
+#[test]
+fn a_joining_stroke_without_unicode_keeps_an_arabic_word_whole() {
+    // Visual order, left to right: ن م ن, a word gap, then ي ي, two strokes, ف ف.
+    let text = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<010301020103> -500 <010101010024> 117 <002401000100>] TJ ET");
+    assert_eq!(text.plain_text().trim(), "ففيي نمن");
+    assert_eq!(text.find("ففيي").len(), 1);
+    // The strokes add no text.
+    assert_eq!(text.glyphs.iter().map(|g| g.text.as_str()).collect::<String>(), "ففيينمن");
+}
+
+/// A joining stroke drawn first, with no letter drawn before it to join, joins the letter drawn right after it.
+#[test]
+fn a_joining_stroke_drawn_before_its_letter_joins_it() {
+    // ف ف with two strokes on their left, then ي ي, ending where the strokes start.
+    let text = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 53.848 50 Tm [<0024002401000100>] TJ ET BT /F1 12 Tf 1 0 0 1 40 50 Tm <01010101> Tj ET");
+    assert_eq!(text.plain_text().trim(), "ففيي");
+}
+
+/// Only ink joins letters: a blank glyph without Unicode (a space) between two Arabic letters still parts them, as do
+/// a gap a joining stroke leaves open, a stroke drawn invisible and a run of strokes too long to be a join.
+#[test]
+fn a_blank_glyph_without_unicode_still_parts_arabic_words() {
+    let blank = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<0101010106F1> <01000100>] TJ ET");
+    assert_eq!(blank.plain_text().trim(), "فف يي");
+    // A stroke touching ي, then a word gap before ف.
+    let open = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<010101010024> -400 <01000100>] TJ ET");
+    assert_eq!(open.plain_text().trim(), "فف يي");
+    // A word gap, then a stroke joining ف: it joins ف, not the ي before the gap.
+    let after_gap = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<01010101> -400 <002401000100>] TJ ET");
+    assert_eq!(after_gap.plain_text().trim(), "فف يي");
+    // Strokes drawn invisible (render mode 3) show no ink.
+    let invisible = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm <01010101> Tj 3 Tr [<0024> 117 <0024>] TJ 0 Tr <01000100> Tj ET");
+    assert_eq!(invisible.plain_text().trim(), "فف يي");
+    // Twenty strokes (60 pt, five heights) are no join between two letters, but a run of glyphs of their own.
+    let long = joining_stroke_page(&format!("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<01010101{}01000100>] TJ ET", "0024".repeat(20)));
+    assert_eq!(long.plain_text().trim(), "فف يي");
+}
+
+/// Latin and Chinese letters don't join, so an inked glyph without Unicode between them leaves their gap as it was:
+/// a word gap reads as a space, as before.
+#[test]
+fn a_glyph_without_unicode_between_latin_or_chinese_letters_keeps_their_gap() {
+    let latin = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<004100410024> 117 <002400420042>] TJ ET");
+    assert_eq!(latin.plain_text().trim(), "aa bb");
+    let chinese = joining_stroke_page("BT /F1 12 Tf 1 0 0 1 40 50 Tm [<01040104002400240024> <01050105>] TJ ET");
+    assert_eq!(chinese.plain_text().trim(), "中中 文文");
+}
