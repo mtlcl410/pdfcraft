@@ -14,7 +14,7 @@ impl Layouter<'_> {
         f: &Field,
         rect: Rect,
         ctx: &Ctx,
-        radio: Option<(&str, &str, Option<String>, bool)>,
+        radio: Option<(&str, &str, Option<String>, bool, bool)>,
         sib: usize,
     ) -> Result<(), XfaError> {
         if let Some(b) = &f.common.border
@@ -166,6 +166,7 @@ impl Layouter<'_> {
         // A choice list's default is a saved value too.
         let template_default = f.value.plain().map(|v| f.saved_value(v.trim())).filter(|v| !v.is_empty());
         let plain_value = data_value.clone().or_else(|| template_default.clone());
+        let radio_default: Option<Option<String>> = radio.as_ref().map(|(_, on, _, _, default)| default.then(|| on.to_string()));
         let (kind, rect, border, value, tooltip) = match f.ui {
             Ui::CheckButton => {
                 let s = f.check_size.unwrap_or(10.0).min(ui.w.max(1.0)).min(ui.h.max(1.0));
@@ -186,7 +187,7 @@ impl Layouter<'_> {
                 let r = Rect::new(x, y, s, s);
                 let on = f.items.first().cloned().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "1".into());
                 let (kind, tip, checked) = match radio {
-                    Some((group, on_value, tip, chosen)) => (
+                    Some((group, on_value, tip, chosen, _)) => (
                         WidgetKind::Radio { group: group.to_string(), on: on_value.to_string(), round: f.check_round },
                         tip.or_else(|| f.tooltip.clone()),
                         chosen,
@@ -245,6 +246,12 @@ impl Layouter<'_> {
             return Ok(());
         }
         let action = if f.ui == Ui::Button { button_action(&f.scripts) } else { None };
+        // A radio button carries its group's default: its on value when it is the group's
+        // default button, else nothing.
+        let default = match radio_default {
+            Some(d) => d,
+            None => template_default,
+        };
         let items: Vec<String> = match &kind {
             WidgetKind::CheckBox { on, .. } => vec![on.clone(), f.items.get(1).cloned().unwrap_or_default()],
             WidgetKind::Radio { on, .. } => vec![on.clone()],
@@ -264,7 +271,7 @@ impl Layouter<'_> {
             read_only,
             border,
             value,
-            default: template_default,
+            default,
             action,
             items,
             no_scroll: f.no_scroll,

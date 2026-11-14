@@ -2,7 +2,7 @@ use super::common::clean_name;
 use super::items::{Item, Rounded, Turned};
 use super::{
     Arc, Border, Ctx, Draw, ExclGroup, Face, Field, Font, Layout, Layouter, MAX_DEPTH, MAX_IMAGE_BYTES, Node, Para, Rect, SomIndices, Stroke,
-    Subform, Value, XfaError, data_path, text,
+    Subform, Value, XfaError, text,
 };
 
 impl Layouter<'_> {
@@ -375,9 +375,10 @@ impl Layouter<'_> {
             self.draw_border(b, rect)?;
         }
         let ctx = ctx.with_som(&g.common, sib);
-        // The group's data node holds the selected button's on value.
-        let selected: Option<String> =
-            self.data.and_then(|d| d.text_at(&data_path(self.tpl, &ctx.som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        // The group's data node holds the selected button's on value; without one, the
+        // template's default button is chosen.
+        let selected = crate::script::group_selected(self.tpl, self.data, g, &ctx.som);
+        let default = crate::script::group_default(g);
         let inner = rect.inset(&g.common.margin);
         let group = self.unique_name(g.common.name.as_deref().unwrap_or("group"), g.common.name.is_none());
         let nodes: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
@@ -421,7 +422,10 @@ impl Layouter<'_> {
                 }
                 let on = f.items.first().cloned().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| (i + 1).to_string());
                 let tip = f.tooltip.clone().or_else(|| g.tooltip.clone());
-                let chosen = selected.as_deref() == Some(on.as_str());
+                // Both are trimmed on values.
+                let chosen = selected.as_deref() == Some(on.trim());
+                // The group field's default (`/DV`), what a reset gives it back.
+                let is_default = default.as_deref() == Some(on.trim());
                 // A group that must be answered makes each of its buttons required, as the group
                 // field they make is.
                 let required;
@@ -432,7 +436,13 @@ impl Layouter<'_> {
                     f
                 };
                 let outer = std::mem::replace(&mut self.views, views);
-                let drawn = self.draw_field(f, Rect::new(inner.x + r.x, inner.y + r.y, r.w, r.h), &ctx, Some((&group, &on, tip, chosen)), sibs.at(i));
+                let drawn = self.draw_field(
+                    f,
+                    Rect::new(inner.x + r.x, inner.y + r.y, r.w, r.h),
+                    &ctx,
+                    Some((&group, &on, tip, chosen, is_default)),
+                    sibs.at(i),
+                );
                 self.views = outer;
                 drawn?;
             }

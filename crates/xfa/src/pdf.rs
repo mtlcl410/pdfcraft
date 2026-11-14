@@ -91,6 +91,8 @@ struct Emitter<'a> {
     radio_groups: HashMap<String, (ObjRef, Vec<ObjRef>)>,
     /// The on state selected in each radio group, from the data.
     radio_selected: HashMap<String, String>,
+    /// The on state of each radio group's default button, from the template.
+    radio_default: HashMap<String, String>,
     field_count: usize,
     warnings: Vec<String>,
     /// The signatures the file holds, by the SOM path of the field signed.
@@ -451,6 +453,9 @@ impl Emitter<'_> {
                 d.set(b"AS".to_vec(), Object::name(if chosen { &state } else { "Off" }));
                 if chosen {
                     self.radio_selected.insert(group.clone(), state.clone());
+                }
+                if w.default.as_deref() == Some(on.as_str()) {
+                    self.radio_default.insert(group.clone(), state.clone());
                 }
                 let mut nd = Dict::new();
                 nd.set(state.into_bytes(), empty_form(self.doc, r.w, r.h));
@@ -1146,6 +1151,7 @@ pub fn write_form(doc: &mut Document, form: &Form) -> Result<Written, XfaError> 
         fields: Vec::new(),
         radio_groups: HashMap::new(),
         radio_selected: HashMap::new(),
+        radio_default: HashMap::new(),
         field_count: 0,
         warnings: Vec::new(),
         signed,
@@ -1169,10 +1175,16 @@ pub fn write_form(doc: &mut Document, form: &Form) -> Result<Written, XfaError> 
     let groups: Vec<(String, (ObjRef, Vec<ObjRef>))> = em.radio_groups.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     for (name, (parent, widgets)) in groups {
         let selected = em.radio_selected.get(&name).cloned();
+        let default = em.radio_default.get(&name).cloned();
         em.doc.update_dict(parent, |d| {
             d.set(b"Kids".to_vec(), Object::Array(widgets.iter().map(|r| Object::Ref(*r)).collect()));
             if let Some(s) = &selected {
                 d.set(b"V".to_vec(), Object::name(s));
+            }
+            // What a reset gives the group back (ISO 32000-2 Table 226, DV): its default
+            // button's state; a group without one has none, and a reset leaves it Off.
+            if let Some(s) = &default {
+                d.set(b"DV".to_vec(), Object::name(s));
             }
         })?;
     }
@@ -1523,6 +1535,7 @@ mod tests {
             fields: Vec::new(),
             radio_groups: HashMap::new(),
             radio_selected: HashMap::new(),
+            radio_default: HashMap::new(),
             field_count: 0,
             warnings: Vec::new(),
             signed: Default::default(),

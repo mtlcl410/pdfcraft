@@ -611,6 +611,65 @@ fn fields_that_must_be_filled_in_are_required() {
     }
 }
 
+/// A radio group (exclusion group) of a dynamic form is laid out with its template default: the
+/// group field holds its default button's state as `/DV`, what a reset gives back, and as `/V`
+/// when the data has no node for the group. A node the data has wins, even an empty one; a group
+/// without a default button gets no `/DV`. The live form scripts read gives the group the same.
+#[test]
+fn a_radio_groups_default_button_is_its_field_default_and_fills_in_for_missing_data() {
+    let form = |data: &str| {
+        format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/"><template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form" layout="tb">
+<pageSet><pageArea name="p"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+<exclGroup name="size" layout="lr-tb">
+ <field name="S" w="1in" h="0.3in"><ui><checkButton shape="round"/></ui><items><integer>1</integer></items></field>
+ <field name="M" w="1in" h="0.3in"><ui><checkButton shape="round"/></ui><items><integer>2</integer></items><value><integer>2</integer></value></field>
+</exclGroup>
+<exclGroup name="color" layout="lr-tb">
+ <field name="R" w="1in" h="0.3in"><ui><checkButton shape="round"/></ui><items><text>R</text></items></field>
+ <field name="G" w="1in" h="0.3in"><ui><checkButton shape="round"/></ui><items><text>G</text></items></field>
+</exclGroup>
+</subform></template>{data}</xdp:xdp>"##
+        )
+    };
+    let group = |doc: &Document, name: &str| {
+        let catalog = doc.get(doc.root().unwrap());
+        let acro = doc.resolve(catalog.as_dict().unwrap().get(b"AcroForm").unwrap());
+        let fields = doc.resolve(acro.as_dict().unwrap().get(b"Fields").unwrap()).as_array().unwrap().clone();
+        let d = fields
+            .iter()
+            .map(|f| doc.resolve(f).as_dict().unwrap().clone())
+            .find(|d| d.get(b"T").and_then(|t| doc.resolve(t).as_string().map(|s| s.to_text())).as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no group {name}"));
+        let state = |key: &[u8]| d.get(key).and_then(|v| doc.resolve(v).as_name().map(|n| String::from_utf8_lossy(n).into_owned()));
+        (state(b"V"), state(b"DV"))
+    };
+    let datasets =
+        |xml: &str| format!(r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data>{xml}</xfa:data></xfa:datasets>"#);
+    let on = |s: &str| Some(s.to_string());
+    for (data, size, color) in [
+        // No data: each group on its default, a group without one on nothing.
+        (String::new(), (on("2"), on("2")), (on("Off"), None)),
+        // Data without the group's node: the default fills in.
+        (datasets("<form><other>x</other></form>"), (on("2"), on("2")), (on("Off"), None)),
+        // The data's choice wins, and an empty node is no choice.
+        (datasets("<form><size>1</size><color>G</color></form>"), (on("1"), on("2")), (on("G"), None)),
+        (datasets("<form><size/><color/></form>"), (on("Off"), on("2")), (on("Off"), None)),
+    ] {
+        let xdp = form(&data);
+        let mut doc = Document::open(Arc::new(shell(&xdp))).unwrap();
+        render_into(&mut doc).unwrap();
+        assert_eq!((group(&doc, "size"), group(&doc, "color")), (size.clone(), color.clone()), "data {data:?}");
+        let (tpl, _) = parse(&xdp).unwrap();
+        let parsed = parse_datasets(&xdp);
+        let live = form_tree(&tpl, parsed.as_ref(), &Overrides::default()).root;
+        let value = |som: &str| node_at(&live, som).map(|n| n.value.clone()).unwrap_or_default();
+        let chosen = |v: &Option<String>| v.clone().filter(|v| v != "Off").unwrap_or_default();
+        assert_eq!((value("form[0].size[0]"), value("form[0].color[0]")), (chosen(&size.0), chosen(&color.0)), "live form, data {data:?}");
+    }
+}
+
 /// A dynamic form's own text that the standard fonts can't draw is laid out anyway and reported
 /// once, never written as `?` silently.
 #[test]

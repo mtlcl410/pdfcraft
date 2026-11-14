@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pdfcraft_cos::{Dict, Document, Object, PdfString};
 
 use crate::data::{DataNode, data_path, parse_datasets};
-use crate::model::{Access, Field, Node, Presence, Props, Script, SomIndices, Template};
+use crate::model::{Access, ExclGroup, Field, Node, Presence, Props, Script, SomIndices, Template};
 use crate::{Report, XfaError};
 
 /// Private key on the AcroForm: presence scripts set, by SOM path.
@@ -381,8 +381,7 @@ impl Walker<'_> {
                 }
                 Node::ExclGroup(g) => {
                     let som = child_som(parent_som, g.common.name.as_deref().or(Some("group")), sib);
-                    let selected =
-                        self.data.and_then(|d| d.text_at(&data_path(self.tpl, &som))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+                    let selected = group_selected(self.tpl, self.data, g, &som);
                     self.push_events(&som, &g.scripts, None, None, None);
                     let fields: Vec<Node> = g.fields.iter().map(|f| Node::Field(Box::new(f.clone()))).collect();
                     let fsibs = SomIndices::of(&fields);
@@ -667,16 +666,30 @@ pub fn reset_default(tpl: &Template, som: &str) -> Option<String> {
             }
             Some(f.value.plain().map(|v| f.saved_value(v.trim())).unwrap_or_default())
         }
-        Node::ExclGroup(g) => Some(
-            g.fields
-                .iter()
-                .find_map(|f| {
-                    let on = f.items.first().map(|s| s.trim()).filter(|s| !s.is_empty())?;
-                    (f.value.plain()?.trim() == on).then(|| on.to_string())
-                })
-                .unwrap_or_default(),
-        ),
+        Node::ExclGroup(g) => Some(group_default(g).unwrap_or_default()),
         _ => None,
+    }
+}
+
+/// The template default of exclusion group `g`: the on value of the first of its buttons whose
+/// own default is that on value, or `None` when no button has one (XFA 3.3, "Exclusion Group",
+/// p. 33: a group's default is the default one of its buttons provides).
+pub(crate) fn group_default(g: &ExclGroup) -> Option<String> {
+    g.fields.iter().find_map(|f| {
+        let on = f.items.first().map(|s| s.trim()).filter(|s| !s.is_empty())?;
+        (f.value.plain()?.trim() == on).then(|| on.to_string())
+    })
+}
+
+/// The on value exclusion group `g` at `som` has chosen: what the data holds for it (nothing
+/// chosen when that is empty), or, when the data has no node for it (a form opened without
+/// data, or a group the data leaves out), the template's default ([`group_default`]), as a
+/// field the data doesn't fill is initialized with its default (XFA 3.3, "Basic Data Binding to
+/// Produce the XFA Form DOM", p. 182).
+pub(crate) fn group_selected(tpl: &Template, data: Option<&DataNode>, g: &ExclGroup, som: &str) -> Option<String> {
+    match data.and_then(|d| d.text_at(&data_path(tpl, som))) {
+        Some(t) => Some(t.trim().to_string()).filter(|t| !t.is_empty()),
+        None => group_default(g),
     }
 }
 

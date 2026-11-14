@@ -67,7 +67,8 @@ that warning and keeps the existing layout and accepted widget values.
   friends → Helvetica, Courier New → Courier, serif faces → Times; nothing is embedded), JPEG
   XObjects, and widgets: text (multi-line, max length, alignment), date (Acrobat's `AFDate`
   format and keystroke actions from the picture clause), check boxes and radio groups (from
-  `exclGroup`), push buttons with Reset / Print / Save As / URI actions recognised from their
+  `exclGroup`; a group's default button is its field's `/DV`, what a reset gives back, and is
+  chosen when the data has no node for the group), push buttons with Reset / Print / Save As / URI actions recognised from their
   scripts, and signature fields, each named by its SOM path (`form1[0].page1[0].sign[0]`, as
   fields under one for each step above it) because other viewers lay a dynamic form out again
   and find a signature by that name. A box whose path, or a part of it, the file already gives

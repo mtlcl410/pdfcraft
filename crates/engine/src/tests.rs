@@ -13927,6 +13927,120 @@ fn an_opening_reset_reaches_an_exclusion_group_of_a_row_added_while_opening() {
     assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page1[0].table[0].row[1].pick[0]")).unwrap_or(""), "A", "group reset in the data");
 }
 
+/// The synthetic form of the radio-group reset tests: a named group with a default button
+/// (`size`, M), a named group without one (`color`), an unnamed group with a default button
+/// (Y) in a subform, a reset of the whole form, a reset of `size` alone, and a button writing
+/// what the scripts read of the named groups into `seen`.
+fn radio_reset_form() -> Arc<Vec<u8>> {
+    let button = |name: &str, on: u32, default: bool| {
+        let value = if default { format!("<value><integer>{on}</integer></value>") } else { String::new() };
+        format!(
+            r#"<field name="{name}" w="1in" h="0.3in"><ui><checkButton shape="round"/></ui><caption placement="right"><value><text>{name}</text></value></caption><items><integer>{on}</integer></items>{value}</field>"#
+        )
+    };
+    let xdp = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ <exclGroup name="size" layout="lr-tb" w="4in">{}{}{}</exclGroup>
+ <exclGroup name="color" layout="lr-tb" w="4in">{}{}</exclGroup>
+ <subform name="box" layout="tb" w="4in"><exclGroup layout="lr-tb" w="4in">{}{}</exclGroup></subform>
+ <field name="seen" w="2in" h="0.3in"><ui><textEdit/></ui></field>
+ <field name="clear" w="2in" h="0.3in"><ui><button/></ui>
+  <event activity="click"><script contentType="application/x-javascript">xfa.host.resetData();</script></event></field>
+ <field name="clearSize" w="2in" h="0.3in"><ui><button/></ui>
+  <event activity="click"><script contentType="application/x-javascript">xfa.host.resetData("form.size");</script></event></field>
+ <field name="probe" w="2in" h="0.3in"><ui><button/></ui>
+  <event activity="click"><script contentType="application/x-javascript">seen.rawValue = size.rawValue + "|" + color.rawValue;</script></event></field>
+</subform>
+</template>
+</xdp:xdp>
+"#,
+        button("S", 1, false),
+        button("M", 2, true),
+        button("L", 3, false),
+        button("R", 1, false),
+        button("G", 2, false),
+        button("X", 1, false),
+        button("Y", 2, true),
+    );
+    Arc::new(pdfcraft_xfa::fixtures::shell(&xdp))
+}
+
+/// The name of the radio group field (a field with several widgets) of document `id` whose name
+/// ends in `end`.
+fn radio_group_named(s: &Session, id: DocId, end: &str) -> String {
+    s.get(id)
+        .unwrap()
+        .form
+        .iter()
+        .find(|f| f.name.ends_with(end) && f.widgets.len() > 1)
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| panic!("no group {end}"))
+}
+
+/// `xfa.host.resetData()` gives every radio group (exclusion group) of a dynamic form its
+/// template default back: the button whose value is its on value, or none when no button has
+/// one. That holds for a named group and an unnamed one in the form's fields, and for the named
+/// groups also in what scripts read and in the data the form is saved and reopened with. A reset
+/// naming one group resets that group alone.
+#[test]
+fn an_xfa_reset_gives_radio_groups_their_default_button_back() {
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("radio.pdf", None, radio_reset_form(), None).expect("opens");
+    let (size, color, unnamed) = (radio_group_named(&s, id, "size"), radio_group_named(&s, id, "color"), radio_group_named(&s, id, "group"));
+    assert_eq!(
+        (field_text(&s, id, &size), field_text(&s, id, &color), field_text(&s, id, &unnamed)),
+        ("2".into(), String::new(), "2".into()),
+        "opened on the defaults"
+    );
+    let choose = |s: &mut Session| {
+        s.apply(id, Edit::SetFieldValue { name: size.clone(), value: FieldValue::Radio(Some("3".into())) }).unwrap();
+        s.apply(id, Edit::SetFieldValue { name: color.clone(), value: FieldValue::Radio(Some("2".into())) }).unwrap();
+        s.apply(id, Edit::SetFieldValue { name: unnamed.clone(), value: FieldValue::Radio(Some("1".into())) }).unwrap();
+        assert_eq!((field_text(s, id, &size), field_text(s, id, &color), field_text(s, id, &unnamed)), ("3".into(), "2".into(), "1".into()));
+    };
+    choose(&mut s);
+    let o = s.run_javascript(id, "", Some("clear")).expect("clicks");
+    assert_eq!(o.error, None, "{o:?}");
+    assert_eq!(
+        (field_text(&s, id, &size), field_text(&s, id, &color), field_text(&s, id, &unnamed)),
+        ("2".into(), String::new(), "2".into()),
+        "reset to the defaults"
+    );
+    let probe = |s: &mut Session| {
+        let o = s.run_javascript(id, "", Some("probe")).expect("clicks");
+        assert_eq!(o.error, None, "{o:?}");
+        field_text(s, id, &field_ending_in(s, id, "seen"))
+    };
+    assert_eq!(probe(&mut s), "2|null", "scripts read the defaults");
+    let saved = s.save_bytes(id).unwrap();
+    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
+    let data = pdfcraft_xfa::data_of(&cos).unwrap();
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].size[0]")).unwrap_or(""), "2", "the default in the data");
+    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].color[0]")).unwrap_or(""), "", "no default, no choice");
+    let mut r = Session::new();
+    let again = r.open("again.pdf", None, saved, None).expect("reopens");
+    assert_eq!((field_text(&r, again, &size), field_text(&r, again, &color)), ("2".into(), String::new()), "reopened on the defaults");
+    // A reset naming one group gives that group its default and leaves the others.
+    choose(&mut s);
+    let o = s.run_javascript(id, "", Some("clearSize")).expect("clicks");
+    assert_eq!(o.error, None, "{o:?}");
+    assert_eq!(
+        (field_text(&s, id, &size), field_text(&s, id, &color), field_text(&s, id, &unnamed)),
+        ("2".into(), "2".into(), "1".into()),
+        "only size reset"
+    );
+    assert_eq!(probe(&mut s), "2|2");
+}
+
+/// The name of the text field of document `id` whose name ends in `end`.
+fn field_ending_in(s: &Session, id: DocId, end: &str) -> String {
+    s.get(id).unwrap().form.iter().find(|f| f.name.ends_with(end)).map(|f| f.name.clone()).unwrap_or_else(|| panic!("no field {end}"))
+}
+
 /// A reset in an opening script clears a multi-select list of a hidden subform (no widget)
 /// whose picks the data holds as `value` elements: its empty default leaves no pick in the
 /// saved data, and the rest of the data stays as it was.
