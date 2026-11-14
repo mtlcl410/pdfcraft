@@ -118,3 +118,30 @@ fn rows_cut_in_a_positioned_container_are_reported_too() {
         assert!(w.contains("holds 60 rows") && w.contains("first 5"), "{layout}: {w}");
     }
 }
+
+/// A heading subform named like the rows under it takes the first data group of that name, and
+/// the rows the ones after it: three row groups after the heading's lay out three rows, each
+/// with its own value, in a flowed list and in a table, and the scripts' view of the form has
+/// the same three rows.
+#[test]
+fn a_heading_named_like_the_rows_takes_the_first_data_group() {
+    for table in [false, true] {
+        let xml = rows_form("-1", 3, table)
+            .replace(
+                r#"<subform name="item" "#,
+                r#"<subform name="item"><draw name="title" w="200pt" h="20pt"><value><text>Items</text></value></draw></subform><subform name="item" "#,
+            )
+            .replace("<list><item>", "<list><item/><item>");
+        let form = layout_xml(&xml).unwrap();
+        assert_eq!(values(&form), expected(3), "table {table}: {:?}", form.warnings);
+        assert_eq!(cut_warning(&form), None, "{:?}", form.warnings);
+        let (tpl, _) = parse(&xml).unwrap();
+        let live = crate::script::form_tree(&tpl, parse_datasets(&xml).as_ref(), &crate::script::Overrides::default());
+        let rows: Vec<&str> = live.root.children.iter().flat_map(|l| l.children.iter()).map(|r| r.som.as_str()).collect();
+        assert_eq!(
+            rows,
+            ["form[0].list[0].item[0]", "form[0].list[0].item[1]", "form[0].list[0].item[2]", "form[0].list[0].item[3]"],
+            "table {table}"
+        );
+    }
+}

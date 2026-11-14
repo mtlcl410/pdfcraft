@@ -1,7 +1,7 @@
 use super::common::{WidgetRest, clamp_opt, divide, is_row, moved, solid_extent, split_line, split_widget, splittable, widget_box};
 use super::items::Item;
 use super::{
-    Ctx, Frame, Layout, Layouter, MAX_DEPTH, MAX_INSTANCES, MAX_MEASURES, Node, Rect, SomIndices, Splitting, Subform, XfaError, data_path,
+    Ctx, Frame, Layout, Layouter, MAX_DEPTH, MAX_INSTANCES, MAX_MEASURES, Node, Rect, SomIndices, Splitting, Subform, XfaError, data_instances,
     subform_instances,
 };
 
@@ -327,7 +327,7 @@ impl Layouter<'_> {
             self.break_frames(0.0, true)?;
         }
         // Data adds instances of a repeating subform (rows added in another viewer).
-        let instances = self.laid_out_instances(node, &ctx.som);
+        let instances = self.laid_out_instances(node, &ctx.som, sib);
         let ctx_parent = ctx;
         for i in 0..instances {
             // Every instance spends budget, so nested repeats that place nothing still stop.
@@ -413,7 +413,7 @@ impl Layouter<'_> {
                 && row.layout == Layout::Row
             {
                 // Rows added as data (in another viewer) repeat the row.
-                let instances = self.laid_out_instances(child, &ctx.som);
+                let instances = self.laid_out_instances(child, &ctx.som, csib);
                 for inst in 0..instances {
                     let h = self.row_height(row, &cols, inner_w, ctx, depth + 1, csib.saturating_add(inst));
                     let led = lead.filter(|(li, _)| *li != ci);
@@ -446,7 +446,7 @@ impl Layouter<'_> {
     /// 3.3, "Repeating Elements using Occurrence Limits", p. 263), each as tall as its own
     /// content; the data rows past them are reported.
     fn flow_instances(&mut self, node: &Node, x: f64, inner_w: f64, ctx: &Ctx, depth: usize, sib: usize) -> Result<(), XfaError> {
-        for instance in 0..self.laid_out_instances(node, &ctx.som) {
+        for instance in 0..self.laid_out_instances(node, &ctx.som, sib) {
             // Every instance spends budget, so nested repeats that place nothing still stop.
             self.measures.set(self.measures.get().saturating_add(1));
             self.check_measures()?;
@@ -462,31 +462,29 @@ impl Layouter<'_> {
     /// The size a node takes when given `avail_w` of width. Containers are measured once per
     /// (node, width, depth): measuring a width-less container measures its content twice (for
     /// its width, then its height), which would otherwise be exponential in the nesting.
-    /// How many instances of `node` to lay out under the container at `parent_som`: a
-    /// repeating subform's `occur` and data instances ([`instance_count`]); one for anything else.
-    pub(super) fn instances(&self, node: &Node, parent_som: &str) -> usize {
+    /// How many instances of `node` to lay out under the container at `parent_som`, the first at
+    /// SOM index `sib` there: a repeating subform's `occur` and data instances
+    /// ([`instance_count`]); one for anything else.
+    pub(super) fn instances(&self, node: &Node, parent_som: &str, sib: usize) -> usize {
         let Node::Subform(sf) = node else { return 1 };
-        subform_instances(self.tpl, self.data, sf, parent_som)
+        subform_instances(self.tpl, self.data, sf, parent_som, sib)
     }
 
     /// [`Self::instances`] for laying `node` out: the count every layout that repeats a subform
     /// draws (flowed or positioned, top to bottom, wrapped or a table's rows), with the data rows
     /// past it reported ([`Self::warn_truncated`]).
-    pub(super) fn laid_out_instances(&mut self, node: &Node, parent_som: &str) -> usize {
-        let instances = self.instances(node, parent_som);
-        self.warn_truncated(node, parent_som, instances);
+    pub(super) fn laid_out_instances(&mut self, node: &Node, parent_som: &str, sib: usize) -> usize {
+        let instances = self.instances(node, parent_som, sib);
+        self.warn_truncated(node, parent_som, sib, instances);
         instances
     }
 
     /// The data holds more instances of `node` than `laid_out`: say so, since calculations
     /// then see only those, and say why. (The template's own counts can't ask for more: the
     /// parser reads `initial` and `max` up to [`MAX_INSTANCES`].)
-    pub(super) fn warn_truncated(&mut self, node: &Node, parent_som: &str, laid_out: usize) {
+    pub(super) fn warn_truncated(&mut self, node: &Node, parent_som: &str, sib: usize, laid_out: usize) {
         let Node::Subform(sf) = node else { return };
-        let from_data = match (&sf.common.name, self.data) {
-            (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(self.tpl, parent_som), name),
-            _ => 0,
-        };
+        let from_data = data_instances(self.tpl, self.data, sf, parent_som, sib);
         if from_data <= laid_out {
             return;
         }

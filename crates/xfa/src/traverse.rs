@@ -168,10 +168,11 @@ impl<'t> Tree<'t> {
         Some(id)
     }
 
-    /// How many instances of `sf` under the container at `parent_som` the layout made, counted
-    /// as it counts them (one for a subform that isn't shown, which it doesn't lay out).
-    fn instances(&self, sf: &Subform, parent_som: &str, shown: bool) -> usize {
-        if shown { subform_instances(self.tpl, self.data, sf, parent_som) } else { 1 }
+    /// How many instances of `sf` under the container at `parent_som`, the first at SOM index
+    /// `sib` there, the layout made, counted as it counts them (one for a subform that isn't
+    /// shown, which it doesn't lay out).
+    fn instances(&self, sf: &Subform, parent_som: &str, sib: usize, shown: bool) -> usize {
+        if shown { subform_instances(self.tpl, self.data, sf, parent_som, sib) } else { 1 }
     }
 
     /// Add `node` (each instance of a repeating subform) and everything in it, under `parent`
@@ -184,7 +185,7 @@ impl<'t> Tree<'t> {
         let shown = shown && c.presence == Presence::Visible;
         match node {
             Node::Subform(sf) => {
-                for k in 0..self.instances(sf, parent_som, shown) {
+                for k in 0..self.instances(sf, parent_som, sib, shown) {
                     let som = with_som(parent_som, c.name.as_deref(), sib + k);
                     let Some(id) = self.push(Class::Subform, c, parent, shown) else { return };
                     let sibs = som_indices(sf.children.iter().map(|k| k.common().name.as_deref()));

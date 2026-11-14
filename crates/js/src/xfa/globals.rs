@@ -390,17 +390,19 @@ pub(super) fn install(ctx: &mut Context, event: &XfaEvent, doc: &XfaDoc, current
                 .map(|n| n.children.iter().filter_map(|&c| h.nodes.get(c).map(|k| (c, k.name.to_string(), k.repeatable && !k.gone))).collect())
                 .unwrap_or_default()
         };
-        for (c, name, repeatable) in kids {
-            if !is_identifier(&name) || defined.contains(&name) {
+        for (c, name, _) in &kids {
+            if !is_identifier(name) || defined.contains(name) {
                 continue;
             }
-            let obj = node_object(ctx, c)?;
+            let obj = node_object(ctx, *c)?;
             ctx.register_global_property(JsString::from(name.as_str()), obj, rw)?;
-            if repeatable {
-                let im = instance_manager(ctx, scope, &name)?;
+            // `_name` when a child of the name repeats, though the first of that name (a
+            // heading named like the rows) may not.
+            if kids.iter().any(|(_, other, repeatable)| *repeatable && other == name) {
+                let im = instance_manager(ctx, scope, name)?;
                 ctx.register_global_property(JsString::from(format!("_{name}").as_str()), im, rw)?;
             }
-            defined.insert(name);
+            defined.insert(name.clone());
         }
     }
     Ok(())

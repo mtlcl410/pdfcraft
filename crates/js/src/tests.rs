@@ -1095,6 +1095,98 @@ mod xfa_model {
         assert_eq!(o.result.as_deref(), Some("4/1"));
     }
 
+    /// form1 > list > { kids (a heading subform that doesn't repeat), kids[1], kids[2] (rows,
+    /// at least two) > { name, add (button) } }: the shape of a form whose rows are named like
+    /// the heading above them.
+    fn headed_rows() -> XfaNode {
+        let row = |i: usize| XfaNode {
+            name: "kids".into(),
+            som: format!("form1[0].list[0].kids[{i}]"),
+            kind: Some(XfaKind::Subform),
+            repeatable: true,
+            occur_min: 2,
+            occur_max: None,
+            index: i,
+            children: vec![
+                field("name", &format!("form1[0].list[0].kids[{i}].name[0]"), "", false),
+                field("add", &format!("form1[0].list[0].kids[{i}].add[0]"), "", false),
+            ],
+            ..Default::default()
+        };
+        let heading = XfaNode {
+            name: "kids".into(),
+            som: "form1[0].list[0].kids[0]".into(),
+            kind: Some(XfaKind::Subform),
+            occur_min: 1,
+            occur_max: Some(1),
+            children: vec![XfaNode {
+                name: "kids".into(),
+                som: "form1[0].list[0].kids[0].kids[0]".into(),
+                kind: Some(XfaKind::Draw),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let list = XfaNode {
+            name: "list".into(),
+            som: "form1[0].list[0]".into(),
+            kind: Some(XfaKind::Subform),
+            repeatable: true,
+            occur_min: 1,
+            occur_max: None,
+            children: vec![heading, row(1), row(2)],
+            ..Default::default()
+        };
+        XfaNode { name: "form1".into(), som: "form1[0]".into(), kind: Some(XfaKind::Subform), children: vec![list], ..Default::default() }
+    }
+
+    /// A heading subform named like the rows under it is no instance of them: the rows'
+    /// instance manager counts, adds and removes rows only, a new row comes after the last one
+    /// with the next SOM index, and a copy of the container keeps its first row.
+    #[test]
+    fn a_heading_named_like_its_rows_is_not_one_of_them() {
+        let ev = |target: &str| XfaEvent { activity: "click".into(), target: target.into(), ..Default::default() };
+        let run = |script: &str, target: &str| run_xfa(script, &ev(target), &XfaDoc::default(), &headed_rows(), Limits::default());
+        let row1 = "form1[0].list[0].kids[1].add[0]";
+        let o = run(
+            "var im = this.parent.instanceManager; var n = im.count + '/' + im.min + '/' + this.parent.instanceIndex; \
+             var r = im.addInstance(); n + '/' + im.count + '/' + r.somExpression + '/' + r.instanceIndex + '/' + _kids.count",
+            row1,
+        );
+        assert_eq!(o.error, None, "{o:?}");
+        assert_eq!(o.result.as_deref(), Some("2/2/0/3/form1[0].list[0].kids[3]/2/3"));
+        assert_eq!(o.effects, vec![XfaEffect::AddInstance { som: "form1[0].list[0].kids[3]".into() }]);
+        // The minus button: the last row goes, never the heading, and never below the minimum.
+        let o = run(
+            "var im = this.parent.instanceManager; im.addInstance(); im.removeInstance(im.count - 1); im.removeInstance(im.count - 1); im.count",
+            row1,
+        );
+        assert_eq!(o.error, None, "{o:?}");
+        assert_eq!(o.result.as_deref(), Some("2"));
+        assert_eq!(
+            o.effects,
+            vec![
+                XfaEffect::AddInstance { som: "form1[0].list[0].kids[3]".into() },
+                XfaEffect::RemoveInstance { som: "form1[0].list[0].kids[3]".into() },
+            ]
+        );
+        // A new instance of the container copies the heading and the first row.
+        let o = run("var c = xfa.form.form1._list.addInstance(); c.kids.all.length + '/' + c.resolveNode('kids[1].name').somExpression", row1);
+        assert_eq!(o.error, None, "{o:?}");
+        assert_eq!(o.result.as_deref(), Some("2/form1[0].list[1].kids[1].name[0]"));
+        // FormCalc's instance manager sees the same rows.
+        let o = crate::formcalc::run_formcalc(
+            "$.parent.instanceManager.addInstance()\n$.parent.instanceManager.count",
+            &ev(row1),
+            &XfaDoc::default(),
+            &headed_rows(),
+            Limits::default(),
+        );
+        assert_eq!(o.error, None, "{o:?}");
+        assert_eq!(o.result.as_deref(), Some("3"));
+        assert_eq!(o.effects, vec![XfaEffect::AddInstance { som: "form1[0].list[0].kids[3]".into() }]);
+    }
+
     /// `xfa.host`, `xfa.layout`, `xfa.event` and `app` calls become effects, and messages keep
     /// their details.
     #[test]

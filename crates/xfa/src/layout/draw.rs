@@ -147,7 +147,7 @@ impl Layouter<'_> {
                             // say) gets its instances, as in a flowed one, one under another,
                             // each as tall as its own content, and the rows past them are
                             // reported as there.
-                            let instances = self.laid_out_instances(k, &ctx.som);
+                            let instances = self.laid_out_instances(k, &ctx.som, sibs.at(i));
                             for instance in 0..instances {
                                 let sib = sibs.at(i).saturating_add(instance);
                                 let (w, h) = self.size_at(k, inner.w, &ctx, depth + 1, sib);
@@ -159,8 +159,8 @@ impl Layouter<'_> {
                     Layout::LrTb | Layout::RlTb => {
                         // A repeating subform here (rows of fields under a heading) gets its
                         // instances, as in the other layouts, and the rows past them are reported.
-                        for k in s.children.iter().filter(|k| k.common().presence.occupies()) {
-                            self.laid_out_instances(k, &ctx.som);
+                        for (i, k) in s.children.iter().enumerate().filter(|(_, k)| k.common().presence.occupies()) {
+                            self.laid_out_instances(k, &ctx.som, sibs.at(i));
                         }
                         let (placed, _) = self.pack_instances(&s.children, inner.w, &ctx, depth, &ctx.som);
                         // The sibling indices of each `subformSet` the steps go into, found once per
@@ -207,7 +207,7 @@ impl Layouter<'_> {
                                 // A repeating row (a table in a positioned subform, say) gets its
                                 // instances one under another, as in a flowed table (XFA 3.3,
                                 // "Tables", p. 327), and the rows past them are reported.
-                                for instance in 0..self.laid_out_instances(k, &ctx.som) {
+                                for instance in 0..self.laid_out_instances(k, &ctx.som, csib) {
                                     let h = self.row_height(r, &cols, inner.w, &ctx, depth + 1, csib.saturating_add(instance));
                                     self.draw_row(r, &cols, Rect::new(inner.x, y, inner.w, h), &ctx, depth + 1, csib + instance)?;
                                     y += h;

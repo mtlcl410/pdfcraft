@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::host::{HNode, XHost, host};
 use super::model::{MAX_ADDED, MAX_DEPTH, MAX_NODES, XfaEffect};
-use super::nodes::{instances, node_object};
+use super::nodes::{instances, managed, node_object};
 use super::{Attribute, Context, JsArray, JsObject, JsResult, JsValue, NativeFunction, ObjectInitializer, arg, function, js_string, s, text};
 
 pub(super) fn list_object(ctx: &mut Context, items: &[usize]) -> JsResult<JsValue> {
@@ -33,7 +34,7 @@ pub(super) fn list_object(ctx: &mut Context, items: &[usize]) -> JsResult<JsValu
 pub(super) fn instance_manager(ctx: &mut Context, parent: usize, name: &str) -> JsResult<JsValue> {
     let (count, min, max) = {
         let h = host(ctx)?.borrow();
-        let live = instances(&h, parent, name);
+        let live = managed(&h, parent, name);
         let first = live.first().and_then(|i| h.nodes.get(*i));
         (live.len(), first.map_or(0, |n| n.occur_min), first.and_then(|n| n.occur_max))
     };
@@ -78,7 +79,7 @@ pub(super) fn instance_manager(ctx: &mut Context, parent: usize, name: &str) -> 
     }
     fn count_get(_: &JsValue, _: &[JsValue], key: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
         let (p, n) = target_of(key, ctx)?;
-        let c = instances(&host(ctx)?.borrow(), p, &n).len();
+        let c = managed(&host(ctx)?.borrow(), p, &n).len();
         Ok(JsValue::from(c as f64))
     }
     fn count_set(_: &JsValue, args: &[JsValue], key: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
@@ -142,10 +143,24 @@ fn child_som(parent_som: String, name: &str, index: usize) -> String {
 fn subtree_bytes(h: &XHost, src: usize, depth: usize) -> usize {
     let Some(n) = h.nodes.get(src).filter(|_| depth <= MAX_DEPTH) else { return 0 };
     let own = std::mem::size_of::<HNode>().saturating_add(n.name.len()).saturating_add(n.som.len());
+    copied_children(h, src).into_iter().fold(own, |sum, k| sum.saturating_add(subtree_bytes(h, k, depth + 1)))
+}
+
+/// The children of `src` a copy of it keeps: every live one, but of a repeating subform only
+/// its first instance (a heading of the same name that doesn't repeat is no instance of it).
+fn copied_children(h: &XHost, src: usize) -> Vec<usize> {
+    let Some(n) = h.nodes.get(src) else { return Vec::new() };
+    let mut repeating: HashSet<&str> = HashSet::new();
     n.children
         .iter()
-        .filter(|&&k| !h.nodes.get(k).is_some_and(|c| c.gone || c.repeatable && c.index > 0))
-        .fold(own, |sum, &k| sum.saturating_add(subtree_bytes(h, k, depth + 1)))
+        .copied()
+        .filter(|&k| match h.nodes.get(k) {
+            Some(c) if c.gone => false,
+            Some(c) if c.repeatable => repeating.insert(&*c.name),
+            Some(_) => true,
+            None => false,
+        })
+        .collect()
 }
 
 /// A copy of `src`'s subtree (values cleared) under `parent`, returning the copy's index.
@@ -153,42 +168,35 @@ fn clone_subtree(h: &mut XHost, src: usize, parent: Option<usize>, depth: usize)
     if depth > MAX_DEPTH || h.nodes.len() >= MAX_NODES {
         return None;
     }
-    let (template, kids) = {
+    let kids = copied_children(h, src);
+    let template = {
         let n = h.nodes.get(src)?;
-        (
-            HNode {
-                name: n.name.clone(),
-                som: "".into(),
-                kind: n.kind,
-                value: String::new(),
-                numeric: n.numeric,
-                presence: n.presence.clone(),
-                access: n.access.clone(),
-                repeatable: n.repeatable,
-                occur_min: n.occur_min,
-                occur_max: n.occur_max,
-                index: n.index,
-                parent,
-                children: Arc::from([]),
-                gone: false,
-                // The copy holds no value, so nothing is shown in its picture either.
-                formatted: None,
-                props: std::sync::Arc::clone(&n.props),
-                // A new instance lists what the template lists.
-                items: None,
-            },
-            n.children.clone(),
-        )
+        HNode {
+            name: n.name.clone(),
+            som: "".into(),
+            kind: n.kind,
+            value: String::new(),
+            numeric: n.numeric,
+            presence: n.presence.clone(),
+            access: n.access.clone(),
+            repeatable: n.repeatable,
+            occur_min: n.occur_min,
+            occur_max: n.occur_max,
+            index: n.index,
+            parent,
+            children: Arc::from([]),
+            gone: false,
+            // The copy holds no value, so nothing is shown in its picture either.
+            formatted: None,
+            props: std::sync::Arc::clone(&n.props),
+            // A new instance lists what the template lists.
+            items: None,
+        }
     };
     let idx = h.nodes.len();
     h.nodes.push(template);
     let mut copied = Vec::new();
-    for k in kids.iter().copied() {
-        // Nested repeating subforms copy their first instance only.
-        let skip = h.nodes.get(k).is_some_and(|c| c.gone || c.repeatable && c.index > 0);
-        if skip {
-            continue;
-        }
+    for k in kids {
         if let Some(ci) = clone_subtree(h, k, Some(idx), depth + 1) {
             copied.push(ci);
         }
@@ -215,7 +223,7 @@ impl XHost {
     /// subform doesn't repeat, is at its maximum, or the run added its limit.
     pub(crate) fn add_instance(&mut self, parent: usize, name: &str) -> Option<usize> {
         let h = self;
-        let live = instances(h, parent, name);
+        let live = managed(h, parent, name);
         let &first = live.first()?;
         let (repeatable, max) = h.nodes.get(first).map(|n| (n.repeatable, n.occur_max)).unwrap_or((false, Some(1)));
         if !repeatable || max.is_some_and(|m| live.len() >= m) || h.added >= MAX_ADDED || h.nodes.len() >= MAX_NODES {
@@ -224,7 +232,12 @@ impl XHost {
         // The copy's SOM, as `renumber` will give it, so its effect is reserved before the copy.
         let name = h.nodes.get(first).map(|n| n.name.to_string()).unwrap_or_default();
         let parent_som = h.nodes.get(parent).map(|p| p.som.to_string()).unwrap_or_default();
-        let som = child_som(parent_som, &name, live.len());
+        let last = live.last().copied().unwrap_or(first);
+        // Its SOM index counts every same-named sibling before it, a heading named like the
+        // rows too (XFA 3.3 §3 "Scripting Object Model": `name[n]` counts same-named siblings).
+        let named = instances(h, parent, &name);
+        let index = named.iter().position(|&c| c == last).map_or(named.len(), |p| p.saturating_add(1));
+        let som = child_som(parent_som, &name, index);
         // The copy's nodes, their names and SOMs, are charged to the run's byte budget before
         // they are made: a subtree with long names must not be copied past it.
         let copied = subtree_bytes(h, first, 0);
@@ -232,9 +245,8 @@ impl XHost {
             return None;
         }
         let new = clone_subtree(h, first, Some(parent), 0)?;
-        let last = live.last().copied().unwrap_or(first);
         if let Some(n) = h.nodes.get_mut(new) {
-            n.index = live.len();
+            n.index = index;
         }
         // Keep instances together: right after the last one.
         if let Some(p) = h.nodes.get_mut(parent) {
@@ -243,7 +255,7 @@ impl XHost {
             kids.insert(pos, new);
             p.children = kids.into();
         }
-        renumber(h, new, 0);
+        reindex(h, parent, &name);
         h.added += 1;
         h.record(XfaEffect::AddInstance { som });
         Some(new)
@@ -255,14 +267,14 @@ impl XHost {
     pub(crate) fn set_instances(&mut self, parent: usize, name: &str, want: usize) {
         let want = want.min(MAX_ADDED);
         for _ in 0..=MAX_ADDED {
-            let have = instances(self, parent, name).len();
+            let have = managed(self, parent, name).len();
             if have < want {
                 if self.add_instance(parent, name).is_none() {
                     break;
                 }
             } else if have > want && have > 0 {
                 self.remove_instance(parent, name, have - 1);
-                if instances(self, parent, name).len() == have {
+                if managed(self, parent, name).len() == have {
                     break;
                 }
             } else {
@@ -275,7 +287,7 @@ impl XHost {
     /// below one).
     pub(crate) fn remove_instance(&mut self, parent: usize, name: &str, i: usize) {
         let h = self;
-        let live = instances(h, parent, name);
+        let live = managed(h, parent, name);
         let Some(&gone) = live.get(i) else { return };
         let min = h.nodes.get(gone).map_or(0, |n| n.occur_min).max(1);
         if live.len() <= min {
@@ -288,13 +300,22 @@ impl XHost {
         if let Some(n) = h.nodes.get_mut(gone) {
             n.gone = true;
         }
-        // Later instances move down one.
-        for (k, &inst) in live.iter().enumerate().skip(i + 1) {
-            if let Some(n) = h.nodes.get_mut(inst) {
-                n.index = k - 1;
-            }
+        // Later same-named siblings move down one.
+        reindex(h, parent, name);
+        h.record(XfaEffect::RemoveInstance { som });
+    }
+}
+
+/// Give the live children of `parent` named `name` their SOM indexes in order (after an
+/// instance came or went), and their subtrees the SOMs that follow.
+fn reindex(h: &mut XHost, parent: usize, name: &str) {
+    for (k, inst) in instances(h, parent, name).into_iter().enumerate() {
+        let moved = h.nodes.get(inst).is_some_and(|n| n.index != k || n.som.is_empty());
+        if let Some(n) = h.nodes.get_mut(inst) {
+            n.index = k;
+        }
+        if moved {
             renumber(h, inst, 0);
         }
-        h.record(XfaEffect::RemoveInstance { som });
     }
 }

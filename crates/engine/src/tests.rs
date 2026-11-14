@@ -9380,6 +9380,50 @@ fn xfa_scripts_initialize_calculate_validate_toggle_and_add_rows() {
     assert!(!d2.dirty);
 }
 
+/// A heading subform named like the rows under it (a container that binds no data of its own,
+/// holding a heading and repeating rows of the same name, as Designer forms often have): the
+/// rows' "+" button adds one row and "-" takes the last one away, and the heading stays.
+#[test]
+fn a_row_button_adds_one_row_under_a_heading_of_the_same_name() {
+    let tpl = r##"<?xml version="1.0" encoding="UTF-8"?>
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
+<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form" layout="tb">
+ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
+ <subform name="page1" layout="tb">
+  <subform name="kids" layout="tb" w="7in"><bind match="none"/>
+   <subform name="kids" w="7in" h="0.4in"><draw name="kids" w="3in" h="0.3in"><value><text>Children</text></value></draw></subform>
+   <subform name="kids" w="7in" h="0.4in"><occur min="2" max="-1"/>
+    <field name="who" x="0in" y="0in" w="3in" h="0.3in"><ui><textEdit/></ui></field>
+    <field name="minus" x="3.5in" y="0in" w="0.3in" h="0.3in"><ui><button/></ui><bind match="none"/>
+     <event activity="click"><script contentType="application/x-javascript">this.parent.instanceManager.removeInstance(this.parent.instanceManager.count - 1);</script></event></field>
+    <field name="plus" x="4in" y="0in" w="0.3in" h="0.3in"><ui><button/></ui><bind match="none"/>
+     <event activity="click"><script contentType="application/x-javascript">this.parent.instanceManager.addInstance();</script></event></field>
+   </subform>
+  </subform>
+ </subform>
+</subform>
+</template>
+</xdp:xdp>
+"##;
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("kids.pdf", None, Arc::new(pdfcraft_xfa::fixtures::shell(tpl)), None).unwrap();
+    let rows = |s: &Session| s.get(id).unwrap().form.iter().filter(|f| f.name.starts_with("who")).count();
+    assert_eq!(rows(&s), 2, "the rows' minimum");
+    let o = s.run_javascript(id, "", Some("plus")).unwrap();
+    assert_eq!(o.error, None, "{o:?}");
+    assert_eq!(rows(&s), 3, "one row more: {:?}", s.take_js_output(id));
+    let o = s.run_javascript(id, "", Some("plus")).unwrap();
+    assert_eq!(o.error, None, "{o:?}");
+    assert_eq!(rows(&s), 4);
+    let o = s.run_javascript(id, "", Some("minus")).unwrap();
+    assert_eq!(o.error, None, "{o:?}");
+    assert_eq!(rows(&s), 3, "one row fewer");
+    // Saved and reopened: the rows are what they were.
+    let id2 = s.open("again.pdf", None, s.save_bytes(id).unwrap(), None).unwrap();
+    assert_eq!(s.get(id2).unwrap().form.iter().filter(|f| f.name.starts_with("who")).count(), 3);
+}
+
 /// An XFA button's click returns only what the click produced. The alerts and errors of the
 /// scripts that ran on open stay in the document's output.
 #[test]

@@ -82,6 +82,29 @@ pub(crate) fn instances(h: &XHost, parent: usize, name: &str) -> Vec<usize> {
         .unwrap_or_default()
 }
 
+/// The live instances the instance manager `_name` under `parent` manages: the same-named
+/// children that repeat. One instance manager stands for one dynamic subform, and every object
+/// it manages comes from that subform's declaration (XFA 3.3 chapter 9, "Instance Manager",
+/// p. 353; chapter 10, "Instance Manager Events", p. 395), so a sibling of the same name that doesn't repeat (a heading
+/// subform named like the rows under it) is not one of them. When none repeats, every
+/// same-named child.
+pub(crate) fn managed(h: &XHost, parent: usize, name: &str) -> Vec<usize> {
+    let all = instances(h, parent, name);
+    let repeating: Vec<usize> = all.iter().copied().filter(|&i| h.nodes.get(i).is_some_and(|n| n.repeatable)).collect();
+    if repeating.is_empty() { all } else { repeating }
+}
+
+/// `instanceIndex` of node `idx`: its position among the instances its instance manager
+/// manages (see [`managed`]); a node that doesn't repeat is its declaration's only instance.
+pub(crate) fn instance_index(h: &XHost, idx: usize) -> usize {
+    let Some(n) = h.nodes.get(idx) else { return 0 };
+    let Some(parent) = n.parent else { return n.index };
+    if !n.repeatable && instances(h, parent, &n.name).iter().any(|&i| h.nodes.get(i).is_some_and(|s| s.repeatable)) {
+        return 0;
+    }
+    managed(h, parent, &n.name).iter().position(|&i| i == idx).unwrap_or(n.index)
+}
+
 /// Resolve a SOM expression from node `from`: `$`, `$form`, `$record`, `$host`, `xfa.form…`,
 /// `parent`, `..name` (descendant search), `name[n]`, `name[*]`, `_name`.
 pub(crate) fn resolve_som(h: &XHost, from: usize, expr: &str) -> Vec<usize> {
@@ -222,7 +245,8 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
         "name" => s(&name),
         "somExpression" => s(&som),
         "className" => s(kind.class_name()),
-        "index" | "instanceIndex" => JsValue::from(index as f64),
+        "index" => JsValue::from(index as f64),
+        "instanceIndex" => JsValue::from(instance_index(&host(ctx)?.borrow(), idx) as f64),
         "presence" => s(&presence),
         "access" => s(&access),
         "isNull" => JsValue::from(value.is_empty()),

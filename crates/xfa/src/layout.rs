@@ -215,14 +215,25 @@ pub fn instance_count(occur: &Occur, from_data: usize) -> usize {
     n.min(occur.max.unwrap_or(usize::MAX)).clamp(1, MAX_INSTANCES)
 }
 
-/// How many instances of `sf` the layout makes under the container at `parent_som`: its `occur`
-/// and the instances `data` holds ([`instance_count`]). The traversal counts them the same way.
-pub(crate) fn subform_instances(tpl: &Template, data: Option<&DataNode>, sf: &Subform, parent_som: &str) -> usize {
-    let from_data = match (&sf.common.name, data) {
-        (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(tpl, parent_som), name),
+/// How many instances of `sf` the layout makes under the container at `parent_som`, the first at
+/// SOM index `sib` there: its `occur` and the instances `data` holds ([`instance_count`],
+/// [`data_instances`]). The traversal counts them the same way.
+pub(crate) fn subform_instances(tpl: &Template, data: Option<&DataNode>, sf: &Subform, parent_som: &str, sib: usize) -> usize {
+    instance_count(&sf.occur, data_instances(tpl, data, sf, parent_som, sib))
+}
+
+/// The instances of the repeating subform `sf` the data holds under the container at
+/// `parent_som`, the first at SOM index `sib` there: the data groups of its name from index
+/// `sib` on. Those before it are the data of the same-named siblings before it (a heading
+/// subform named like the rows under it), which bind in order, one each (XFA 3.3 chapter 4,
+/// "Basic Data Binding to Produce the XFA Form DOM", p. 192: with nothing else to go by,
+/// same-named objects bind in document order; the data a published form of this shape
+/// carries has the heading's group first). 0 for a subform that doesn't repeat.
+pub(crate) fn data_instances(tpl: &Template, data: Option<&DataNode>, sf: &Subform, parent_som: &str, sib: usize) -> usize {
+    match (&sf.common.name, data) {
+        (Some(name), Some(d)) if sf.occur.max != Some(1) => d.count(&data_path(tpl, parent_som), name).saturating_sub(sib),
         _ => 0,
-    };
-    instance_count(&sf.occur, from_data)
+    }
 }
 
 /// Lay a template out, with the values and repeat counts of `data` (the `xfa:data` element).

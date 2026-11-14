@@ -3,8 +3,8 @@ use super::CLOCK_EVERY;
 use super::ast::{Expr, Idx};
 use super::value::{Val, num_text, parse_num};
 use super::{
-    HNode, HashSet, Interp, LIST_TOO_LONG, MAX_LIST, MAX_PARSE_DEPTH, MAX_STEPS, R, RAN_TOO_LONG, child_named, descendants_named, instances,
-    resolve_som,
+    HNode, HashSet, Interp, LIST_TOO_LONG, MAX_LIST, MAX_PARSE_DEPTH, MAX_STEPS, R, RAN_TOO_LONG, child_named, descendants_named, instance_index,
+    instances, managed, resolve_som,
 };
 
 impl Interp<'_> {
@@ -283,11 +283,11 @@ impl Interp<'_> {
                 _ => Val::Sink,
             }),
             Val::Im(parent, child) => Ok(match name.to_ascii_lowercase().as_str() {
-                "count" => Val::Num(instances(self.h, parent, &child).len() as f64),
-                "min" => Val::Num(instances(self.h, parent, &child).first().and_then(|i| self.node(*i)).map_or(0.0, |n| n.occur_min as f64)),
-                "max" => Val::Num(
-                    instances(self.h, parent, &child).first().and_then(|i| self.node(*i)).and_then(|n| n.occur_max).map_or(-1.0, |m| m as f64),
-                ),
+                "count" => Val::Num(managed(self.h, parent, &child).len() as f64),
+                "min" => Val::Num(managed(self.h, parent, &child).first().and_then(|i| self.node(*i)).map_or(0.0, |n| n.occur_min as f64)),
+                "max" => {
+                    Val::Num(managed(self.h, parent, &child).first().and_then(|i| self.node(*i)).and_then(|n| n.occur_max).map_or(-1.0, |m| m as f64))
+                }
                 "classname" => Val::Str("instanceManager".into()),
                 _ => Val::Sink,
             }),
@@ -326,7 +326,8 @@ impl Interp<'_> {
             "name" => Val::Str(n.name.to_string()),
             "somExpression" => Val::Str(n.som.to_string()),
             "className" => Val::Str(n.kind.class_name().into()),
-            "index" | "instanceIndex" => Val::Num(n.index as f64),
+            "index" => Val::Num(n.index as f64),
+            "instanceIndex" => Val::Num(instance_index(self.h, i) as f64),
             "presence" => Val::Str(n.presence.to_string()),
             "access" => Val::Str(n.access.to_string()),
             "isNull" => Val::Num(if n.value.is_empty() { 1.0 } else { 0.0 }),
