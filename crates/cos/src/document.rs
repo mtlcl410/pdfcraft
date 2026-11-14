@@ -25,7 +25,7 @@ pub(crate) use objects::Held;
 pub(crate) use reader::find;
 #[cfg(test)]
 use reader::rfind;
-use state::{ObjStm, Slot, Unreadable};
+use state::{Aliases, ObjStm, Slot, Unreadable};
 pub(crate) use state::{ObjectReader, held_bytes};
 pub use state::{ReadState, SourceIdentity};
 #[cfg(test)]
@@ -59,6 +59,9 @@ pub struct Document {
     /// See [`Self::unreadable_objects`]. Shared by clones, like the caches: it describes the
     /// source, and is reset wherever they are.
     unreadable: Arc<Mutex<Unreadable>>,
+    /// See [`Self::generation_aliases`]. Shared by clones and reset with the index, as
+    /// `unreadable` is: it describes the source.
+    aliases: Arc<Mutex<Aliases>>,
     /// What `/JBIG2Globals` streams of the file decode to, by object number: the images of a scan
     /// share them, and each would otherwise decode them again (see `Document::jbig2_globals`).
     jbig2_globals: Arc<Mutex<HashMap<u32, Arc<Vec<u8>>>>>,
